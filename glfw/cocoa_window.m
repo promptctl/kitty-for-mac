@@ -1222,9 +1222,9 @@ add_alternate_keys(GLFWkeyevent *ev, NSEvent *event) {
 // [LAW:single-enforcer] The one place a key press bound for a focused native
 // view reaches the app's shortcuts, and it does so once per press: before the
 // view while a keyboard mode is active (the keydown monitor), otherwise after
-// it, when the view has no binding for the key and it ends as noop: where
-// AppKit would beep. A press the monitor offered comes back here through noop:
-// after a mode let it pass, and is not offered again. Returns true if a
+// it, when the view leaves the key unhandled and it reaches the window, where
+// AppKit would beep. A press the monitor offered comes back here after a mode
+// let it pass, and is not offered again. Returns true if a
 // shortcut took it.
 bool
 _glfwCocoaOfferKeyToShortcuts(id event_) {
@@ -2661,11 +2661,17 @@ focus_owner_of(NSResponder *responder) {
     return [super constrainFrameRect:frameRect toScreen:screen];
 }
 
-// [LAW:single-enforcer] Every native view's unhandled commands end here,
-// wherever in the window the view sits.
+// [LAW:single-enforcer] Every native view's unhandled keys end here, wherever
+// in the window the view sits: a text view's as the noop: command, any other
+// view's (a button under Full Keyboard Access) as keyDown:.
 - (void)doCommandBySelector:(SEL)selector {
     if (selector == @selector(noop:) && _glfwCocoaOfferKeyToShortcuts([NSApp currentEvent])) return;
     [super doCommandBySelector:selector];
+}
+
+- (void)keyDown:(NSEvent *)event {
+    if (_glfwCocoaOfferKeyToShortcuts(event)) return;
+    [super keyDown:event];
 }
 
 - (BOOL)canBecomeKeyWindow {

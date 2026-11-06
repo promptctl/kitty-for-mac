@@ -904,15 +904,20 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
         // table was just given. An AppKit event while a terminal has focus is
         // dropped, so a repeat or release never reaches the terminal; with no
         // key window it goes back to AppKit.
-        NSEvent * (^deliver_key_event)(NSEvent *, KeyDestination, KeyDestination, SEL) = ^NSEvent *(NSEvent *event, KeyDestination dest, KeyDestination current, SEL handler) {
+        // The terminal a window number names, or nil once that window is gone.
+        id<GLFWTerminalKeyInput> (^terminal_for_window_number)(NSInteger) = ^id<GLFWTerminalKeyInput>(NSInteger number) {
+            for (_GLFWwindow *window = _glfw.windowListHead; window; window = window->next) if ([window->ns.object windowNumber] == number) return window->ns.view;
+            return nil;
+        };
+        NSEvent * (^deliver_key_event)(NSEvent *, KeyDestination, KeyDestination, void (^)(id<GLFWTerminalKeyInput>, NSEvent *)) = ^NSEvent *(NSEvent *event, KeyDestination dest, KeyDestination current, void (^handler)(id<GLFWTerminalKeyInput>, NSEvent *)) {
             switch (dest.kind) {
                 case KEY_DEST_APPKIT:
                     if (current.kind != KEY_DEST_TERMINAL) return event;
                     debug_input("key event dropped as its press went to a native view that no longer has focus\n");
                     return nil;
                 case KEY_DEST_TERMINAL: {
-                    NSWindow *w = [NSApp windowWithWindowNumber:(NSInteger)dest.id];
-                    if (w && w.contentView) [w.contentView performSelector:handler withObject:event];
+                    id<GLFWTerminalKeyInput> terminal = terminal_for_window_number((NSInteger)dest.id);
+                    if (terminal) handler(terminal, event);
                     else debug_input("key event ignored as the window its press went to is gone\n");
                     return nil;
                 }
@@ -967,14 +972,14 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               return nil;
           }
           const KeyDestination current = current_key_destination();
-          return deliver_key_event(event, key_destination_for_key_down(&key_destinations, [event keyCode], [event isARepeat], current), current, @selector(terminalKeyDown:));
+          return deliver_key_event(event, key_destination_for_key_down(&key_destinations, [event keyCode], [event isARepeat], current), current, ^(id<GLFWTerminalKeyInput> t, NSEvent *e) { [t terminalKeyDown:e]; });
         };
 
         NSEvent * (^keyup_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("----------------- key up --------------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
           const KeyDestination current = current_key_destination();
-          return deliver_key_event(event, key_destination_for_key_up(&key_destinations, [event keyCode], current), current, @selector(terminalKeyUp:));
+          return deliver_key_event(event, key_destination_for_key_up(&key_destinations, [event keyCode], current), current, ^(id<GLFWTerminalKeyInput> t, NSEvent *e) { [t terminalKeyUp:e]; });
         };
 
         NSEvent * (^flags_changed_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
@@ -993,7 +998,7 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               if (!([event modifierFlags] & input_source_switch_modifiers)) input_source_switch_modifiers = 0;
               return event;
           }
-          return deliver_key_event(event, dest, current, @selector(terminalFlagsChanged:));
+          return deliver_key_event(event, dest, current, ^(id<GLFWTerminalKeyInput> t, NSEvent *e) { [t terminalFlagsChanged:e]; });
         };
 
         _glfw.ns.keyUpMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyUp handler:keyup_block];
