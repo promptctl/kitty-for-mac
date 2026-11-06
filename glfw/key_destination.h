@@ -28,19 +28,20 @@ typedef struct { KeyDestination held[128]; } KeyDestinationTable;
 static const KeyDestination KEY_DEST_NOT_HELD = {KEY_DEST_NONE, 0};
 
 // The modifier keys that are held, each with the device-dependent flag that is
-// set while it is down, so the two keys of a pair are told apart. CapsLock is
-// absent: each of its flagsChanged events is a whole toggle, not a press or a
-// release, so it is never held.
-static const struct { unsigned short vk; uint64_t down_flag; } key_destination_held_modifiers[] = {
-    {0x38 /* kVK_Shift */, 0x00000002 /* NX_DEVICELSHIFTKEYMASK */},
-    {0x3C /* kVK_RightShift */, 0x00000004 /* NX_DEVICERSHIFTKEYMASK */},
-    {0x3B /* kVK_Control */, 0x00000001 /* NX_DEVICELCTLKEYMASK */},
-    {0x3E /* kVK_RightControl */, 0x00002000 /* NX_DEVICERCTLKEYMASK */},
-    {0x3A /* kVK_Option */, 0x00000020 /* NX_DEVICELALTKEYMASK */},
-    {0x3D /* kVK_RightOption */, 0x00000040 /* NX_DEVICERALTKEYMASK */},
-    {0x37 /* kVK_Command */, 0x00000008 /* NX_DEVICELCMDKEYMASK */},
-    {0x36 /* kVK_RightCommand */, 0x00000010 /* NX_DEVICERCMDKEYMASK */},
-    {0x3F /* kVK_Function */, 0x00800000 /* NSEventModifierFlagFunction */},
+// set while it is down, so the two keys of a pair are told apart, the flag of
+// the other key of its pair, and the device-independent flag of the pair.
+// CapsLock is absent: each of its flagsChanged events is a whole toggle, not a
+// press or a release, so it is never held.
+static const struct { unsigned short vk; uint64_t down_flag, other_flag, either_flag; } key_destination_held_modifiers[] = {
+    {0x38 /* kVK_Shift */, 0x00000002 /* NX_DEVICELSHIFTKEYMASK */, 0x00000004, 0x00020000 /* NX_SHIFTMASK */},
+    {0x3C /* kVK_RightShift */, 0x00000004 /* NX_DEVICERSHIFTKEYMASK */, 0x00000002, 0x00020000},
+    {0x3B /* kVK_Control */, 0x00000001 /* NX_DEVICELCTLKEYMASK */, 0x00002000, 0x00040000 /* NX_CONTROLMASK */},
+    {0x3E /* kVK_RightControl */, 0x00002000 /* NX_DEVICERCTLKEYMASK */, 0x00000001, 0x00040000},
+    {0x3A /* kVK_Option */, 0x00000020 /* NX_DEVICELALTKEYMASK */, 0x00000040, 0x00080000 /* NX_ALTERNATEMASK */},
+    {0x3D /* kVK_RightOption */, 0x00000040 /* NX_DEVICERALTKEYMASK */, 0x00000020, 0x00080000},
+    {0x37 /* kVK_Command */, 0x00000008 /* NX_DEVICELCMDKEYMASK */, 0x00000010, 0x00100000 /* NX_COMMANDMASK */},
+    {0x36 /* kVK_RightCommand */, 0x00000010 /* NX_DEVICERCMDKEYMASK */, 0x00000008, 0x00100000},
+    {0x3F /* kVK_Function */, 0x00800000 /* NSEventModifierFlagFunction */, 0, 0x00800000},
 };
 #define KEY_DESTINATION_HELD_MODIFIER_COUNT (sizeof(key_destination_held_modifiers) / sizeof(key_destination_held_modifiers[0]))
 
@@ -67,6 +68,17 @@ key_destination_for_key_up(KeyDestinationTable *t, unsigned short vk, KeyDestina
     return dest;
 }
 
+// Reads flags as the terminal's flagsChanged does (glfw/cocoa_window.m): when
+// the device-dependent flags disagree with the device-independent one, as in
+// events posted by remapping tools, the device-independent one wins.
+static inline bool
+key_destination_modifier_down(uint64_t flags, unsigned i) {
+    const bool target = (flags & key_destination_held_modifiers[i].down_flag) != 0;
+    const bool other = (flags & key_destination_held_modifiers[i].other_flag) != 0;
+    const bool either = (flags & key_destination_held_modifiers[i].either_flag) != 0;
+    return either != (target || other) ? either : target;
+}
+
 // flags is the event's modifierFlags, device-dependent bits included. Every
 // modifier whose flag is clear is released, whichever key this event is for,
 // so a release kitty never saw cannot leave a hold behind.
@@ -75,7 +87,7 @@ key_destination_for_flags_changed(KeyDestinationTable *t, unsigned short vk, uin
     KeyDestination dest = current;
     for (unsigned i = 0; i < KEY_DESTINATION_HELD_MODIFIER_COUNT; i++) {
         const unsigned short m = key_destination_held_modifiers[i].vk;
-        const bool down = (flags & key_destination_held_modifiers[i].down_flag) != 0;
+        const bool down = key_destination_modifier_down(flags, i);
         if (m == vk) dest = down ? key_destination_for_key_down(t, m, false, current) : key_destination_for_key_up(t, m, current);
         else if (!down) t->held[m] = KEY_DEST_NOT_HELD;
     }

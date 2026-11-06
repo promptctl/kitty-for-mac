@@ -907,29 +907,34 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
         last_keydown_shortcut_event.virtual_key_code = 0xffff;
         last_keydown_shortcut_event.input_source_switch_modifiers = 0;
         static KeyDestinationTable key_destinations;
-        // a shortcut's press is consumed, so it ends any hold of its key
+        // a shortcut's press is consumed, so it ends any hold of its key; a
+        // consumed repeat leaves the hold to the key's release
         void (^record_shortcut_keydown)(NSEvent *, NSEventModifierFlags) = ^(NSEvent *event, NSEventModifierFlags input_source_switch_modifiers) {
-            if (key_destination_in_table([event keyCode])) key_destinations.held[[event keyCode]] = KEY_DEST_NOT_HELD;
+            if (![event isARepeat] && key_destination_in_table([event keyCode])) key_destinations.held[[event keyCode]] = KEY_DEST_NOT_HELD;
             last_keydown_shortcut_event.virtual_key_code = [event keyCode];
             last_keydown_shortcut_event.input_source_switch_modifiers = input_source_switch_modifiers;
             last_keydown_shortcut_event.timestamp = [event timestamp];
         };
         // A key window that is not a terminal (an alert, the About panel) is AppKit's.
-        Class terminal_view_class = NSClassFromString(@"GLFWContentView");
+        bool (^is_terminal_window)(NSWindow *) = ^bool(NSWindow *w) {
+            for (_GLFWwindow *window = _glfw.windowListHead; window; window = window->next) if (window->ns.object == w) return true;
+            return false;
+        };
         KeyDestination (^current_key_destination)(void) = ^KeyDestination(void) {
             NSWindow *kw = [NSApp keyWindow];
             if (!kw) return KEY_DEST_NOT_HELD;
-            if (glfwCocoaNativeViewHasFocus() || ![kw.contentView isKindOfClass:terminal_view_class]) return (KeyDestination){KEY_DEST_APPKIT, 0};
+            if (glfwCocoaNativeViewHasFocus() || !is_terminal_window(kw)) return (KeyDestination){KEY_DEST_APPKIT, 0};
             return (KeyDestination){KEY_DEST_TERMINAL, (uintptr_t)[kw windowNumber]};
         };
         // Sends an event to the terminal it is destined for, or returns it to
         // AppKit, as the monitor's return value. current is the destination the
         // table was just given. An AppKit event while a terminal has focus is
-        // dropped, so a repeat or release never reaches the terminal.
+        // dropped, so a repeat or release never reaches the terminal; with no
+        // key window it goes back to AppKit.
         NSEvent * (^deliver_key_event)(NSEvent *, KeyDestination, KeyDestination, SEL) = ^NSEvent *(NSEvent *event, KeyDestination dest, KeyDestination current, SEL handler) {
             switch (dest.kind) {
                 case KEY_DEST_APPKIT:
-                    if (current.kind == KEY_DEST_APPKIT) return event;
+                    if (current.kind != KEY_DEST_TERMINAL) return event;
                     debug_input("key event dropped as its press went to a native view that no longer has focus\n");
                     return nil;
                 case KEY_DEST_TERMINAL: {
@@ -942,6 +947,7 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                     debug_input("key event ignored as no keyWindow present\n");
                     return nil;
             }
+            return nil;
         };
 
         NSEvent * (^keydown_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {

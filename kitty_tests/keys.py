@@ -971,3 +971,5 @@ class TestKeys(BaseTest):
         t([('flags', caps, CAPS, term), ('flags', caps, 0, field)], [term, field])
         # keys outside the table follow focus
         t([('down', 200, 0, term), ('up', 200, 0, field)], [term, field])
+        # flags with no device-dependent bits, as remapping tools post them: the device-independent flag decides
+        t([('flags', lshift, SHIFT, term), ('flags', lshift, 0, field)], [term, term])
