@@ -207,7 +207,7 @@ typedef struct _GLFWlibraryNS {
     IOHIDManagerRef hidManager;
     id unicodeData;
     id helper;
-    id keyUpMonitor, keyDownMonitor, flagsChangedMonitor;
+    id keyUpMonitor, keyDownMonitor, flagsChangedMonitor, menuActionObserver;
     id appleSettings;
     id nibObjects;
 

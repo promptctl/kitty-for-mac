@@ -385,7 +385,7 @@ ACTION(use_selection_for_find)
         Screen *screen = key_window_screen();
         return screen && screen_has_selection(screen);
     } else if (item.action == @selector(find_next:) || item.action == @selector(find_previous:)) {
-        // A disabled item leaves its key to the keymap, and there the find actions pass it on to the
+        // A disabled item leaves its key to the keymap (the key-down monitor in glfw/cocoa_init.m), and there the find actions pass it on to the
         // program when the window has nothing to search: an enabled one would swallow it.
         return boss_find_answer("find_can_search");
     } else if (item.action == @selector(use_selection_for_find:)) {
