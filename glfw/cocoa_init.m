@@ -995,7 +995,7 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
           debug_input("%s\n", [[event description] UTF8String]);
           const bool fn_shortcut = !_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed && is_apple_fn_global_shortcut(event);
           // the table follows every modifier change; one handed to AppKit below is AppKit's
-          const KeyDestination current = fn_shortcut ? (KeyDestination){KEY_DEST_APPKIT, 0} : current_key_destination();
+          const KeyDestination current = fn_shortcut || input_source_switch_modifiers ? (KeyDestination){KEY_DEST_APPKIT, 0} : current_key_destination();
           const KeyDestination dest = key_destination_for_flags_changed(&key_destinations, [event keyCode], [event modifierFlags], current);
           if (fn_shortcut) {
               debug_input("flagsChanged triggered global fn shortcut ignoring\n");
