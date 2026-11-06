@@ -41,7 +41,7 @@ class Cause(Enum):
     unrecognised = 'the pane shows something other than the views of Claude Code 2.1.299'
     refused = 'the query cannot be typed and checked'
     tmux = 'tmux could not be asked'
-    timed_out = 'the operation ran out of its time before the pane showed the view a key must produce, or the machine answered'
+    timed_out = 'the operation ran out of its time awaiting the pane to show the view a key must produce, or awaiting ps'
     unlocatable = 'the transcript file of a session with matches cannot be found'
     undeterminable = 'whether the pane is Claude Code could not be told'
     not_claude_pane = 'the pane is not Claude Code'
@@ -207,15 +207,17 @@ class ClaudeHost:
         try:
             cp = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,command='], capture_output=True, encoding='utf-8', errors='replace', check=True, timeout=timeout)
         except subprocess.TimeoutExpired:
-            raise ClaudeFindFailure(Cause.timed_out, f'ps did not answer within {max(timeout, 0):.2f}s') from None
+            raise ClaudeFindFailure(Cause.timed_out, f'ps did not answer within {timeout:.2f}s') from None
         except (OSError, subprocess.SubprocessError) as e:
             raise ClaudeFindFailure(Cause.undeterminable, f'cannot list processes: {e}') from e
         return cp.stdout
 
     def processes(self, op: TmuxOperation) -> dict[int, tuple[int, str]]:
         "pid -> (parent pid, command); the listing spends from the operation's budget like every other wait"
+        if (remaining := op.remaining()) <= 0:  # as TmuxOperation.tmux: a spent budget asks nothing
+            raise ClaudeFindFailure(Cause.timed_out, 'the find deadline was spent before ps was asked')
         ans: dict[int, tuple[int, str]] = {}
-        for line in self.ps(op.remaining()).splitlines():
+        for line in self.ps(remaining).splitlines():
             if m := re.match(r'\s*(\d+)\s+(\d+)\s+(.*)$', line):
                 ans[int(m[1])] = (int(m[2]), m[3])
         return ans

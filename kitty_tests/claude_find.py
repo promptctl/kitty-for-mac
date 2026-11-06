@@ -159,6 +159,11 @@ class RecogniserTest(BaseTest):
         clock[0] = 0.75
         recognise(self.pane(), ClaudeHost(ps=ps, environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': self.config}), op)
         self.ae(asked, [FIND_DEADLINE - 0.75])
+        clock[0] = FIND_DEADLINE + 1
+        with self.assertRaises(ClaudeFindFailure) as cm:
+            recognise(self.pane(), ClaudeHost(ps=ps, environ_of=lambda pid: {}), op)
+        self.ae(cm.exception.cause, Cause.timed_out)
+        self.ae(len(asked), 1, 'a spent budget spawns no ps')
 
     def test_the_config_dir_is_the_claude_process_own_not_kittys(self):
         # a claude started with its own CLAUDE_CONFIG_DIR writes there; kitty's environment is not consulted
@@ -339,13 +344,12 @@ class ClaudeFindIntegrationTest(BaseTest):
         # tmux ends a command at an argument that ends in a semicolon, and the escape for it is the key's own
         self.ae(Key('a;', literal=True).argv('%1')[-1], 'a\\;')
         self.ae(Key('Enter').argv('%1'), ['send-keys', '-t', '%1', 'Enter'])
-        with fake_claude('first', 'return x; done', 'x; last') as c:
+        with fake_claude('first', 'return x; done', 'x; last', 'a\\; b') as c:
             state = ClaudeFindState()
-            c.finder(state).find('x;')
-            self.ae(state.status, FindStatus(1, 2, FindCount.exact))
-            c.holding(state).clear()
-            c.finder(state).find(';')
-            self.ae(state.status, FindStatus(1, 2, FindCount.exact))
+            for query, total in (('x;', 2), (';', 3), ('a\\;', 1)):  # a backslash before the semicolon is the query's own
+                c.finder(state).find(query)
+                self.ae(state.status, FindStatus(1, total, FindCount.exact), query)
+                c.holding(state).clear()
 
     def test_stepping_re_searches_when_the_conversation_grew(self):
         with fake_claude(*CONVERSATION) as c:
