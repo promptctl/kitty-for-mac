@@ -13,7 +13,8 @@ Build from source
 
 |kitty| is designed to run from source, for easy hack-ability. All you need to
 get started is a C compiler and the `go compiler
-<https://go.dev/doc/install>`__ (on Linux, the :ref:`X11 development libraries <x11-dev-libs>` as well).
+<https://go.dev/doc/install>`__ (on macOS, `rustup <https://rustup.rs>`__ as well; on Linux, the
+:ref:`X11 development libraries <x11-dev-libs>`).
 After installing those, run the following commands::
 
     git clone https://github.com/kovidgoyal/kitty.git && cd kitty
@@ -105,6 +106,8 @@ Build-time dependencies:
 
 * ``gcc`` or ``clang``
 * ``swiftc`` from a Swift 6 toolchain, macOS only (Xcode or the Command Line Tools)
+* ``cargo`` from `rustup <https://rustup.rs>`__, macOS only (:file:`rust-toolchain.toml` pins the Rust version, rustup installs it).
+  Homebrew's ``rustup`` is keg-only, so put :file:`$(brew --prefix rustup)/bin` on :envvar:`PATH`.
 * ``simde``
 * ``shader-slang``
 * ``go`` >= _build_go_version (see :file:`go.mod` for go packages used during building)

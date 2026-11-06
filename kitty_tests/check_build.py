@@ -45,6 +45,17 @@ class TestBuild(BaseTest):
 
         self.assertEqual(cocoa_swift_wiring_probe('objc'), 'objc -> swift -> c')
 
+    def test_rust_wiring(self) -> None:
+        from kitty.constants import is_macos
+
+        if not is_macos:
+            self.skipTest('The Rust crate is linked on macOS only')
+        from kitty.fast_data_types import rust_count_codepoints
+
+        self.ae(rust_count_codepoints('kitty'), 5)
+        self.ae(rust_count_codepoints('héllo, 世界 🐱'), 11)
+        self.ae(rust_count_codepoints(''), 0)
+
     def test_slang_build(self) -> None:
         from kitty.shaders.slang import test_slang_build
 
