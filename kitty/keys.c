@@ -375,8 +375,9 @@ on_key_input(const GLFWkeyevent *ev) {
 #undef dispatch_key_event
 }
 
-// A key press a focused native view had no use for: it may trigger a
-// shortcut, and is never sent to the child. Returns true if a shortcut took it.
+// A key press bound for a focused native view: one it had no use for, or, while
+// a keyboard mode is active, one offered before it. It may trigger a shortcut,
+// and is never sent to the child. Returns true if a shortcut took it.
 bool
 on_native_view_key(const GLFWkeyevent *ev) {
     if (OPT(debug_keyboard)) debug("\x1b[33mon_native_view_key\x1b[m: glfw key: 0x%x native_code: 0x%x %s", ev->key, ev->native_key, format_mods(ev->mods));
@@ -389,7 +390,7 @@ on_native_view_key(const GLFWkeyevent *ev) {
         PyErr_Print();
         return false;
     }
-    PyObject *ret = PyObject_CallMethod(global_state.boss, "dispatch_possible_special_key", "O", ke);
+    PyObject *ret = PyObject_CallMethod(global_state.boss, "dispatch_native_view_key", "O", ke);
     Py_DECREF(ke);
     if (!ret) {
         PyErr_Print();

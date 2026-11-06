@@ -801,11 +801,12 @@ is_apple_fn_global_shortcut(NSEvent *event) {
 // Keyboard focus belongs to a native AppKit view (a text field, its field
 // editor, a button) rather than to the terminal. The terminal is the window's
 // content view; the window itself as first responder also counts as the
-// terminal, as it always has. A keyboard grab, or a kitty keyboard mode such as
-// a pending multi-key shortcut, sends every key to the terminal.
+// terminal, as it always has. A keyboard grab sends every key to the terminal.
+// A kitty keyboard mode, such as a pending multi-key shortcut, does not move
+// focus: the keydown monitor offers each key to kitty before the view instead.
 GLFWAPI bool
 glfwCocoaNativeViewHasFocus(void) {
-    if (_glfw.keyboard_grabbed || _glfw.ignoreOSKeyboardProcessing) return false;
+    if (_glfw.keyboard_grabbed) return false;
     NSWindow *kw = [NSApp keyWindow];
     if (!kw) return false;
     NSResponder *fr = [kw firstResponder];
@@ -922,9 +923,10 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
           debug_input("---------------- key down -------------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
           const bool native_focus = glfwCocoaNativeViewHasFocus();
+          // the menu's edit shortcuts depend on focus, so settle them before any menu matches the
+          // key: the check below, or AppKit's own pass over a key handed back to it
+          if (_glfw.ns.key_equivalent_focus_callback) _glfw.ns.key_equivalent_focus_callback(native_focus);
           if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed) {
-              // the menu's edit shortcuts depend on focus, so settle them before matching
-              if (_glfw.ns.key_equivalent_focus_callback) _glfw.ns.key_equivalent_focus_callback(native_focus);
               // first check if there is a global menu bar shortcut
               if ([[NSApp mainMenu] performKeyEquivalent:event]) {
                   debug_input("keyDown triggered global menu bar action ignoring\n");
@@ -945,6 +947,12 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                   record_shortcut_keydown(event, 0);
                   return event;
               }
+          }
+          // a keyboard mode sees every key first, as it does in the terminal; what it leaves goes to the view
+          if (_glfw.ignoreOSKeyboardProcessing && native_focus && _glfwCocoaOfferKeyToShortcuts(event)) {
+              debug_input("keyDown taken by a shortcut in a keyboard mode before the focused native view\n");
+              record_shortcut_keydown(event, 0);
+              return nil;
           }
           const KeyDestination current = current_key_destination();
           return deliver_key_event(event, key_destination_for_key_down(&key_destinations, [event keyCode], [event isARepeat], current), current, @selector(keyDown:));

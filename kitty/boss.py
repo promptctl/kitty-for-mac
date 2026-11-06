@@ -1867,11 +1867,18 @@ class Boss:
     def push_keyboard_mode(self, new_mode: str) -> None:
         self.mappings.push_keyboard_mode(new_mode)
 
-    def dispatch_possible_special_key(self, ev: KeyEvent) -> bool:
+    def _key_pressed_in_window(self, ev: KeyEvent) -> None:
         if (w := self.active_window) is not None and w.program_status and not is_modifier_key(ev.key):
             # the user pressing a key in the window means they have seen its finished or failed programs
             w.program_status_seen_by_user()
+
+    def dispatch_possible_special_key(self, ev: KeyEvent) -> bool:
+        self._key_pressed_in_window(ev)
         return self.mappings.dispatch_possible_special_key(ev)
+
+    def dispatch_native_view_key(self, ev: KeyEvent) -> bool:
+        self._key_pressed_in_window(ev)
+        return self.mappings.dispatch_native_view_key(ev)
 
     def on_shortcut_key_release(self, ev: KeyEvent) -> bool:
         window = self.active_window

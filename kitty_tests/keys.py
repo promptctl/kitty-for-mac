@@ -589,13 +589,20 @@ class TestKeys(BaseTest):
                 return self.options
 
             def __call__(self, *keys: str):
+                return self.press(*((k, self.dispatch_possible_special_key) for k in keys))
+
+            def native(self, *keys: str):
+                "keys pressed in a focused native view"
+                return self.press(*((k, self.dispatch_native_view_key) for k in keys))
+
+            def press(self, *keys):
                 self.actions = []
                 self.active_window.key_seqs = []
                 consumed = []
-                for key in keys:
+                for key, dispatch in keys:
                     sk = parse_shortcut(key)
                     ev = defines.KeyEvent(sk.key, 0, 0, sk.mods)
-                    consumed.append(self.dispatch_possible_special_key(ev))
+                    consumed.append(dispatch(ev))
                 return consumed
 
         tm = TM('map ctrl+a new_window_with_cwd')
@@ -694,6 +701,38 @@ class TestKeys(BaseTest):
             tm = GlobalTM()
             self.ae(tm('cmd+g', 'cmd+w'), [False, True])
             self.ae(tm.actions, ['find_next'])
+            # a key from a native view never went through kitty's terminal menu shortcuts: no global
+            # map applies to it, so it is neither swallowed nor run here, and the menu bar decides
+            self.ae(tm.native('cmd+g'), [False])
+            self.ae(tm.native('cmd+w'), [False])
+            af(tm.actions)
+            tm = GlobalTM('map cmd+k>n new_window')
+            self.ae(tm.native('cmd+k', 'cmd+w'), [True, False])
+            af(tm.actions)
+            af(tm.keyboard_mode_stack)
+
+        # a multi-key mapping begun in a native view sends nothing to the child: on failure the
+        # failing key is the view's, as though the prefix had never been pressed
+        tm = TM('map cmd+k>n new_window')
+        self.ae(tm.native('cmd+k', 'x'), [True, False])
+        af(tm.actions)
+        af(tm.active_window.key_seqs)
+        af(tm.keyboard_mode_stack)
+        af(tm.ignore_os_keyboard_processing)
+        self.ae(tm.native('cmd+k', 'n'), [True, True])
+        self.ae(tm.actions, ['new_window'])
+        # focus moving mid-sequence: only the keys that were the child's are replayed to it
+        self.ae(tm.press(('cmd+k', tm.dispatch_native_view_key), ('x', tm.dispatch_possible_special_key)), [True, False])
+        af(tm.active_window.key_seqs)
+        self.ae(tm.press(('cmd+k', tm.dispatch_possible_special_key), ('x', tm.dispatch_native_view_key)), [True, False])
+        self.ae(len(tm.active_window.key_seqs), 1)
+
+        # a mode entered from a native view: passthrough_and_end gives the key back once and ends
+        tm = TM('map --new-mode mw --on-unknown passthrough_and_end cmd+j', 'map --mode mw left neighboring_window left')
+        self.ae(tm.native('cmd+j', 'x'), [True, False])
+        self.ae(tm.actions, ['push_keyboard_mode mw'])
+        af(tm.keyboard_mode_stack)
+        af(tm.active_window.key_seqs)
 
     def test_copy_or_noop_passthrough(self):
         from kitty.boss import Boss
