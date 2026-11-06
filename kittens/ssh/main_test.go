@@ -240,4 +240,7 @@ func TestSSHChangeColors(t *testing.T) {
 	if ans := change(Config{Color_scheme_dark: b}, true); ans != "" {
 		t.Fatalf("Colors changed in tmux with only a variant color scheme: %#v", ans)
 	}
+	if _, err := change_colors(&Config{Color_scheme: filepath.Join(tdir, "missing.conf")}, true); err == nil {
+		t.Fatal("No error for missing color scheme file in tmux")
+	}
 }
