@@ -1006,6 +1006,14 @@ static void flush_focus_loss_text(_GLFWwindow *window);
     return YES;
 }
 
+// Key events stop reaching the terminal once a native view takes focus, so a
+// key pressed here and released there would otherwise stay held.
+- (BOOL)resignFirstResponder {
+    if (![super resignFirstResponder]) return NO;
+    if (window) _glfwInputReleaseHeldKeys(window);
+    return YES;
+}
+
 - (void)viewWillStartLiveResize {
     if (!window) return;
     window->ns.live_resize_in_progress = true;
