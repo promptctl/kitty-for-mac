@@ -209,7 +209,7 @@ class PrivateTmux:
         return TmuxClient(self.client_proc.pid, self.exe, ('-S', self.socket), None, os.environ.get('PATH'))
 
     def finder(self, state: TmuxFindState, op: TmuxOperation | None = None) -> TmuxFind:
-        return TmuxFind.resolving(self.client(), state, op or TmuxOperation())
+        return TmuxFind(self.client(), state, op or TmuxOperation())
 
 
 @contextmanager
@@ -433,8 +433,8 @@ class TmuxFindIntegrationTest(BaseTest):
                 argv = [a.replace('wait-for -S', 'display-message -p') if 'wait-for -S' in a else a for a in argv]
                 return tf.run_tmux(argv, env, timeout)
 
-            f = TmuxFind.resolving(client, state, TmuxOperation(run))
-            start = time.monotonic()
+            start = time.monotonic()  # the lookup is spent from the same budget as the read
+            f = TmuxFind(client, state, TmuxOperation(run))
             self.assertIsNone(f.program_selection_text())
             self.assertLess(time.monotonic() - start, FIND_DEADLINE + 1)
             # and the next read works
@@ -468,7 +468,7 @@ class TmuxFindIntegrationTest(BaseTest):
             state = TmuxFindState()
             client = t.client()
             dead = TmuxClient(2**22 + 5, client.exe, client.server_args, None, client.path)
-            TmuxFind.resolving(dead, state, TmuxOperation()).find('needle')
+            TmuxFind(dead, state, TmuxOperation()).find('needle')
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
             self.assertIsNone(state.held, 'no pane was reached')
 

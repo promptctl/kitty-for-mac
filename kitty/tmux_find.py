@@ -303,40 +303,36 @@ class TmuxFindState:
 
 
 class TmuxFind:
-    "Find through the tmux client in a window's foreground. A value built for one operation, on the budget of it, and for the one pane that operation resolved."
+    "Find through the tmux client in a window's foreground. A value built for one operation, on the budget of it, and for the one pane that operation finds."
 
-    def __init__(self, client: TmuxClient, state: TmuxFindState, op: TmuxOperation, pane: PaneRef | TmuxError) -> None:
+    def __init__(self, client: TmuxClient, state: TmuxFindState, op: TmuxOperation) -> None:
         self.client = client
         self.state = state
         self.op = op
-        self.pane = pane  # the failure to resolve it: raised when the search is asked to run
-
-    @classmethod
-    def resolving(cls, client: TmuxClient, state: TmuxFindState, op: TmuxOperation) -> 'TmuxFind':
-        "[LAW:one-source-of-truth] the one lookup of the client's pane for an operation: whoever routes on the pane and whoever searches it read this answer"
-        try:
-            pane: PaneRef | TmuxError = parse_pane(op.tmux(client, 'list-clients', '-F', CLIENT_FORMAT), client.pid)
-        except TmuxError as e:
-            pane = e
-        return cls(client, state, op, pane)
-
-    @classmethod
-    def unresolved(cls, client: TmuxClient, state: TmuxFindState, op: TmuxOperation) -> 'TmuxFind':
-        "A backend that asks tmux nothing: it answers whether a search can run, and ends what is held. Searching with it fails loudly."
-        return cls(client, state, op, TmuxError('built without asking tmux for the pane'))
+        self.pane: PaneRef | TmuxError | None = None  # not asked until something needs it
 
     @classmethod
     def holding(cls, state: TmuxFindState, op: TmuxOperation) -> 'TmuxFind | None':
         "The backend that cancels what a window left in copy mode, whatever its foreground is now"
-        return cls.unresolved(state.held.client, state, op) if state.held is not None else None
+        return cls(state.held.client, state, op) if state.held is not None else None
 
     def tmux(self, client: TmuxClient, *args: str) -> str:
         return self.op.tmux(client, *args)
 
-    def resolved(self) -> PaneRef:
-        if isinstance(self.pane, TmuxError):
-            raise self.pane
+    def lookup(self) -> PaneRef | TmuxError:
+        "[LAW:one-source-of-truth] the one list-clients of an operation: whoever routes on the pane and whoever searches it read this answer, so a pane switch inside tmux is followed by the next operation and never splits one"
+        if self.pane is None:
+            try:
+                self.pane = parse_pane(self.tmux(self.client, 'list-clients', '-F', CLIENT_FORMAT), self.client.pid)
+            except TmuxError as e:
+                self.pane = e
         return self.pane
+
+    def resolved(self) -> PaneRef:
+        pane = self.lookup()
+        if isinstance(pane, TmuxError):
+            raise TmuxError(str(pane), pane.timed_out) from pane
+        return pane
 
     def can_search(self) -> bool:
         return True
