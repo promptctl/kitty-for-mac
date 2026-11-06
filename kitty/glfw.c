@@ -614,6 +614,17 @@ key_callback(GLFWwindow *w, GLFWkeyevent *ev) {
     request_tick_callback();
 }
 
+#ifdef __APPLE__
+static bool
+native_view_shortcut_callback(GLFWwindow *w, GLFWkeyevent *ev) {
+    if (!set_callback_window(w)) return false;
+    const bool consumed = is_window_ready_for_callbacks() && on_native_view_key(ev);
+    global_state.callback_os_window = NULL;
+    request_tick_callback();
+    return consumed;
+}
+#endif
+
 // Sets the mouse position from window co-ordinates, converting to viewport
 // pixels and then to where custom shaders actually show the content under it
 void
@@ -2817,6 +2828,8 @@ glfw_init(PyObject UNUSED *self, PyObject *args) {
     if (ok) {
 #ifdef __APPLE__
         glfwSetCocoaURLOpenCallback(apple_url_open_callback);
+        glfwSetCocoaNativeViewShortcutCallback(native_view_shortcut_callback);
+        glfwSetCocoaKeyEquivalentFocusCallback(cocoa_set_edit_menu_focus);
 #else
         glfwSetDrawTextFunction(draw_text_callback);
 #endif

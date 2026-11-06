@@ -89,7 +89,8 @@ def generate_wrappers(glfw_header: str) -> None:
     void glfwCocoaRequestRenderFrame(GLFWwindow *w, GLFWcocoarenderframefun callback)
     bool glfwCocoaRecreateGLDrawable(GLFWwindow *w)
     bool glfwCocoaNativeViewHasFocus(void)
-    bool glfwCocoaNativeViewCanPerform(const char *action)
+    GLFWcocoanativeviewshortcutfun glfwSetCocoaNativeViewShortcutCallback(GLFWcocoanativeviewshortcutfun callback)
+    GLFWcocoakeyequivalentfocusfun glfwSetCocoaKeyEquivalentFocusCallback(GLFWcocoakeyequivalentfocusfun callback)
     GLFWcocoarenderframefun glfwCocoaSetWindowResizeCallback(GLFWwindow *w, GLFWcocoarenderframefun callback)
     void* glfwGetX11Display(void)
     unsigned long glfwGetX11Window(GLFWwindow* window)
@@ -156,6 +157,8 @@ typedef bool (* GLFWhandleurlopen)(const char*);
 typedef void (* GLFWapplicationwillfinishlaunchingfun)(bool);
 typedef bool (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
 typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
+typedef bool (* GLFWcocoanativeviewshortcutfun)(GLFWwindow*, GLFWkeyevent*);
+typedef void (* GLFWcocoakeyequivalentfocusfun)(bool);
 typedef void (*GLFWwaylandframecallbackfunc)(unsigned long long id);
 typedef void (*GLFWDBusnotificationcreatedfun)(unsigned long long, uint32_t, void*);
 typedef void (*GLFWDBusnotificationactivatedfun)(uint32_t, int, const char*);

@@ -429,6 +429,7 @@ void mouse_event(const int, int, int);
 void focus_in_event(void);
 void scroll_event(const GLFWScrollEvent *ev);
 void on_key_input(const GLFWkeyevent *ev);
+bool on_native_view_key(const GLFWkeyevent *ev);
 void request_window_attention(id_type, bool);
 void free_drag_source(void);
 locale_t get_c_locale(void);

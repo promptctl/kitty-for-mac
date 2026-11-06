@@ -68,6 +68,8 @@ typedef bool (*GLFWhandleurlopen)(const char *);
 typedef void (*GLFWapplicationwillfinishlaunchingfun)(bool);
 typedef bool (*GLFWcocoatogglefullscreenfun)(GLFWwindow *);
 typedef void (*GLFWcocoarenderframefun)(GLFWwindow *);
+typedef bool (*GLFWcocoanativeviewshortcutfun)(GLFWwindow *, GLFWkeyevent *);
+typedef void (*GLFWcocoakeyequivalentfocusfun)(bool);
 
 typedef VkFlags VkMacOSSurfaceCreateFlagsMVK;
 typedef VkFlags VkMetalSurfaceCreateFlagsEXT;
@@ -228,6 +230,10 @@ typedef struct _GLFWlibraryNS {
 
     // the callback to handle url open events
     GLFWhandleurlopen url_open_callback;
+    // offers a key a focused native view had no use for to the app's shortcuts
+    GLFWcocoanativeviewshortcutfun native_view_shortcut_callback;
+    // told whether a native view has focus just before the menu matches a key
+    GLFWcocoakeyequivalentfocusfun key_equivalent_focus_callback;
 
     // Active drag session (NSDraggingSession*) and view (NSView*)
     id drag_session, drag_view, drag_image;
@@ -278,4 +284,4 @@ void _glfwDispatchTickCallback(void);
 void _glfwCocoaPostEmptyEvent(void);
 
 uint32_t vk_to_unicode_key_with_current_layout(uint16_t keycode);
-uint32_t vk_code_to_unicode(uint8_t key_code);
+GLFWAPI bool glfwCocoaNativeViewHasFocus(void);

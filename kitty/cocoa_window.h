@@ -57,6 +57,7 @@ bool cocoa_alt_option_key_pressed(unsigned long);
 void cocoa_toggle_secure_keyboard_entry(void);
 void cocoa_hide(void);
 void cocoa_clear_global_shortcuts(void);
+void cocoa_set_edit_menu_focus(bool native_view_has_focus);
 void cocoa_hide_others(void);
 void cocoa_minimize(void *w);
 void cocoa_set_uncaught_exception_handler(void);
