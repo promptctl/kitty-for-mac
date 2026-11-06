@@ -4287,7 +4287,7 @@ class Boss:
     def ungrab_keyboard(self) -> None:
         grab_keyboard(False)
 
-    @ac('sc', 'Show the find bar of the active OS window and focus its search field, on macOS')
+    @ac('misc', 'Show the find bar of the active OS window and focus its search field, on macOS')
     def show_find_bar(self) -> None:
         if (osw_id := self.os_window_id_for_dispatch()) is not None:
             cocoa_show_find_bar_for_os_window(osw_id)

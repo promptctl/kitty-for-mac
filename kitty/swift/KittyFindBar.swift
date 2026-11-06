@@ -79,6 +79,10 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
     public override func rightMouseUp(with event: NSEvent) {}
     public override func otherMouseDown(with event: NSEvent) {}
     public override func otherMouseUp(with event: NSEvent) {}
+    public override func mouseDragged(with event: NSEvent) {}
+    public override func rightMouseDragged(with event: NSEvent) {}
+    public override func otherMouseDragged(with event: NSEvent) {}
+    public override func scrollWheel(with event: NSEvent) {}
 
     // Esc in the field. Handling it here also stops NSSearchField's default of clearing the text,
     // which the next Cmd+F shows again.
