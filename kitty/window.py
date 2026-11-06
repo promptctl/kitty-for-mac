@@ -3015,14 +3015,13 @@ class Window:
     def find_previous(self) -> bool | None:
         return self.find_step(True)
 
-    @ac('sc', 'Search the whole buffer for the selected text and step to it, on macOS. Does nothing without a selection.')
+    @ac('sc', 'Search the whole buffer for the selected text and step to it, on macOS. Without a selection the key goes to the program.')
     def use_selection_for_find(self) -> bool | None:
-        if not self.screen.is_main_linebuf():
+        if not self.screen.is_main_linebuf() or not (text := self.text_for_selection()):
             return True
-        if text := self.text_for_selection():
-            # the selection may be find's current match: it lands on the text the user points at
-            self.screen.find_disown_selection()
-            self.find(text)
+        # the selection may be find's current match: it lands on the text the user points at
+        self.screen.find_disown_selection()
+        self.find(text)
         return None
 
     @ac('sc', 'End the find: clear the match highlights and the selection find made, on macOS')

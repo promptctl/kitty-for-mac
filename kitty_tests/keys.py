@@ -679,6 +679,22 @@ class TestKeys(BaseTest):
         self.ae(tm.actions, ['push_keyboard_mode mw', 'new_window'])
         af(tm.ignore_os_keyboard_processing)
 
+        # a global shortcut's key reaches the keymap only when its menu item is disabled: an
+        # action that passes such keys on runs and decides, any other key is swallowed unrun
+        class GlobalTM(TM):
+            def set_cocoa_global_shortcuts(self, opts):
+                return {'find_next': parse_shortcut('cmd+g'), 'close_tab': parse_shortcut('cmd+w')}
+
+            def combine(self, action_definition: str) -> bool:
+                super().combine(action_definition)
+                return False  # the action passed the key on
+
+        from unittest.mock import patch
+        with patch('kitty.keys.grab_keyboard', return_value=False):
+            tm = GlobalTM()
+            self.ae(tm('cmd+g', 'cmd+w'), [False, True])
+            self.ae(tm.actions, ['find_next'])
+
     def test_copy_or_noop_passthrough(self):
         from kitty.boss import Boss
         from kitty.conf.utils import KeyAction
