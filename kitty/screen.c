@@ -3896,9 +3896,6 @@ main_buffer_view(const Screen *self) {
     };
 }
 
-bool
-screen_shows_main_buffer(const Screen *self) { return main_buffer_view(self).shows_main_buffer; }
-
 #ifdef __APPLE__
 static void pause_find_matches(Screen *self);
 #endif

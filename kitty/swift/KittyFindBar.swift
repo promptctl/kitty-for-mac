@@ -15,6 +15,13 @@ import AppKit
     func findBarClosed(_ window: NSWindow)
 }
 
+// How far a search's total can be trusted. Python's FindCount has the same values.
+@objc public enum KittyFindCount: Int {
+    case exact = 0
+    case partial = 1
+    case unavailable = 2
+}
+
 @MainActor
 @objc(KittyFindBar)
 public final class KittyFindBar: NSView, NSSearchFieldDelegate {
@@ -38,13 +45,17 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
 
     // Python owns the query and reports it with where the search stands: the current match's place
     // among the matches, 0 when none is current. A window without a bar has nothing to show it in.
-    @objc public static func update(in window: NSWindow, query: String, current: Int, total: Int) {
+    // count says how far the total can be trusted. The values are kitty/find_backends.py FindCount's.
+    @objc public static func update(in window: NSWindow, query: String, current: Int, total: Int, count: KittyFindCount) {
         guard let bar = existingBar(in: window) else { return }
         // typing in the field is what usually changed the query, and rewriting the text would reset its cursor
         if bar.field.stringValue != query { bar.field.stringValue = query }
-        bar.status.stringValue = switch (current, total) {
-        case (_, 0): bar.field.stringValue.isEmpty ? "" : "0 of 0"
-        case (0, _): "\(total) matches"
+        bar.status.stringValue = switch (count, current, total) {
+        // a search that could not be made is not a search that found nothing
+        case (.unavailable, _, _): "Search unavailable"
+        case (_, _, 0): bar.field.stringValue.isEmpty ? "" : "0 of 0"
+        case (.partial, _, _): "\(total)+ matches"
+        case (_, 0, _): "\(total) matches"
         default: "\(current) of \(total)"
         }
     }

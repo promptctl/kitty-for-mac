@@ -272,6 +272,17 @@ key_window_screen(void) {
     return tab->num_windows > tab->active_window ? tab->windows[tab->active_window].render_data.screen : NULL;
 }
 
+// [LAW:single-enforcer] Whether a find key acts in the key window is the Python find backend's
+// answer, the one the find actions themselves use, so the menu and the keymap cannot disagree.
+static bool
+boss_find_answer(const char *method) {
+    OSWindow *osw = current_os_window();
+    if (!osw || ![NSApp keyWindow] || !global_state.boss) return false;
+    RAII_PyObject(ret, PyObject_CallMethod(global_state.boss, method, "K", (unsigned long long)osw->id));
+    if (!ret) { PyErr_Print(); return false; }
+    return ret == Py_True;
+}
+
 // [LAW:single-enforcer] A call into Boss made from AppKit can run outside GLFW's input
 // callbacks and pending actions, both of which request the tick a frame is drawn on, so this
 // requests it: whatever the call changed on screen is drawn now, not on the next unrelated
@@ -373,11 +384,12 @@ ACTION(use_selection_for_find)
     } else if (item.action == @selector(copy_or_noop:)) {
         Screen *screen = key_window_screen();
         return screen && screen_has_selection(screen);
-    } else if (item.action == @selector(find_next:) || item.action == @selector(find_previous:) || item.action == @selector(use_selection_for_find:)) {
-        // A disabled item leaves its key to the keymap, and there the find actions pass it on
-        // to the program while the alternate screen shows: an enabled one would swallow it.
-        Screen *screen = key_window_screen();
-        return screen && screen_shows_main_buffer(screen) && (item.action != @selector(use_selection_for_find:) || screen_has_selection(screen));
+    } else if (item.action == @selector(find_next:) || item.action == @selector(find_previous:)) {
+        // A disabled item leaves its key to the keymap, and there the find actions pass it on to the
+        // program when the window has nothing to search: an enabled one would swallow it.
+        return boss_find_answer("find_can_search");
+    } else if (item.action == @selector(use_selection_for_find:)) {
+        return boss_find_answer("find_has_selection");
     }
     return YES;
 }
@@ -1915,8 +1927,8 @@ cocoa_show_find_bar(void *w) {
 }
 
 void
-cocoa_update_find_bar(void *w, const char *query, long current, long total) {
-    [KittyFindBar updateIn:(NSWindow *)w query:@(query) current:current total:total];
+cocoa_update_find_bar(void *w, const char *query, long current, long total, long count) {
+    [KittyFindBar updateIn:(NSWindow *)w query:@(query) current:current total:total count:(KittyFindCount)count];
 }
 
 long

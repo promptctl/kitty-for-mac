@@ -105,6 +105,7 @@ from .fast_data_types import (
     update_window_visibility,
     wakeup_main_loop,
 )
+from .find_backends import EngineFind, FindBackend
 from .keys import keyboard_mode_name, mod_mask
 from .notifications import NotificationManager
 from .options.types import Options
@@ -113,6 +114,7 @@ from .program_status import ProgramStatus
 from .progress import Progress
 from .rgb import to_color
 from .terminfo import get_capabilities
+from .tmux_find import TmuxFind, TmuxFindState, tmux_client_of
 from .types import MouseEvent, NeighborsMap, OverlayType, WindowGeometry, ac, run_once
 from .typing_compat import BossType, ChildType, EdgeLiteral, TabType, TypedDict
 from .utils import (
@@ -819,6 +821,8 @@ class Window:
         # [LAW:one-source-of-truth] the last find query: the engine's copy is derived from it and the
         # find bar's field shows it
         self.find_query = ''
+        self.engine_find = EngineFind(self)
+        self.tmux_find_state = TmuxFindState()
         self.kitten_result_processors: list[Callable[['Window', Any], None]] = []
         self.child_is_launched = False
         self.restored_scrollback = b''
@@ -2245,6 +2249,11 @@ class Window:
     def destroy(self) -> None:
         from .remote_control import abort_active_streams_from
 
+        # [LAW:no-ambient-temporal-coupling] the one place every closing window passes: the pane it put
+        # in copy mode lives in a tmux that outlives it, and nothing after this can reach it. The
+        # engine's search dies with the screen.
+        if tmux := TmuxFind.holding(self.tmux_find_state):
+            tmux.clear()
         self.call_watchers(self.watchers.on_close, {})
         self.destroyed = True
         abort_active_streams_from(window_id=self.id)
@@ -3008,39 +3017,71 @@ class Window:
     def scroll_to_mark(self, prev: bool = True, mark: int = 0) -> None:
         self.screen.scroll_to_next_mark(mark, prev)
 
+    def find_backend(self) -> FindBackend:
+        "The backend that starts or steps a search now: the one that sees what the user is looking at"
+        # a tmux client draws on the alternate screen, where the engine sees only what is visible; the
+        # pane's history is in tmux
+        if client := tmux_client_of(self.child.foreground_processes):
+            return TmuxFind(client, self.tmux_find_state)
+        return self.engine_find
+
+    def find_holder(self) -> FindBackend:
+        "The backend whose search the bar reports: the engine while it searches, else the tmux pane this window put in copy mode"
+        tmux = TmuxFind.holding(self.tmux_find_state)
+        return tmux if tmux is not None and not self.engine_find.searching() else self.engine_find
+
+    def end_finds(self, keep: FindBackend | None = None) -> None:
+        # [LAW:one-source-of-truth] a window never holds two searches, and whatever the foreground is
+        # now, ending a search ends the one that is on screen. Each clear does nothing for a backend
+        # that holds nothing.
+        for backend in (self.engine_find, TmuxFind.holding(self.tmux_find_state)):
+            if backend is not None and type(backend) is not type(keep):
+                backend.clear()
+        # a tmux search that failed before it reached a pane holds nothing to clear, but is still reported
+        if type(keep) is not TmuxFind and self.tmux_find_state.held is None:
+            self.tmux_find_state.rest()
+
+    def find_backend_to_search(self) -> FindBackend | None:
+        "The backend a search runs in now, with the other one's search ended; None when the window has nothing to search"
+        backend = self.find_backend()
+        if not backend.can_search():
+            return None
+        self.end_finds(backend)
+        return backend
+
     # [LAW:single-enforcer] the find actions are what the user does, so they and only they end
     # a paused render, as a selection the user makes does: a program's synchronized-output pause
     # would otherwise hide the match they moved to. The Screen find_* primitives do not, since
     # automatic callers reach them too and must not tear a paused frame.
     def find_step(self, backwards: bool) -> bool | None:
-        # Esc ended the engine's search but not the query: stepping searches for it again
-        if self.find_query and not self.screen.find_status()[1]:
-            self.set_find_query(self.find_query)
-        return self.step_to_match(backwards)
-
-    def set_find_query(self, text: str) -> None:
-        "Search the whole buffer for text, case-insensitively unless it has an uppercase letter"
-        # the alternate screen shows none of the buffer, so there is nothing to search or to show
-        if not self.screen.is_main_linebuf():
-            return
-        self.screen.find_set_query(text, text == text.lower())
-        # the engine took it: a query it rejects never becomes the one the bar shows and stepping repeats
-        self.find_query = text
-
-    def step_to_match(self, backwards: bool) -> bool | None:
-        if not self.screen.is_main_linebuf():
+        if (backend := self.find_backend_to_search()) is None:
             return True
-        self.finish_scroll_animation()
-        # with nothing to move to there is nothing new to show, so a paused frame stays paused
-        if self.screen.find_step(backwards, self.find_bar_top_inset()) is not None:
-            self.screen.pause_rendering(False)
+        backend.step(self.find_query, backwards)
         self.push_find_bar()
         return None
 
+    def set_find_query(self, text: str) -> None:
+        "Bring the search in line with text, without stepping"
+        if (backend := self.find_backend_to_search()) is None:
+            return
+        backend.restore(text)
+        # the backend took it: a query it rejects never becomes the one the bar shows and stepping repeats
+        self.find_query = text
+
     def find(self, text: str) -> None:
         "Search the whole buffer for text and step to the first match"
-        self.set_find_query(text)
-        self.step_to_match(False)
+        if (backend := self.find_backend_to_search()) is None:
+            return
+        backend.find(text)
+        self.find_query = text
+        self.push_find_bar()
+
+    def find_selection_text(self) -> str | None:
+        "What Cmd+E searches for: the selection of the program in the window, else kitty's own; None when there is none"
+        backend = self.find_backend()
+        if not backend.can_search():
+            return None
+        return backend.program_selection_text() or self.text_for_selection() or None
 
     def find_bar_top_inset(self) -> int:
         "The rows at the top of this window the find bar covers: a match is revealed below them"
@@ -3053,12 +3094,16 @@ class Window:
     # to its OS window and shows the search of that window's active kitty window.
     # The status is read for the bar even when another window's search is the one it shows, so a
     # frame stops reporting a change this window has handled.
+    # The holder of the search is read from the backends' own state, never from the foreground
+    # process: this runs every frame while a search streams, and a bare window pays nothing for tmux.
     def push_find_bar(self) -> None:
         if not is_macos:
             return
-        current, total, _ = self.screen.find_status_for_bar()
+        engine = self.engine_find.status()
+        tmux = self.tmux_find_state
+        status = tmux.status if tmux.reporting() and not self.engine_find.searching() else engine
         if (tm := get_boss().os_window_map.get(self.os_window_id)) and tm.active_window is self:
-            cocoa_update_find_bar(self.os_window_id, self.find_query, current, total)
+            cocoa_update_find_bar(self.os_window_id, self.find_query, status.current, status.total, int(status.count))
 
     def find_status_changed(self) -> None:
         "The screen's callback for the find status changing as the buffer it searches changes"
@@ -3073,12 +3118,12 @@ class Window:
         # the Screen primitive, not the find_clear action: this is no user ending a paused render
         for tab in tm:
             for w in tab:
-                if w is not self and w.screen.find_status()[1]:
-                    w.screen.find_clear()
+                if w is not self:
+                    w.end_finds()
         if (bar := cocoa_find_bar_state(self.os_window_id)) is None:
             return
         shown, query = bar
-        searching = self.screen.find_status()[1] and self.find_query == query
+        searching = self.find_holder().searching() and self.find_query == query
         # a hidden bar searches nothing, but Cmd+G in this window uses the query the bar kept. A
         # full-screen program takes no search, so the bar reports its 0 matches for the query
         self.find_query = query
@@ -3096,7 +3141,7 @@ class Window:
 
     @ac('sc', 'Search the whole buffer for the selected text and step to it, on macOS. Without a selection the key goes to the program.')
     def use_selection_for_find(self) -> bool | None:
-        if not self.screen.is_main_linebuf() or not (text := self.text_for_selection()):
+        if (text := self.find_selection_text()) is None:
             return True
         # the selection may be find's current match: it lands on the text the user points at
         self.screen.find_disown_selection()
@@ -3106,7 +3151,7 @@ class Window:
     @ac('sc', 'End the find: clear the match highlights and the selection find made, on macOS')
     def find_clear(self) -> None:
         self.screen.pause_rendering(False)
-        self.screen.find_clear()
+        self.end_finds()
         self.push_find_bar()
 
     @ac(

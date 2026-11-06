@@ -871,9 +871,10 @@ def cocoa_minimize_os_window(os_window_id: Optional[int] = None) -> None:
 def cocoa_show_find_bar_for_os_window(os_window_id: int = 0) -> None:
     pass
 
-def cocoa_update_find_bar(os_window_id: int, query: str, current: int, total: int) -> None:
+def cocoa_update_find_bar(os_window_id: int, query: str, current: int, total: int, count: int) -> None:
     """Show the query in the OS window's find bar field and "current of total" beside it; nothing
-    when it has no bar. macOS only."""
+    when it has no bar. count is a FindCount: whether total is exact, partial or unavailable.
+    macOS only."""
     pass
 
 def cocoa_find_bar_covered_pixels(os_window_id: int) -> int:
