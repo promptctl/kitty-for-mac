@@ -4,7 +4,7 @@
 
 mod find;
 
-use find::{FindCellSpan, FindEngine, FindMatch};
+use find::{Direction, FindCellSpan, FindEngine, FindMatch, FindPos, FindStatus};
 
 /// kitty/find.h's FindLogicalLine: the walker's view of one logical line.
 #[repr(C)]
@@ -139,14 +139,39 @@ pub unsafe extern "C" fn kitty_rs_find_set_current(engine: *mut FindEngine, m: F
     unsafe { &mut *engine }.set_current(m)
 }
 
-/// Writes the current match to `out`; false, writing nothing, when there is none.
+/// Steps to the next match, or the previous when `backwards`, writing it to `out`; false,
+/// writing nothing, when there are no matches. A bool crosses the ABI rather than Direction:
+/// a C value outside a Rust enum's variants is undefined behaviour.
 ///
 /// # Safety
 /// `engine` is live and `out` is writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kitty_rs_find_current(engine: *const FindEngine, out: *mut FindMatch) -> bool {
+pub unsafe extern "C" fn kitty_rs_find_step(
+    engine: *mut FindEngine,
+    backwards: bool,
+    from_start: FindPos,
+    from_end: FindPos,
+    out: *mut FindMatch,
+) -> bool {
+    let direction = if backwards { Direction::Previous } else { Direction::Next };
     // SAFETY: the caller's contract above.
-    unsafe { &*engine }.current().map(|m| unsafe { *out = m }).is_some()
+    unsafe { &mut *engine }.step(direction, from_start..from_end).map(|m| unsafe { *out = m }).is_some()
+}
+
+/// # Safety
+/// `engine` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_end_current(engine: *mut FindEngine) {
+    // SAFETY: the caller's contract above.
+    unsafe { &mut *engine }.end_current();
+}
+
+/// # Safety
+/// `engine` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_status(engine: *const FindEngine) -> FindStatus {
+    // SAFETY: the caller's contract above.
+    unsafe { &*engine }.status()
 }
 
 #[cfg(test)]

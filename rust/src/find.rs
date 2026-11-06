@@ -23,6 +23,43 @@ pub struct FindMatch {
     pub end_x: u32,
 }
 
+/// A cell position in the buffer, ordered as a match's start is: by line, then column.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FindPos {
+    pub line: u64,
+    pub x: u32,
+}
+
+impl FindMatch {
+    fn start(&self) -> FindPos {
+        FindPos { line: self.abs_start_line, x: self.start_x }
+    }
+}
+
+/// "Next" is later in the buffer, "Previous" earlier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Next,
+    Previous,
+}
+
+/// The match the user is on, and whether the step that reached it wrapped past an end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Current {
+    m: FindMatch,
+    wrapped: bool,
+}
+
+/// Where the user stands in the matches: `current` is 1-based, 0 when there is none.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindStatus {
+    pub current: usize,
+    pub total: usize,
+    pub wrapped: bool,
+}
+
 #[derive(Default)]
 pub struct FindEngine {
     /// None is the empty query: there is nothing to find, so every line yields no match.
@@ -36,7 +73,7 @@ pub struct FindEngine {
     /// Counts the changes to `matches()`, so a renderer can tell that what it drew is stale.
     generation: u64,
     /// The match the user is on: always one of `matches()`.
-    current: Option<FindMatch>,
+    current: Option<Current>,
 }
 
 impl FindEngine {
@@ -102,7 +139,7 @@ impl FindEngine {
     // when the list did, and a current match the edit removed is no longer current.
     fn changed(&mut self, entries: usize) {
         self.generation += u64::from(entries > 0);
-        self.current = self.current.filter(|c| self.matches().binary_search(c).is_ok());
+        self.current = self.current.filter(|c| self.matches().binary_search(&c.m).is_ok());
     }
 
     pub fn matches(&self) -> &[FindMatch] {
@@ -126,12 +163,47 @@ impl FindEngine {
     /// A match names itself by its absolute coordinates, which eviction does not move.
     pub fn set_current(&mut self, m: FindMatch) -> bool {
         let found = self.matches().binary_search(&m).is_ok();
-        self.current = found.then_some(m).or(self.current);
+        self.current = found.then_some(Current { m, wrapped: false }).or(self.current);
         found
     }
 
     pub fn current(&self) -> Option<FindMatch> {
-        self.current
+        self.current.map(|c| c.m)
+    }
+
+    pub fn end_current(&mut self) {
+        self.current = None;
+    }
+
+    /// Makes the match one step from the current one the current match and returns it, None
+    /// when there are no matches. With no current match the step starts from `from`, where
+    /// the user is looking: Next takes the first match starting in it or after, Previous the
+    /// last starting before its end. Past either end it wraps, and status() says so.
+    pub fn step(&mut self, direction: Direction, from: std::ops::Range<FindPos>) -> Option<FindMatch> {
+        self.current = self.step_target(direction, from);
+        self.current()
+    }
+
+    fn step_target(&self, direction: Direction, from: std::ops::Range<FindPos>) -> Option<Current> {
+        let all = self.matches();
+        // the count of matches before the step's start, whichever way it goes
+        let before = match (self.current, direction) {
+            (Some(c), Direction::Next) => all.partition_point(|m| *m <= c.m),
+            (Some(c), Direction::Previous) => all.partition_point(|m| *m < c.m),
+            (None, Direction::Next) => all.partition_point(|m| m.start() < from.start),
+            (None, Direction::Previous) => all.partition_point(|m| m.start() < from.end),
+        };
+        let (target, wrapped) = match direction {
+            Direction::Next => all.get(before).map_or((all.first(), true), |m| (Some(m), false)),
+            Direction::Previous => before.checked_sub(1).map_or((all.last(), true), |i| (all.get(i), false)),
+        };
+        target.map(|&m| Current { m, wrapped })
+    }
+
+    pub fn status(&self) -> FindStatus {
+        let all = self.matches();
+        let current = self.current.map_or(0, |c| all.binary_search(&c.m).expect("the current match is one of the matches") + 1);
+        FindStatus { current, total: all.len(), wrapped: self.current.is_some_and(|c| c.wrapped) }
     }
 }
 
@@ -351,6 +423,96 @@ mod tests {
         e.set_current(e.matches()[0]);
         e.set_query("x", false).unwrap();
         assert_eq!(e.current(), None, "a new query ends it");
+        let mut e = engine_with_one_match_per_line(2);
+        e.set_current(e.matches()[1]);
+        e.end_current();
+        assert_eq!(e.current(), None);
+        assert_eq!(e.matches().len(), 2, "ending the current match leaves the matches");
+    }
+
+    fn pos(line: u64, x: u32) -> FindPos {
+        FindPos { line, x }
+    }
+
+    /// Lines 0 and 1: "ab ab" wraps onto "ab", so its second match spans both rows; line 2
+    /// holds a wide char before the match.
+    fn engine_for_steps() -> (FindEngine, Vec<FindMatch>) {
+        let mut e = FindEngine::default();
+        e.set_query("ab", false).unwrap();
+        let (text, cells) = line(&["ab a", "b ab"], narrow);
+        e.feed_line(0, &text, &cells);
+        let (text, cells) = line(&["中ab"], |c| if c == '中' { 2 } else { 1 });
+        e.feed_line(2, &text, &cells);
+        let all = e.matches().to_vec();
+        assert_eq!(all, [m(0, 0, 0, 1), m(0, 3, 1, 0), m(1, 2, 1, 3), m(2, 2, 2, 3)]);
+        (e, all)
+    }
+
+    const EVERYWHERE: std::ops::Range<FindPos> = FindPos { line: 0, x: 0 }..FindPos { line: u64::MAX, x: 0 };
+
+    #[test]
+    fn steps_follow_buffer_order_and_wrap_at_both_ends() {
+        let (mut e, all) = engine_for_steps();
+        let walk = |e: &mut FindEngine, d| (0..all.len() + 1).map(|_| (e.step(d, EVERYWHERE).unwrap(), e.status().wrapped)).collect::<Vec<_>>();
+        let forward = walk(&mut e, Direction::Next);
+        assert_eq!(forward, [(all[0], false), (all[1], false), (all[2], false), (all[3], false), (all[0], true)]);
+        let back = walk(&mut e, Direction::Previous);
+        assert_eq!(back, [(all[3], true), (all[2], false), (all[1], false), (all[0], false), (all[3], true)]);
+    }
+
+    #[test]
+    fn with_no_current_match_a_step_starts_from_where_the_user_looks() {
+        let (mut e, all) = engine_for_steps();
+        // Next takes the first match starting in the range, Previous the last starting before its end
+        assert_eq!(e.step(Direction::Next, pos(0, 3)..pos(1, 3)), Some(all[1]));
+        e.set_query("ab", false).unwrap();
+        let (text, cells) = line(&["ab a", "b ab"], narrow);
+        e.feed_line(0, &text, &cells);
+        assert_eq!(e.step(Direction::Previous, pos(0, 3)..pos(1, 3)), Some(all[2]));
+        assert!(!e.status().wrapped);
+        // nothing at or after the start wraps to the first; nothing before the end wraps to the last
+        let mut e = engine_for_steps().0;
+        assert_eq!(e.step(Direction::Next, pos(3, 0)..pos(5, 0)), Some(all[0]));
+        assert!(e.status().wrapped);
+        let mut e = engine_for_steps().0;
+        assert_eq!(e.step(Direction::Previous, pos(0, 0)..pos(0, 0)), Some(all[3]));
+        assert!(e.status().wrapped);
+        // once there is a current match, the range plays no part
+        assert_eq!(e.step(Direction::Previous, pos(0, 0)..pos(0, 0)), Some(all[2]));
+    }
+
+    #[test]
+    fn with_no_matches_a_step_finds_nothing() {
+        let mut e = FindEngine::default();
+        assert_eq!(e.step(Direction::Next, EVERYWHERE), None);
+        e.set_query("zz", false).unwrap();
+        let (text, cells) = line(&["ab"], narrow);
+        e.feed_line(0, &text, &cells);
+        assert_eq!(e.step(Direction::Previous, EVERYWHERE), None);
+        assert_eq!(e.status(), FindStatus { current: 0, total: 0, wrapped: false });
+    }
+
+    #[test]
+    fn the_status_counts_the_current_match_among_the_live_ones() {
+        let (mut e, all) = engine_for_steps();
+        assert_eq!(e.status(), FindStatus { current: 0, total: 4, wrapped: false });
+        e.step(Direction::Previous, EVERYWHERE);
+        assert_eq!(e.status(), FindStatus { current: 4, total: 4, wrapped: false });
+        // setting the current match directly is not a wrap
+        e.set_current(all[2]);
+        assert_eq!(e.status(), FindStatus { current: 3, total: 4, wrapped: false });
+        // eviction counts from the oldest live match
+        e.evict_before(1);
+        assert_eq!(e.status(), FindStatus { current: 1, total: 2, wrapped: false });
+        // a step that wraps, then one that does not, clears the flag
+        e.step(Direction::Previous, EVERYWHERE);
+        assert!(e.status().wrapped);
+        e.step(Direction::Previous, EVERYWHERE);
+        assert_eq!(e.status(), FindStatus { current: 1, total: 2, wrapped: false });
+        // and so does losing the current match
+        e.step(Direction::Previous, EVERYWHERE);
+        e.drop_lines_from(0);
+        assert_eq!(e.status(), FindStatus { current: 0, total: 0, wrapped: false });
     }
 
     #[test]

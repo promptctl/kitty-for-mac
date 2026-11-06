@@ -1275,6 +1275,26 @@ class Screen:
         screen shows. macOS only."""
         pass
 
+    def find_step(self, backwards: bool) -> tuple[int, int, int, int] | None:
+        """Make the next match, or the previous one when backwards, the current match and the
+        selection, scrolling it to the middle of the screen when it is not wholly on screen, and
+        return it; None when there are no matches. From the current match it steps past it,
+        wrapping at either end. With none it starts where the user is looking: their selection,
+        else the screen. A selection the user makes or changes ends the current match.
+        RuntimeError while the alternate screen shows. macOS only."""
+        pass
+
+    def find_disown_selection(self) -> None:
+        """Make the selection the user's even while it shows find's current match, so a new
+        query leaves it and the next step starts from it. macOS only."""
+        pass
+
+    def find_status(self) -> tuple[int, int, bool]:
+        """(current, total, wrapped): the current match's 1-based place among the matches, 0
+        when there is none; how many there are; whether the step that reached it wrapped past
+        an end. macOS only."""
+        pass
+
     def find_count(self) -> int:
         """The number of matches find_set_query found, less those whose lines have since
         left the history ring. macOS only."""

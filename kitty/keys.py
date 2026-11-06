@@ -88,6 +88,10 @@ def shortcut_matches(s: SingleKey, ev: KeyEvent) -> bool:
     return False
 
 
+# Their menu items are disabled exactly when the key belongs to the program (no selection to
+# copy, the alternate screen showing), and the actions say so by passing the key on.
+actions_that_pass_keys_on = frozenset({'copy_or_noop', 'find_next', 'find_previous', 'use_selection_for_find'})
+
 class Mappings:
     "Manage all keyboard mappings"
 
@@ -214,17 +218,12 @@ class Mappings:
         mode = self.keyboard_modes[''] if is_root_mode else self.keyboard_mode_stack[-1]
         key_action = get_shortcut(mode.keymap, ev)
         if key_action is None and self.global_shortcuts_map and (global_key_action := get_shortcut(self.global_shortcuts_map, ev)) is not None:
-            if grab_keyboard(None):
-                # the shortcuts in the global menubar will have been bypassed so trigger them here
+            # the shortcuts in the global menubar will have been bypassed so trigger them here;
+            # otherwise the key is here because its menu item is disabled, which swallows it
+            # unless the action is one that passes a key it has no use for on to the program
+            if grab_keyboard(None) or all(a.definition in actions_that_pass_keys_on for a in global_key_action):
                 key_action = global_key_action
             else:
-                # On macOS copy_or_noop is mapped to Cmd+C by default and gets
-                # disabled when there is no copyable text so special case it
-                # and pass it on.
-                if is_macos and (w := get_boss().active_window):
-                    for action in global_key_action:
-                        if action.definition == 'copy_or_noop' and not w.screen.has_selection():
-                            return False
                 return True
         if key_action is None:
             if is_modifier_key(ev.key):

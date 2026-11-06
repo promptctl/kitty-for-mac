@@ -3891,6 +3891,9 @@ main_buffer_view(const Screen *self) {
 }
 
 bool
+screen_shows_main_buffer(const Screen *self) { return main_buffer_view(self).shows_main_buffer; }
+
+bool
 screen_pause_rendering(Screen *self, bool pause, int for_in_ms) {
     if (!pause) {
         if (!self->paused_rendering.expires_at) return false;
@@ -4515,9 +4518,13 @@ screen_is_cell_selected(Screen *self, index_type x, index_type y) {
 // [LAW:single-enforcer] every read of the engine goes through here, so no reader sees a
 // match whose line has left the history ring: the ring's own counter decides what is gone.
 // Eviction can move the match list, so a pointer into it is good only until the next call.
+// [LAW:one-source-of-truth] and no reader sees a current match other than the one find's
+// selection shows: once the user changes that selection or anything clears it, find has no
+// current match, so the next step starts from where the user now is.
 static FindEngine*
 screen_find_engine(Screen *self) {
     kitty_rs_find_evict_before(self->find_engine, self->historybuf->abs_oldest_line);
+    if (!self->selections.count || !self->selections.items->is_find_match) kitty_rs_find_end_current(self->find_engine);
     return self->find_engine;
 }
 
@@ -7076,27 +7083,101 @@ find_clear(Screen *self, PyObject *o UNUSED) {
     Py_RETURN_NONE;
 }
 
+static PyObject*
+find_match_as_tuple(FindMatch m) {
+    return Py_BuildValue("KIKI", (unsigned long long)m.abs_start_line, m.start_x, (unsigned long long)m.abs_end_line, m.end_x);
+}
+
+// A selection is made on the cells shown, and the alternate screen shows none of the main
+// buffer's: false, with a Python error set, while it shows.
+static bool
+main_buffer_view_for_selecting(Screen *self, MainBufferView *view) {
+    *view = main_buffer_view(self);
+    if (!view->shows_main_buffer) PyErr_SetString(PyExc_RuntimeError, "A find match cannot be selected while the alternate screen shows");
+    return view->shows_main_buffer;
+}
+
+// The current match, which the engine already holds, becomes the selection
+static void
+select_find_match(Screen *self, FindMatch m, MainBufferView view) {
+    ensure_space_for(&self->selections, items, Selection, 1, capacity, 1, false);
+    clear_selection(&self->selections);
+    self->selections.items[0] = match_as_selection(m, view.abs_row0);
+    self->selections.count = 1;
+}
+
 static PyObject *
 find_set_current(Screen *self, PyObject *args) {
     unsigned long long abs_start_line, abs_end_line;
     FindMatch m;
     if (!PyArg_ParseTuple(args, "(KIKI)", &abs_start_line, &m.start_x, &abs_end_line, &m.end_x)) return NULL;
     m.abs_start_line = abs_start_line; m.abs_end_line = abs_end_line;
-    // a selection is made on the cells shown, and the alternate screen shows none of the main buffer's
-    const MainBufferView view = main_buffer_view(self);
-    if (!view.shows_main_buffer) {
-        PyErr_SetString(PyExc_RuntimeError, "A find match cannot be selected while the alternate screen shows");
-        return NULL;
-    }
+    MainBufferView view;
+    if (!main_buffer_view_for_selecting(self, &view)) return NULL;
     if (!kitty_rs_find_set_current(screen_find_engine(self), m)) {
         PyErr_Format(PyExc_LookupError, "There is no find match %R", PyTuple_GET_ITEM(args, 0));
         return NULL;
     }
-    ensure_space_for(&self->selections, items, Selection, 1, capacity, 1, false);
-    clear_selection(&self->selections);
-    self->selections.items[0] = match_as_selection(m, view.abs_row0);
-    self->selections.count = 1;
+    select_find_match(self, m, view);
     Py_RETURN_NONE;
+}
+
+// Where the user is looking, from the first cell to just past the last in buffer order: the
+// selection, or with none the rows on screen. The empty selection a click leaves shows
+// nothing and outlives the click, so it is no place the user can see.
+static void
+find_step_origin(Screen *self, MainBufferView view, FindPos *start, FindPos *end) {
+    const uint64_t top = view.abs_row0 - self->scrolled_by;
+    *start = (FindPos){.line = top};
+    *end = (FindPos){.line = top + self->lines};
+    IterationData idata;
+    if (self->selections.count) iteration_data(self->selections.items, &idata, self->columns, -(int)self->historybuf->count, 0);
+    if (!self->selections.count || iteration_data_is_empty(self, &idata)) return;
+    // iteration rows count from screen row 0 with history negative, as match_as_selection's do
+    const index_type last_x_limit = idata.y_limit - 1 == idata.y ? idata.first.x_limit : idata.last.x_limit;
+    *start = (FindPos){.line = view.abs_row0 + idata.y, .x = idata.first.x};
+    *end = (FindPos){.line = view.abs_row0 + idata.y_limit - 1, .x = last_x_limit};
+}
+
+// Scrolls a match that is not wholly on screen to its middle; one taller than the screen to
+// its first line on the top row.
+static void
+reveal_find_match(Screen *self, FindMatch m, MainBufferView view) {
+    const int64_t top = (int64_t)view.abs_row0 - self->scrolled_by, lines = self->lines;
+    const int64_t start = m.abs_start_line, span = (int64_t)m.abs_end_line - start + 1;
+    if (start >= top && start + span <= top + lines) return;
+    const int64_t new_top = start - MAX(lines - span, 0) / 2;
+    screen_history_scroll_to_absolute(self, (double)((int64_t)view.abs_row0 - new_top));
+}
+
+static PyObject *
+find_step(Screen *self, PyObject *args) {
+    int backwards;
+    if (!PyArg_ParseTuple(args, "p", &backwards)) return NULL;
+    MainBufferView view;
+    if (!main_buffer_view_for_selecting(self, &view)) return NULL;
+    FindEngine *engine = screen_find_engine(self);
+    FindPos start, end;
+    find_step_origin(self, view, &start, &end);
+    FindMatch m;
+    if (!kitty_rs_find_step(engine, backwards, start, end, &m)) Py_RETURN_NONE;
+    reveal_find_match(self, m, view);
+    select_find_match(self, m, view);
+    return find_match_as_tuple(m);
+}
+
+// The user points at the selection, so it is theirs, not find's: a new query leaves it in
+// place, and the next step starts from it rather than past it.
+static PyObject *
+find_disown_selection(Screen *self, PyObject *o UNUSED) {
+    if (self->selections.count) self->selections.items->is_find_match = false;
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+find_status(Screen *self, PyObject *o UNUSED) {
+    const FindStatus st = kitty_rs_find_status(screen_find_engine(self));
+    return Py_BuildValue("nnO", (Py_ssize_t)st.current, (Py_ssize_t)st.total, st.wrapped ? Py_True : Py_False);
 }
 
 static PyObject *
@@ -7129,7 +7210,7 @@ find_matches(Screen *self, PyObject *o UNUSED) {
     RAII_PyObject(ans, PyTuple_New(count));
     if (!ans) return NULL;
     for (size_t i = 0; i < count; i++) {
-        PyObject *t = Py_BuildValue("KIKI", (unsigned long long)m[i].abs_start_line, m[i].start_x, (unsigned long long)m[i].abs_end_line, m[i].end_x);
+        PyObject *t = find_match_as_tuple(m[i]);
         if (!t) return NULL;
         PyTuple_SET_ITEM(ans, i, t);
     }
@@ -7639,7 +7720,7 @@ static PyMethodDef methods[] = {
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
     MND(find_logical_lines, METH_NOARGS)
 #ifdef __APPLE__
-    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
+    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_disown_selection, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
 #endif
     MND(abs_line_at_viewport_top, METH_NOARGS)
 

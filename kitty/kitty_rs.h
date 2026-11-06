@@ -45,5 +45,23 @@ uint64_t kitty_rs_find_generation(const FindEngine *engine);
 // The current match, always one of the matches: set_query and the cuts that drop it end it.
 // Makes m the current match, returning false and changing nothing when it is not one of the matches.
 bool kitty_rs_find_set_current(FindEngine *engine, FindMatch m);
-// Writes the current match to *out, returning false and writing nothing when there is none.
-bool kitty_rs_find_current(const FindEngine *engine, FindMatch *out);
+// Leaves no current match; the matches stay.
+void kitty_rs_find_end_current(FindEngine *engine);
+// A cell position, ordered as a match's start is: by line, then column.
+typedef struct {
+    uint64_t line;
+    uint32_t x;
+} FindPos;
+// Makes the match one step from the current one, later unless backwards, the current match
+// and writes it to *out, returning false and writing nothing when there are no matches.
+// With no current match the step starts from [from_start, from_end), where the user is
+// looking: forwards the first match starting in it or after, backwards the last starting
+// before from_end. Past either end it wraps, and kitty_rs_find_status says so.
+bool kitty_rs_find_step(FindEngine *engine, bool backwards, FindPos from_start, FindPos from_end, FindMatch *out);
+// current is 1-based among the matches, 0 when there is no current match; wrapped says the
+// step that reached it went past an end.
+typedef struct {
+    size_t current, total;
+    bool wrapped;
+} FindStatus;
+FindStatus kitty_rs_find_status(const FindEngine *engine);
