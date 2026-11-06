@@ -3002,26 +3002,28 @@ class Window:
     # would otherwise hide the match they moved to. The Screen find_* primitives do not, since
     # automatic callers reach them too and must not tear a paused frame.
     def find_step(self, backwards: bool) -> bool | None:
-        if not self.screen.is_main_linebuf():
-            return True
         # Esc ended the engine's search but not the query: stepping searches for it again
         if self.find_query and not self.screen.find_status()[1]:
             self.set_find_query(self.find_query)
-        self.step_to_match(backwards)
-        return None
+        return self.step_to_match(backwards)
 
     def set_find_query(self, text: str) -> None:
         "Search the whole buffer for text, case-insensitively unless it has an uppercase letter"
-        self.screen.find_set_query(text, text == text.lower())
+        # the alternate screen shows none of the buffer: the query waits for the next step on the main screen
+        if self.screen.is_main_linebuf():
+            self.screen.find_set_query(text, text == text.lower())
         # the engine took it: a query it rejects never becomes the one the bar shows and stepping repeats
         self.find_query = text
 
-    def step_to_match(self, backwards: bool) -> None:
+    def step_to_match(self, backwards: bool) -> bool | None:
+        if not self.screen.is_main_linebuf():
+            return True
         self.finish_scroll_animation()
         # with nothing to move to there is nothing new to show, so a paused frame stays paused
         if self.screen.find_step(backwards, self.find_bar_top_inset()) is not None:
             self.screen.pause_rendering(False)
         self.push_find_bar()
+        return None
 
     def find(self, text: str) -> None:
         "Search the whole buffer for text and step to the first match"
@@ -3038,8 +3040,7 @@ class Window:
     # [LAW:single-enforcer] the one place the find bar is told what the search is. The bar belongs
     # to its OS window and shows the search of that window's active kitty window.
     def push_find_bar(self) -> None:
-        tm = get_boss().os_window_map.get(self.os_window_id)
-        if is_macos and tm and tm.active_window is self:
+        if is_macos and (tm := get_boss().os_window_map.get(self.os_window_id)) and tm.active_window is self:
             current, total, _ = self.screen.find_status()
             cocoa_update_find_bar(self.os_window_id, self.find_query, current, total)
 

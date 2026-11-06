@@ -2061,6 +2061,12 @@ class TestScreen(BaseTest):
         w.screen.find_set_query = lambda *a: (_ for _ in ()).throw(ValueError('rejected'))
         self.assertRaises(ValueError, Window.find, w, 'bad')
         self.ae(w.find_query, 'nomatch')
+        # typing in the bar over a full-screen program records the query and searches nothing
+        w.screen = s
+        s.toggle_alt_screen()
+        Window.find(w, 'x')
+        self.ae(w.find_query, 'x')
+        self.ae(Window.find_step(w, False), True)
 
     def test_user_marking(self):
 
