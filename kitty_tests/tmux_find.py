@@ -209,7 +209,7 @@ class PrivateTmux:
         return TmuxClient(self.client_proc.pid, self.exe, ('-S', self.socket), None, os.environ.get('PATH'))
 
     def finder(self, state: TmuxFindState, op: TmuxOperation | None = None) -> TmuxFind:
-        return TmuxFind(self.client(), state, op or TmuxOperation())
+        return TmuxFind.resolving(self.client(), state, op or TmuxOperation())
 
 
 @contextmanager
@@ -433,7 +433,7 @@ class TmuxFindIntegrationTest(BaseTest):
                 argv = [a.replace('wait-for -S', 'display-message -p') if 'wait-for -S' in a else a for a in argv]
                 return tf.run_tmux(argv, env, timeout)
 
-            f = TmuxFind(client, state, TmuxOperation(run))
+            f = TmuxFind.resolving(client, state, TmuxOperation(run))
             start = time.monotonic()
             self.assertIsNone(f.program_selection_text())
             self.assertLess(time.monotonic() - start, FIND_DEADLINE + 1)
@@ -468,7 +468,7 @@ class TmuxFindIntegrationTest(BaseTest):
             state = TmuxFindState()
             client = t.client()
             dead = TmuxClient(2**22 + 5, client.exe, client.server_args, None, client.path)
-            TmuxFind(dead, state, TmuxOperation()).find('needle')
+            TmuxFind.resolving(dead, state, TmuxOperation()).find('needle')
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
             self.assertIsNone(state.held, 'no pane was reached')
 
@@ -742,6 +742,30 @@ class TmuxFindWindowTest(BaseTest):
         self.assertTrue(Boss.find_can_search.__get__(w.boss)(1))
         self.assertIsInstance(w.find_backend(), TmuxFind)
         self.ae(fake.calls, [])
+
+    def test_a_pane_that_changes_between_lookups_cannot_split_routing_from_searching(self):
+        # routing read pane %1 (a main-screen pane: tmux's history); tmux then reports %2. The search must go to %1 and ask list-clients once.
+        fake = FakeTmux(pane='%1')
+        fake.in_mode, fake.alternate = '0', '0'
+        w = self.make_window(self.screen_with_matches(), fake)
+        self.run_in_tmux(w)
+        backend = w.find_pane_backend(w.tmux_client(), TmuxOperation())
+        fake.pane = '%2'
+        backend.find('x')
+        self.ae(len([c for c in fake.calls if 'list-clients' in c]), 1)
+        self.ae(w.tmux_find_state.held.pane, '%1')
+        self.assertTrue(all('%2' not in arg for call in fake.calls for arg in call), 'nothing was sent to the pane tmux switched to')
+
+    def test_a_lookup_that_failed_is_what_the_search_reports(self):
+        fake = FakeTmux()
+        fake.unreachable = True
+        w = self.make_window(self.screen_with_matches(), fake)
+        self.run_in_tmux(w)
+        backend = w.find_pane_backend(w.tmux_client(), TmuxOperation())
+        fake.unreachable = False
+        backend.find('x')
+        self.ae(w.tmux_find_state.status, FindStatus(0, 0, FindCount.unavailable))
+        self.ae(len([c for c in fake.calls if 'list-clients' in c]), 1)
 
     def test_the_lookup_the_clears_and_the_search_spend_one_budget(self):
         fake = FakeTmux()

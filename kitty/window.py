@@ -115,7 +115,7 @@ from .program_status import ProgramStatus
 from .progress import Progress
 from .rgb import to_color
 from .terminfo import get_capabilities
-from .tmux_find import CLIENT_FORMAT, TmuxClient, TmuxError, TmuxFind, TmuxFindState, TmuxOperation, parse_pane, tmux_client_of
+from .tmux_find import TmuxClient, TmuxError, TmuxFind, TmuxFindState, TmuxOperation, tmux_client_of
 from .types import MouseEvent, NeighborsMap, OverlayType, WindowGeometry, ac, run_once
 from .typing_compat import BossType, ChildType, EdgeLiteral, TabType, TypedDict
 from .utils import (
@@ -3030,22 +3030,21 @@ class Window:
         # pane's history is in tmux, and which of tmux's two ways of searching it is decided when a
         # search starts (find_pane_backend)
         if client := self.tmux_client():
-            return TmuxFind(client, self.tmux_find_state, TmuxOperation())
+            return TmuxFind.unresolved(client, self.tmux_find_state, TmuxOperation())
         return self.engine_find
 
     def find_pane_backend(self, client: TmuxClient, op: TmuxOperation) -> FindBackend:
         "[LAW:single-enforcer] the one place a tmux window's search goes to Claude Code's transcript search or to tmux's history search"
-        try:
-            pane = parse_pane(op.tmux(client, 'list-clients', '-F', CLIENT_FORMAT), client.pid)
-        except TmuxError:  # TmuxFind meets the same failure and reports it
-            return TmuxFind(client, self.tmux_find_state, op)
+        tmux = TmuxFind.resolving(client, self.tmux_find_state, op)
+        if isinstance(tmux.pane, TmuxError):  # tmux's find meets the same failure and reports it
+            return tmux
         kind: ClaudePane | NotClaude | ClaudeFindFailure
         try:
-            kind = recognise(pane, self.claude_host, op)
+            kind = recognise(tmux.pane, self.claude_host, op)
         except ClaudeFindFailure as failure:  # could not tell: reported by Claude's find, never answered as another program
             kind = failure
         if isinstance(kind, NotClaude):
-            return TmuxFind(client, self.tmux_find_state, op)
+            return tmux
         return ClaudeFind(client, self.claude_find_state, op, self.claude_host, kind)
 
     def find_holder(self) -> FindBackend:
@@ -3113,7 +3112,8 @@ class Window:
 
     def find_selection_text(self) -> str | None:
         "What Cmd+E searches for: the selection of the program in the window, else kitty's own; None when there is none"
-        backend = self.find_backend()
+        client = self.tmux_client()
+        backend = self.engine_find if client is None else TmuxFind.resolving(client, self.tmux_find_state, TmuxOperation())
         if not backend.can_search():
             return None
         return backend.program_selection_text() or self.text_for_selection() or None
