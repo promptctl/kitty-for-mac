@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# Build, launch and drive this checkout's kitty on a test Mac (studious, else inferno), never on
+# the Mac you are typing on: kitty takes focus when it starts and vhid sends real input.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: run-kitty <command> [args]
+  up [kitty args...]   sync + build + launch
+  sync                 make the test Mac's copy match this checkout, uncommitted work included
+  build                make debug there
+  launch [kitty args]  (re)start kitty, extra args go to kitty (e.g. -o font_size=14 /tmp/fill.sh)
+  press <chord>...     vhid press into kitty, e.g. leftCommand+f, return, leftShift+return
+  type <text>          vhid type into kitty
+  shot <name>          screenshot kitty's window after a settle, print the local png path
+  log                  kitty's stdout/stderr so far
+  stop                 quit kitty
+  drop                 quit kitty and delete this checkout's copy on the test Mac
+  sh <command>         run a shell command on the test Mac
+env: KITTY_RUN_HOST (default: the host up/sync last picked, from the first of studious.local,
+                     inferno.local that answers and can build)
+     KITTY_RUN_OUT (local screenshot dir, default /tmp/kitty-run/<checkout key>)
+     KITTY_RUN_SETTLE (seconds shot waits for the frame, default 0.4)
+EOF
+}
+
+c=${1:-}
+case "$c" in
+    up|sync|build|launch|press|type|shot|log|stop|drop|sh) shift ;;
+    *) usage; exit 2 ;;
+esac
+
+ROOT=$(git rev-parse --show-toplevel)
+SETTLE=${KITTY_RUN_SETTLE:-0.4}
+[[ $SETTLE =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "run-kitty: KITTY_RUN_SETTLE is seconds, e.g. 0.4" >&2; exit 2; }
+# Parallel sessions in sibling worktrees share the test Mac, so each checkout gets its own
+# working copy, kitty, state and shots there. The git objects, the vendored crates and slang
+# are shared: they are keyed by content.
+KEY=$(basename "$ROOT")-$(printf %s "$ROOT" | shasum | cut -c1-8)
+LOCAL=/tmp/kitty-run/$KEY
+OUT=${KITTY_RUN_OUT:-$LOCAL}
+CACHE=.cache/kitty-run  # remote paths are relative to the remote home
+OBJECTS=code/kitty-run/objects.git
+RDIR=code/kitty-run/$KEY
+STATE=$CACHE/$KEY
+KITTY_BIN="$RDIR/kitty/launcher/kitty"
+BUILD_PATH=/opt/homebrew/bin  # where cargo and go live on the test Macs
+mkdir -p "$LOCAL" "$OUT" /tmp/kitty-run/ssh
+# One ssh connection carries every command; the socket path stays short whatever OUT is.
+SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=/tmp/kitty-run/ssh/%C" -o ControlPersist=10m -o ConnectTimeout=5)
+
+# up and sync pick a host and record it; every other command goes to the recorded host, so
+# keys and shots reach the Mac kitty was launched on even after the other one comes back.
+pick_host() {
+    local h=${KITTY_RUN_HOST:-}
+    if [[ -z $h && $c != up && $c != sync && -s $LOCAL/host ]]; then cat "$LOCAL/host"; return; fi
+    if [[ -z $h ]]; then
+        for h in studious.local inferno.local ""; do
+            [[ -n $h ]] && ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$h" "PATH=$BUILD_PATH:\$PATH command -v cargo go > /dev/null" 2>/dev/null && break
+        done
+    fi
+    if [[ -z $h ]]; then
+        echo "run-kitty: neither studious.local nor inferno.local answers with cargo and go installed; running kitty on this Mac needs Brandon's go first" >&2
+        exit 1
+    fi
+    [[ $c == up || $c == sync ]] && echo "$h" > "$LOCAL/host"
+    echo "$h"
+}
+r() {
+    local rc=0
+    ssh "${SSH_OPTS[@]}" "$HOST" "$@" || rc=$?
+    ((rc == 255)) && echo "run-kitty: lost $HOST; run up or sync to pick a host again, or set KITTY_RUN_HOST" >&2
+    return $rc
+}
+
+# Remote preludes. A pid file can outlive its kitty and the pid be reused, so a pid is ours
+# only while it runs this checkout's kitty binary. vhid's --into checks only the app name,
+# and another kitty may be in front, so keys also need our pid in front.
+OURS="p=\$(cat $STATE/pid 2>/dev/null) && ps -p \$p -o command= | grep -qF /$KITTY_BIN"
+RUNNING="$OURS || { echo 'run-kitty: kitty is not running; run launch' >&2; exit 1; }"
+IN_FRONT="$RUNNING; /usr/local/bin/eyes windows 2>/dev/null | grep -qF \"Frontmost: kitty (pid \$p)\" || { echo \"run-kitty: our kitty (pid \$p) is not in front\" >&2; exit 1; }"
+STOP="$OURS && kill \$p && sleep 1; rm -f $STATE/pid $STATE/wid"
+
+cmd_sync() {
+    # The working tree, untracked files included and ignored ones not, is snapshotted as a
+    # commit through a scratch index, so the test Mac checks out exactly this tree. checkout
+    # rewrites only files whose content changed, so make stays incremental; clean without -x
+    # drops stale untracked files and keeps ignored build outputs.
+    local idx tree commit
+    idx=$(mktemp)
+    cp "$(git -C "$ROOT" rev-parse --path-format=absolute --git-path index)" "$idx"
+    GIT_INDEX_FILE=$idx git -C "$ROOT" add -A
+    tree=$(GIT_INDEX_FILE=$idx git -C "$ROOT" write-tree)
+    rm -f "$idx"
+    commit=$(git -C "$ROOT" commit-tree "$tree" -p HEAD -m "run-kitty snapshot")
+    # Every checkout's copy borrows its objects from one bare repo, so a new worktree pushes
+    # only what the test Mac lacks.
+    r "mkdir -p $STATE $RDIR && { [ -d $OBJECTS ] || git init -q --bare $OBJECTS; } && { [ -d $RDIR/.git ] || { git init -q $RDIR && echo ~/$OBJECTS/objects > $RDIR/.git/objects/info/alternates; }; }"
+    GIT_SSH_COMMAND="ssh $(printf '%q ' "${SSH_OPTS[@]}")" \
+        git -C "$ROOT" push -q --force --no-verify "$HOST:$OBJECTS" "$commit:refs/run-kitty/$KEY"
+    r "cd $RDIR && git fetch -q ~/$OBJECTS +refs/run-kitty/$KEY:refs/run-kitty/sync && git checkout -qf --detach refs/run-kitty/sync && git clean -qfd"
+    echo "synced $(git -C "$ROOT" rev-parse --short HEAD)$([[ $tree == $(git -C "$ROOT" rev-parse 'HEAD^{tree}') ]] || echo ' + uncommitted changes') to $HOST:$RDIR"
+}
+
+VTMP=
+cmd_build() {
+    # cargo on studious cannot reach crates.io (TLS times out though curl from the same shell
+    # gets through), so crates are vendored here, once per Cargo.lock, and cargo there is
+    # pointed at them through its own CARGO_HOME and never touches the network.
+    local lock vendor v rc=0
+    lock=$(shasum -a 256 "$ROOT/rust/Cargo.lock" | cut -c1-16)
+    vendor=vendor-$lock
+    r "test -d $CACHE/$vendor" || rc=$?
+    ((rc == 0 || rc == 1)) || exit 1
+    # Shared caches are unpacked into a .part dir of the unpacking process's own and published
+    # with rename(2), which refuses a non-empty destination: a cut-off copy or a concurrent
+    # build leaves either a whole cache or none, and the .part dir always goes.
+    if ((rc == 1)); then
+        VTMP=$(mktemp -d)
+        trap 'rm -rf "$VTMP"' EXIT
+        cargo vendor --locked --manifest-path "$ROOT/rust/Cargo.toml" "$VTMP/$vendor" > /dev/null
+        tar -C "$VTMP" -cf - "$vendor" | r "p=$CACHE/$vendor.part.\$\$ && trap 'rm -rf \$p' EXIT && mkdir -p \$p && tar -C \$p -xf - && { perl -e 'rename \$ARGV[0], \$ARGV[1]' \$p/$vendor $CACHE/$vendor || true; }"
+    fi
+    # slangc builds the shaders; the version is the one bypy pins.
+    v=$(python3 -c 'import json,sys; print(next(s["name"].split()[1] for s in json.load(open(sys.argv[1])) if s["name"].startswith("slang ")))' "$ROOT/bypy/sources.json")
+    r bash -s "$v" "$vendor" "$RDIR" "$STATE" "$CACHE" "$BUILD_PATH" <<'EOF'
+set -euo pipefail
+v=$1 vendor=$2 rdir=$HOME/$3 state=$HOME/$4 cache=$HOME/$5 build_path=$6
+slang=$cache/slang-$v
+if [ ! -d "$slang" ]; then
+    part=$slang.part.$$
+    trap 'rm -rf "$part"' EXIT
+    mkdir -p "$part"
+    curl -fsSL "https://github.com/shader-slang/slang/releases/download/v$v/slang-$v-macos-aarch64.tar.gz" | tar -xz -C "$part"
+    perl -e 'rename $ARGV[0], $ARGV[1]' "$part" "$slang" || true
+fi
+mkdir -p "$state/cargo"
+printf '[source.crates-io]\nreplace-with = "vendored"\n[source.vendored]\ndirectory = "%s"\n' "$cache/$vendor" > "$state/cargo/config.toml"
+cd "$rdir"
+CARGO_HOME=$state/cargo PATH=$slang/bin:$build_path:$PATH make debug > "$state/build.log" 2>&1 || { tail -40 "$state/build.log"; exit 1; }
+tail -3 "$state/build.log"
+EOF
+}
+
+cmd_launch() {
+    local args=""
+    (($#)) && args=$(printf ' %q' "$@")
+    r bash -s <<EOF
+set -euo pipefail
+cd
+$STOP
+# --config NONE: the user's kitty.conf on the test Mac is not part of what is being run.
+# No cursor blink: a blink is a redraw, and it would hide a missing one.
+nohup ~/$KITTY_BIN --config NONE -o cursor_blink_interval=0 -o remember_window_size=no \
+    -o initial_window_width=900 -o initial_window_height=600$args > ~/$STATE/kitty.log 2>&1 < /dev/null &
+pid=\$!
+# Another kitty may be running, so the window is ours only once eyes names our pid as frontmost.
+wid=
+for _ in \$(seq 40); do
+    kill -0 \$pid 2>/dev/null || { echo "kitty exited; log:"; cat ~/$STATE/kitty.log; exit 1; }
+    wid=\$(/usr/local/bin/eyes windows --owner kitty 2>/dev/null | awk -v p="(pid \$pid)" 'index(\$0, "Frontmost: kitty " p) {ours=1} ours && \$2 == "kitty" && /front\$/ {print \$1; exit}')
+    [ -n "\$wid" ] && break
+    sleep 0.25
+done
+[ -n "\$wid" ] || { echo "kitty (pid \$pid) never came to the front, killed it; log:"; kill \$pid; cat ~/$STATE/kitty.log; exit 1; }
+echo "\$wid" > ~/$STATE/wid
+echo "\$pid" > ~/$STATE/pid
+# Park the pointer off the window: a pointer move over it is a redraw too.
+/usr/local/bin/vhid move 50 850 > /dev/null
+echo "kitty up on $HOST, window \$wid"
+EOF
+}
+
+cmd_press() { r "$IN_FRONT; /usr/local/bin/vhid press --into kitty $(printf '%q ' "$@") > /dev/null"; }
+cmd_type() { r "$IN_FRONT; /usr/local/bin/vhid type --into kitty -- $(printf '%q' "$*") > /dev/null"; }
+
+cmd_shot() {
+    local name=${1:?shot needs a name}
+    [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || { echo "run-kitty: a shot name is letters, digits, . _ and - only" >&2; exit 2; }
+    r "$RUNNING; f=$STATE/shot.\$\$.png; sleep $SETTLE && screencapture -x -o -l \$(cat $STATE/wid) \$f && cat \$f && rm \$f" > "$OUT/$name.png" || { rm -f "$OUT/$name.png"; exit 1; }
+    echo "$OUT/$name.png"
+}
+
+cmd_log() { r "cat $STATE/kitty.log"; }
+cmd_stop() { r "$STOP"; }
+cmd_drop() { r "$STOP; rm -rf $RDIR $STATE && { git -C $OBJECTS update-ref -d refs/run-kitty/$KEY 2>/dev/null || true; }"; rm -f "$LOCAL/host"; }
+cmd_sh() { r "$*"; }
+cmd_up() { cmd_sync; cmd_build; cmd_launch "$@"; }
+
+HOST=$(pick_host)
+"cmd_$c" "$@"

@@ -17,15 +17,18 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import NamedTuple, TypeVar
 
 from .child import ProcessDesc, environ_of_process
 from .find_backends import FindCount, FindStatus
 from .utils import log_error
 
-# One bound for everything a find operation asks of tmux, the pane lookup and the command together.
-# A healthy tmux answers in about 5 ms; a wedged one costs the person typing in the bar this much.
-TMUX_DEADLINE = 0.5
+# One bound for everything a find operation asks of tmux: the pane lookup, the clears of other
+# searches, the polling for a program to redraw and the commands. A healthy tmux answers in about
+# 5 ms; a wedged one costs the person typing in the bar this much, once per operation.
+FIND_DEADLINE = 1.0
+# how often an operation looks again while it waits for a program in a pane to redraw
+POLL_INTERVAL = 0.01
 IDLE = FindStatus(0, 0, FindCount.exact)
 UNAVAILABLE = FindStatus(0, 0, FindCount.unavailable)
 
@@ -34,7 +37,11 @@ UNAVAILABLE = FindStatus(0, 0, FindCount.unavailable)
 COUNT_FORMAT = '#{search_present}|#{search_count}|#{search_count_partial}'
 # a drag selection in copy mode stays live (the user's config keeps it) and a search would stretch it
 LIVE_SELECTION = '#{||:#{selection_present},#{selection_active}}'
-CLIENT_FORMAT = '#{client_pid} #{pane_id} #{pane_in_mode}'
+# a pane as the find backends need to tell it apart: the address is the one Claude Code records for
+# its pane (~/.claude/sessions/<pid>.json), and it ends the line because a session name may hold spaces
+PANE_FORMAT = '#{pane_id} #{pane_in_mode} #{alternate_on} #{pane_pid} #{session_name}:#{window_id}.#{pane_id}'
+CLIENT_FORMAT = '#{client_pid} ' + PANE_FORMAT
+T = TypeVar('T')
 
 
 class TmuxError(Exception):
@@ -58,6 +65,9 @@ class TmuxClient:
 class PaneRef(NamedTuple):
     id: str
     in_mode: bool
+    alternate: bool  # the program draws on the alternate screen, where tmux keeps no history of it
+    pid: int  # the pane's own process
+    address: str  # session_name:window_id.pane_id
 
 
 class Counted(NamedTuple):
@@ -107,13 +117,29 @@ def tmux_client_of(
     return None
 
 
+def parse_pane_fields(fields: Sequence[str]) -> PaneRef:
+    "A pane from the fields of PANE_FORMAT"
+    pane_id, in_mode, alternate, pid, address = fields
+    if in_mode not in ('0', '1') or alternate not in ('0', '1') or not pid.isdigit():
+        raise TmuxError(f'tmux answered {" ".join(fields)!r} where a pane was expected')
+    return PaneRef(pane_id, in_mode == '1', alternate == '1', int(pid), address)
+
+
 def parse_pane(output: str, client_pid: int) -> PaneRef:
     "The pane the client shows, from list-clients -F CLIENT_FORMAT"
     for line in output.splitlines():
-        fields = line.split(' ')
-        if len(fields) == 3 and fields[0] == str(client_pid):
-            return PaneRef(fields[1], fields[2] == '1')
+        fields = line.split(' ', 5)
+        if len(fields) == 6 and fields[0] == str(client_pid):
+            return parse_pane_fields(fields[1:])
     raise TmuxError(f'tmux client {client_pid} is not among its server\'s clients')
+
+
+def parse_displayed_pane(output: str) -> PaneRef:
+    "A pane asked for by id, from display-message -p PANE_FORMAT"
+    fields = output.strip('\n').split(' ', 4)
+    if len(fields) != 5:
+        raise TmuxError(f'tmux answered {output!r} where a pane was expected')
+    return parse_pane_fields(fields)
 
 
 def parse_count(output: str) -> Counted:
@@ -209,6 +235,52 @@ def run_tmux(argv: Sequence[str], env: Mapping[str, str], timeout: float) -> str
     return cp.stdout
 
 
+class TmuxOperation:
+    """One find operation's budget of time, and the one place it is enforced: every tmux command and every
+    wait for a pane to redraw is made through it, so the lookup of the pane, the clears of other searches
+    and the search itself together cannot spend more than FIND_DEADLINE. The runner, the clock and the
+    sleep are what a test stands in for."""
+
+    def __init__(
+        self,
+        run: Callable[[Sequence[str], Mapping[str, str], float], str] | None = None,
+        now: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        # looked up when the value is built, so a test can stand in for the one effect
+        self.run = run_tmux if run is None else run
+        self.now = now
+        self.sleep = sleep
+        self.expires_at = now() + FIND_DEADLINE
+
+    def remaining(self) -> float:
+        return self.expires_at - self.now()
+
+    def tmux(self, client: TmuxClient, *args: str) -> str:
+        if (remaining := self.remaining()) <= 0:
+            raise TmuxError('the find deadline was spent before tmux was asked', timed_out=True)
+        return self.run([resolve_exe(client), *client.server_args, *args], tmux_env(client), remaining)
+
+    def wait_until(self, read: Callable[[], T], ready: Callable[[T], bool], awaiting: str) -> T:
+        "Read until ready accepts what was read, or the deadline passes: a TmuxError that says what was awaited and what was last seen"
+        while True:
+            value = read()
+            if ready(value):
+                return value
+            if (remaining := self.remaining()) <= 0:
+                raise TmuxError(f'timed out awaiting {awaiting}; last seen {value!r}', timed_out=True)
+            self.sleep(min(POLL_INTERVAL, remaining))
+
+    def wait_for_change(self, read: Callable[[], T], before: T, patience: float) -> T:
+        "Read until the value is not `before`, or for at most `patience` and the budget: a value that stays the same is the answer, not an error"
+        until = min(self.now() + patience, self.expires_at)
+        while True:
+            value = read()
+            if value != before or (remaining := until - self.now()) <= 0:
+                return value
+            self.sleep(min(POLL_INTERVAL, remaining))
+
+
 class TmuxFindState:
     "What a window owns of its tmux search: the pane it put in copy mode, and what the bar was last told"
 
@@ -231,35 +303,36 @@ class TmuxFindState:
 
 
 class TmuxFind:
-    "Find through the tmux client in a window's foreground. A value built for one operation, which has the deadline of it."
+    "Find through the tmux client in a window's foreground. A value built for one operation, on the budget of it, and for the one pane that operation finds."
 
-    def __init__(
-        self,
-        client: TmuxClient,
-        state: TmuxFindState,
-        run: Callable[[Sequence[str], Mapping[str, str], float], str] | None = None,
-        now: Callable[[], float] = time.monotonic,
-    ) -> None:
+    def __init__(self, client: TmuxClient, state: TmuxFindState, op: TmuxOperation) -> None:
         self.client = client
         self.state = state
-        # looked up when the value is built, so a test can stand in for the one effect
-        self.run = run_tmux if run is None else run
-        self.now = now
-        self.expires_at = now() + TMUX_DEADLINE
+        self.op = op
+        self.pane: PaneRef | TmuxError | None = None  # not asked until something needs it
 
     @classmethod
-    def holding(cls, state: TmuxFindState) -> 'TmuxFind | None':
+    def holding(cls, state: TmuxFindState, op: TmuxOperation) -> 'TmuxFind | None':
         "The backend that cancels what a window left in copy mode, whatever its foreground is now"
-        return cls(state.held.client, state) if state.held is not None else None
+        return cls(state.held.client, state, op) if state.held is not None else None
 
     def tmux(self, client: TmuxClient, *args: str) -> str:
-        if (remaining := self.expires_at - self.now()) <= 0:
-            raise TmuxError('the find deadline was spent before tmux was asked', timed_out=True)
-        return self.run([resolve_exe(client), *client.server_args, *args], tmux_env(client), remaining)
+        return self.op.tmux(client, *args)
 
-    def resolve(self) -> PaneRef:
-        # every time, so a pane switch inside tmux is followed
-        return parse_pane(self.tmux(self.client, 'list-clients', '-F', CLIENT_FORMAT), self.client.pid)
+    def lookup(self) -> PaneRef | TmuxError:
+        "[LAW:one-source-of-truth] the one list-clients of an operation: whoever routes on the pane and whoever searches it read this answer, so a pane switch inside tmux is followed by the next operation and never splits one"
+        if self.pane is None:
+            try:
+                self.pane = parse_pane(self.tmux(self.client, 'list-clients', '-F', CLIENT_FORMAT), self.client.pid)
+            except TmuxError as e:
+                self.pane = e
+        return self.pane
+
+    def resolved(self) -> PaneRef:
+        pane = self.lookup()
+        if isinstance(pane, TmuxError):
+            raise TmuxError(str(pane), pane.timed_out) from pane
+        return pane
 
     def can_search(self) -> bool:
         return True
@@ -281,7 +354,7 @@ class TmuxFind:
             self.clear()
             return
         try:
-            pane = self.resolve()
+            pane = self.resolved()
             self.move_to(pane.id)
             counted = parse_count(self.tmux(self.client, *search_batch(pane.id, command(pane.id))))
             self.state.status = self.status_of(pane.id, text, counted)
@@ -327,7 +400,7 @@ class TmuxFind:
 
     def program_selection_text(self) -> str | None:
         try:
-            pane = self.resolve()
+            pane = self.resolved()
             return self.read_selection(pane.id) if pane.in_mode else None
         except TmuxError as e:
             log_error(f'Find in tmux: could not read the selection: {e}')
