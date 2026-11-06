@@ -1028,15 +1028,21 @@ window_focus_callback(GLFWwindow *w, int focused) {
 // change, though the window stayed key
 static void
 native_view_focus_callback(GLFWwindow *w, bool native_view_has_focus) {
-    if (!set_callback_window(w)) return;
-    OSWindow *osw = global_state.callback_os_window;
-    osw->native_view_focused = native_view_has_focus;
-    osw->cursor_blink_zero_time = monotonic();
-    if (osw->is_focused && is_window_ready_for_callbacks()) {
-        WINDOW_CALLBACK(on_focus, "O", terminal_has_focus(osw) ? Py_True : Py_False);
+    // The first responder changes from inside other callbacks (a key action that shows the bar), so
+    // the callback window of the outer one is put back
+    OSWindow *outer = global_state.callback_os_window;
+    if (set_callback_window(w)) {
+        OSWindow *osw = global_state.callback_os_window;
+        if (osw->native_view_focused != native_view_has_focus) {
+            osw->native_view_focused = native_view_has_focus;
+            osw->cursor_blink_zero_time = monotonic();
+            if (osw->is_focused && is_window_ready_for_callbacks()) {
+                WINDOW_CALLBACK(on_focus, "O", terminal_has_focus(osw) ? Py_True : Py_False);
+            }
+            request_tick_callback();
+        }
     }
-    request_tick_callback();
-    global_state.callback_os_window = NULL;
+    global_state.callback_os_window = outer;
 }
 
 #define TAB_DRAG_MIME_NUMBER 400

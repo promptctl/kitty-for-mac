@@ -157,8 +157,6 @@ typedef struct _GLFWwindowNS {
     float xscale, yscale;
     int blur_radius;
     bool live_resize_in_progress;
-    // Keyboard focus is on a native view (the find bar's field) rather than the terminal; last value reported
-    bool native_view_focused;
     struct {
         struct {
             CGFloat red, green, blue, alpha;
