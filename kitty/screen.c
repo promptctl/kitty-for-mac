@@ -3882,6 +3882,14 @@ copy_selections(Selections *dest, const Selections *src) {
 
 static Line *render_line_for_virtual_y(Screen *self, int y, Line *line, index_type *lnum, bool *is_history);
 
+static MainBufferView
+main_buffer_view(const Screen *self) {
+    return (MainBufferView){
+        .abs_row0 = self->historybuf->abs_oldest_line + self->historybuf->count,
+        .shows_main_buffer = self->linebuf == self->main_linebuf,
+    };
+}
+
 bool
 screen_pause_rendering(Screen *self, bool pause, int for_in_ms) {
     if (!pause) {
@@ -3937,6 +3945,7 @@ screen_pause_rendering(Screen *self, bool pause, int for_in_ms) {
     }
     copy_selections(&self->paused_rendering.selections, &self->selections);
     copy_selections(&self->paused_rendering.url_ranges, &self->url_ranges);
+    self->paused_rendering.main_buffer_view = main_buffer_view(self);
     if (self->extra_cursors.count) {
         self->paused_rendering.extra_cursors.locations = calloc(self->extra_cursors.count, sizeof(self->extra_cursors.locations[0]));
         if (self->paused_rendering.extra_cursors.locations) {
@@ -4498,6 +4507,61 @@ screen_is_cell_selected(Screen *self, index_type x, index_type y) {
     return false;
 }
 
+// The per-cell selection byte: bit 0 selection, bit 1 URL, bits 2-4 extra cursor shape, and
+// this bit for a find match; kitty/shaders/background.slang reads it as FIND_MATCH_SHIFT.
+#define FIND_MATCH_MASK 32
+
+#ifdef __APPLE__
+// [LAW:single-enforcer] every read of the engine goes through here, so no reader sees a
+// match whose line has left the history ring: the ring's own counter decides what is gone.
+// Eviction can move the match list, so a pointer into it is good only until the next call.
+static FindEngine*
+screen_find_engine(Screen *self) {
+    kitty_rs_find_evict_before(self->find_engine, self->historybuf->abs_oldest_line);
+    return self->find_engine;
+}
+
+// A Selection row is y - scrolled_by counted from screen row 0, negative in history; the
+// unsigned y cannot go below 0, so the history part rides in scrolled_by.
+static Selection
+match_as_selection(FindMatch m, uint64_t abs_row0) {
+    const int64_t start_row = (int64_t)m.abs_start_line - (int64_t)abs_row0, end_row = (int64_t)m.abs_end_line - (int64_t)abs_row0;
+    // both cells included: from the left half of the first through the right half of the last
+    const SelectionBoundary start = {.x = m.start_x, .y = MAX(start_row, 0), .in_left_half_of_cell = true};
+    const SelectionBoundary end = {.x = m.end_x, .y = MAX(end_row, 0), .in_left_half_of_cell = false};
+    return (Selection){
+        .start = start, .end = end, .input_start = start, .input_current = end,
+        .start_scrolled_by = MAX(-start_row, 0), .end_scrolled_by = MAX(-end_row, 0),
+        .last_rendered = {.y = INT_MAX}, .is_find_match = true,
+    };
+}
+
+// The matches on the rows from the pixel scroll row through the last screen row: none while
+// the alternate screen shows, since the engine searches the main buffer.
+static const FindMatch*
+visible_find_matches(Screen *self, MainBufferView view, int extra_leading_rows, int scrolled_by, size_t *count) {
+    const int64_t top = (int64_t)view.abs_row0 - scrolled_by;
+    const uint64_t first = MAX(top - extra_leading_rows, 0), limit = view.shows_main_buffer ? (uint64_t)top + self->lines : first;
+    return kitty_rs_find_matches_in_lines(screen_find_engine(self), first, limit, count);
+}
+
+// [LAW:one-source-of-truth] the highlights are drawn from the engine's match list on every
+// paint and kept nowhere else; find_last_rendered records what they were drawn from.
+static void
+apply_find_matches(Screen *self, uint8_t *data, int extra_leading_rows, int scrolled_by) {
+    const MainBufferView view = self->paused_rendering.expires_at ? self->paused_rendering.main_buffer_view : main_buffer_view(self);
+    size_t count;
+    const FindMatch *m = visible_find_matches(self, view, extra_leading_rows, scrolled_by, &count);
+    for (size_t i = 0; i < count; i++) {
+        Selection s = match_as_selection(m[i], view.abs_row0);
+        apply_selection(self, data, &s, FIND_MATCH_MASK, extra_leading_rows, scrolled_by);
+    }
+    self->find_last_rendered.generation = kitty_rs_find_generation(self->find_engine);
+    self->find_last_rendered.view = view;
+    self->find_last_rendered.painted = count;
+}
+#endif
+
 void
 screen_apply_selection(Screen *self, void *address_, size_t size) {
     uint8_t *address = address_;
@@ -4514,6 +4578,9 @@ screen_apply_selection(Screen *self, void *address_, size_t size) {
         apply_selection(self, address, s, 2, offset, scrolled_by);
     }
     sel->last_rendered_count = sel->count;
+#ifdef __APPLE__
+    apply_find_matches(self, address, offset, scrolled_by);
+#endif
     address += (size_t)offset * self->columns;
     size -= (size_t)offset * self->columns;
     ExtraCursors *ec = self->paused_rendering.expires_at ? &self->paused_rendering.extra_cursors : &self->extra_cursors;
@@ -6285,6 +6352,16 @@ screen_is_selection_dirty(Screen *self) {
     IterationData q;
     if (self->paused_rendering.expires_at) return false;
     if (self->scrolled_by != self->last_rendered.scrolled_by) return true;
+#ifdef __APPLE__
+    // a moved view repaints only when it moves highlights: some were drawn or some are due
+    const MainBufferView view = main_buffer_view(self);
+    size_t visible;
+    visible_find_matches(self, view, pixel_scroll_enabled(self), self->scrolled_by, &visible);
+    const bool view_moved = view.abs_row0 != self->find_last_rendered.view.abs_row0 || view.shows_main_buffer != self->find_last_rendered.view.shows_main_buffer;
+    if (kitty_rs_find_generation(self->find_engine) != self->find_last_rendered.generation ||
+        (view_moved && (visible || self->find_last_rendered.painted)))
+        return true;
+#endif
     if (self->selections.last_rendered_count != self->selections.count || self->url_ranges.last_rendered_count != self->url_ranges.count ||
         self->extra_cursors.dirty)
         return true;
@@ -6779,6 +6856,8 @@ screen_update_selection(Screen *self, index_type x, index_type y, bool in_left_h
     if (!self->selections.count) return;
     self->selections.in_progress = !upd.ended;
     Selection *s = self->selections.items;
+    // extending a selection find made makes it the user's
+    s->is_find_match = false;
     int delta = clamp_selection_input_to_multicell(self, s, x, y, in_left_half_of_cell);
     index_type orig = self->scrolled_by;
     if (delta) {
@@ -6969,19 +7048,10 @@ feed_find_engine(void *engine, const FindLogicalLine *l) {
     return true;
 }
 
-// [LAW:single-enforcer] every read of the match list goes through here, so no reader sees a
-// match whose line has left the history ring: the ring's own counter decides what is gone.
-// Eviction can move the list, so the returned pointer is good only until the next call.
-static const FindMatch*
-screen_find_matches(Screen *self, size_t *count) {
-    kitty_rs_find_evict_before(self->find_engine, self->historybuf->abs_oldest_line);
-    return kitty_rs_find_matches(self->find_engine, count);
-}
-
 static PyObject *
 find_count(Screen *self, PyObject *o UNUSED) {
     size_t count;
-    screen_find_matches(self, &count);
+    kitty_rs_find_matches(screen_find_engine(self), &count);
     return PyLong_FromSize_t(count);
 }
 
@@ -6992,9 +7062,40 @@ screen_find_clear(Screen *self) {
     kitty_rs_find_set_query(self->find_engine, (const uint8_t*)"", 0, false, err, sizeof(err));
 }
 
+// Every change of query ends the current match, so it ends the selection that showed it;
+// one the user has made or changed since is theirs, not find's to clear.
+static void
+release_find_selection(Screen *self) {
+    if (self->selections.count && self->selections.items->is_find_match) clear_selection(&self->selections);
+}
+
 static PyObject *
 find_clear(Screen *self, PyObject *o UNUSED) {
+    release_find_selection(self);
     screen_find_clear(self);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+find_set_current(Screen *self, PyObject *args) {
+    unsigned long long abs_start_line, abs_end_line;
+    FindMatch m;
+    if (!PyArg_ParseTuple(args, "(KIKI)", &abs_start_line, &m.start_x, &abs_end_line, &m.end_x)) return NULL;
+    m.abs_start_line = abs_start_line; m.abs_end_line = abs_end_line;
+    // a selection is made on the cells shown, and the alternate screen shows none of the main buffer's
+    const MainBufferView view = main_buffer_view(self);
+    if (!view.shows_main_buffer) {
+        PyErr_SetString(PyExc_RuntimeError, "A find match cannot be selected while the alternate screen shows");
+        return NULL;
+    }
+    if (!kitty_rs_find_set_current(screen_find_engine(self), m)) {
+        PyErr_Format(PyExc_LookupError, "There is no find match %R", PyTuple_GET_ITEM(args, 0));
+        return NULL;
+    }
+    ensure_space_for(&self->selections, items, Selection, 1, capacity, 1, false);
+    clear_selection(&self->selections);
+    self->selections.items[0] = match_as_selection(m, view.abs_row0);
+    self->selections.count = 1;
     Py_RETURN_NONE;
 }
 
@@ -7006,6 +7107,7 @@ find_set_query(Screen *self, PyObject *args) {
     Py_ssize_t len;
     const char *query = PyUnicode_AsUTF8AndSize(text, &len);
     if (!query) return NULL;
+    release_find_selection(self);
     char err[512];
     if (!kitty_rs_find_set_query(self->find_engine, (const uint8_t*)query, len, case_insensitive, err, sizeof(err))) {
         PyErr_Format(PyExc_ValueError, "Cannot search for the query: %s", err);
@@ -7023,7 +7125,7 @@ find_set_query(Screen *self, PyObject *args) {
 static PyObject *
 find_matches(Screen *self, PyObject *o UNUSED) {
     size_t count;
-    const FindMatch *m = screen_find_matches(self, &count);
+    const FindMatch *m = kitty_rs_find_matches(screen_find_engine(self), &count);
     RAII_PyObject(ans, PyTuple_New(count));
     if (!ans) return NULL;
     for (size_t i = 0; i < count; i++) {
@@ -7038,7 +7140,7 @@ find_matches(Screen *self, PyObject *o UNUSED) {
 // viewport row y shows main buffer line abs_line_at_viewport_top() + y
 static PyObject *
 abs_line_at_viewport_top(Screen *self, PyObject *o UNUSED) {
-    return PyLong_FromUnsignedLongLong(self->historybuf->abs_oldest_line + self->historybuf->count - self->scrolled_by);
+    return PyLong_FromUnsignedLongLong(main_buffer_view(self).abs_row0 - self->scrolled_by);
 }
 
 static PyObject *
@@ -7537,7 +7639,7 @@ static PyMethodDef methods[] = {
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
     MND(find_logical_lines, METH_NOARGS)
 #ifdef __APPLE__
-    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
+    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
 #endif
     MND(abs_line_at_viewport_top, METH_NOARGS)
 

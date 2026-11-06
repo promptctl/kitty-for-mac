@@ -21,7 +21,7 @@ public struct CellRenderData {
     // 12 bytes in size, so a trailing one is not followed by any padding.
     // They come first so that everything after them stays tightly packed.
     public float4 default_fg_lin, default_bg_lin, highlight_fg_lin, highlight_bg_lin;
-    public float4 main_cursor_fg_lin, main_cursor_bg_lin, url_color_lin;
+    public float4 main_cursor_fg_lin, main_cursor_bg_lin, url_color_lin, find_match_fg_lin, find_match_bg_lin;
     // The COLOR_IS_RGB/COLOR_IS_INDEX value for the extra cursor colors, zero
     // for the other color types which do not use it.
     public float4 extra_cursor_fg_lin, extra_cursor_bg_lin;
@@ -87,6 +87,8 @@ static const uint cursor_shape_map[] = {
 
 public static const uint BYTE_MASK = 0xFF;
 public static const uint BIT_MASK = 1u;
+// The bit of the per-cell selection byte that marks a find match, FIND_MATCH_MASK in kitty/screen.c
+public static const uint FIND_MATCH_SHIFT = 5u;
 // Linear space luminance values
 public static const float3 Y = float3(0.2126, 0.7152, 0.0722);
 
@@ -337,15 +339,17 @@ compute_background(uint3 colors, uint2 sprite_idx, uint is_selected, uint instan
     // we use max so that opacity of the block cursor cell background goes from bg_alpha to 1
     float effective_cursor_opacity = max(crd.cursor_opacity, bg_alpha);
     // is_special_cell is either 0 or 1
-    float is_special_cell = cell_data.has_block_cursor + float(is_selected & BIT_MASK);
+    float in_find_match = float((is_selected >> FIND_MATCH_SHIFT) & BIT_MASK);
+    float is_special_cell = cell_data.has_block_cursor + float(is_selected & BIT_MASK) + in_find_match;
     is_special_cell += float(is_reversed); // reverse video cells should be opaque as well
     is_special_cell = zero_or_one(is_special_cell);
     cell_has_default_bg = if_one_then(is_special_cell, 0., cell_has_default_bg);
 
     // special cells must always be fully opaque, otherwise leave bg_alpha untouched
     bg_alpha = if_one_then(is_special_cell, 1.f, bg_alpha);
-    // Selection and cursor
+    // Find match, then selection over it, then cursor
     bg_alpha = if_one_then(cell_data.has_block_cursor, effective_cursor_opacity, bg_alpha);
+    bg = if_one_then(in_find_match, crd.find_match_bg_lin.rgb, bg);
     bg = if_one_then(float(is_selected & BIT_MASK), if_one_then(crd.use_cell_for_selection_bg, color_to_vec(fg_as_uint), crd.highlight_bg_lin.rgb), bg);
     float3 background_rgb = if_one_then(cell_data.has_block_cursor, lerp(bg, cell_data.cursor.bg, crd.cursor_opacity), bg);
     // }}}

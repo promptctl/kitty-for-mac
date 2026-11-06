@@ -33,14 +33,20 @@ pub struct FindEngine {
     /// Evicted entries still at the front of `matches`, removed in one drain once they are
     /// as many as the live ones, so eviction costs amortized O(evicted), not O(live).
     evicted: usize,
+    /// Counts the changes to `matches()`, so a renderer can tell that what it drew is stale.
+    generation: u64,
+    /// The match the user is on: always one of `matches()`.
+    current: Option<FindMatch>,
 }
 
 impl FindEngine {
     /// Starts a new search, dropping every match of the previous one. The query is a
     /// literal: `regex::escape` puts it through the regex crate's literal fast path.
     pub fn set_query(&mut self, query: &str, case_insensitive: bool) -> Result<(), regex::Error> {
+        let cleared = self.matches().len();
         self.matches.clear();
         self.evicted = 0;
+        self.changed(cleared);
         // a query that fails to build leaves the empty query, never the previous one
         self.regex = None;
         self.regex = (!query.is_empty())
@@ -60,6 +66,7 @@ impl FindEngine {
         );
         // a non-empty literal never matches empty, so every match has a last byte
         let found = self.regex.iter().flat_map(|re| re.find_iter(text));
+        let before = self.matches.len();
         self.matches.extend(found.map(|m| {
             let (first, last) = (cells[m.start()], cells[m.end() - 1]);
             FindMatch {
@@ -69,25 +76,62 @@ impl FindEngine {
                 end_x: last.x_last,
             }
         }));
+        self.changed(self.matches.len() - before);
     }
 
     /// Drops the matches starting at `abs_line` or later, ahead of feeding those lines again.
     pub fn drop_lines_from(&mut self, abs_line: u64) {
         let live = self.matches().partition_point(|m| m.abs_start_line < abs_line);
+        let dropped = self.matches().len() - live;
         self.matches.truncate(self.evicted + live);
+        self.changed(dropped);
     }
 
     /// Drops the matches starting before `abs_line`: their lines have left the history ring.
     pub fn evict_before(&mut self, abs_line: u64) {
-        self.evicted += self.matches().partition_point(|m| m.abs_start_line < abs_line);
+        let gone = self.matches().partition_point(|m| m.abs_start_line < abs_line);
+        self.evicted += gone;
         if self.evicted >= self.matches.len() - self.evicted {
             self.matches.drain(..self.evicted);
             self.evicted = 0;
         }
+        self.changed(gone);
+    }
+
+    // [LAW:single-enforcer] every edit of the list ends here: the generation moves exactly
+    // when the list did, and a current match the edit removed is no longer current.
+    fn changed(&mut self, entries: usize) {
+        self.generation += u64::from(entries > 0);
+        self.current = self.current.filter(|c| self.matches().binary_search(c).is_ok());
     }
 
     pub fn matches(&self) -> &[FindMatch] {
         &self.matches[self.evicted..]
+    }
+
+    /// The matches covering any of the lines `first..limit`.
+    pub fn matches_in_lines(&self, first: u64, limit: u64) -> &[FindMatch] {
+        let all = self.matches();
+        // matches never overlap, so their ends are in buffer order as well as their starts
+        let from = all.partition_point(|m| m.abs_end_line < first);
+        let to = all.partition_point(|m| m.abs_start_line < limit).max(from);
+        &all[from..to]
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Makes `m` the current match; false, changing nothing, when it is not one of `matches()`.
+    /// A match names itself by its absolute coordinates, which eviction does not move.
+    pub fn set_current(&mut self, m: FindMatch) -> bool {
+        let found = self.matches().binary_search(&m).is_ok();
+        self.current = found.then_some(m).or(self.current);
+        found
+    }
+
+    pub fn current(&self) -> Option<FindMatch> {
+        self.current
     }
 }
 
@@ -262,5 +306,68 @@ mod tests {
         let mut e = engine_with_one_match_per_line(6);
         let (text, cells) = line(&["x"], narrow);
         e.feed_line(5, &text, &cells);
+    }
+
+    #[test]
+    fn the_generation_moves_exactly_when_the_list_does() {
+        let mut e = engine_with_one_match_per_line(4);
+        let g = e.generation();
+        let (text, cells) = line(&["y"], narrow);
+        e.feed_line(4, &text, &cells);
+        e.evict_before(0);
+        e.drop_lines_from(5);
+        assert_eq!(e.generation(), g, "a feed that finds nothing and no-op cuts are not changes");
+        let mut empty = FindEngine::default();
+        let g0 = empty.generation();
+        empty.set_query("x", false).unwrap();
+        empty.set_query("", false).unwrap();
+        assert_eq!(empty.generation(), g0, "a query that leaves the list empty is not a change");
+        let changes: [fn(&mut FindEngine); 3] = [|e| e.evict_before(1), |e| e.drop_lines_from(3), |e| e.set_query("x", false).unwrap()];
+        for change in changes {
+            let g = e.generation();
+            change(&mut e);
+            assert_ne!(e.generation(), g);
+        }
+    }
+
+    #[test]
+    fn the_current_match_is_always_in_the_list() {
+        let mut e = engine_with_one_match_per_line(6);
+        assert!(!e.set_current(m(6, 0, 6, 0)));
+        assert_eq!(e.current(), None);
+        let current = e.matches()[2];
+        assert!(e.set_current(current));
+        assert_eq!(e.current(), Some(current));
+        e.evict_before(2);
+        e.drop_lines_from(3);
+        assert_eq!(e.current(), Some(current), "cuts around the current match keep it");
+        e.drop_lines_from(2);
+        assert_eq!(e.current(), None, "dropping its line ends it");
+        let mut e = engine_with_one_match_per_line(6);
+        e.set_current(e.matches()[1]);
+        e.evict_before(2);
+        assert_eq!(e.current(), None, "evicting its line ends it");
+        assert!(!e.set_current(m(1, 0, 1, 0)), "an evicted match cannot become current");
+        e.set_current(e.matches()[0]);
+        e.set_query("x", false).unwrap();
+        assert_eq!(e.current(), None, "a new query ends it");
+    }
+
+    #[test]
+    fn the_matches_in_lines_are_those_touching_them() {
+        let mut e = FindEngine::default();
+        e.set_query("xx", false).unwrap();
+        // lines 0, 1-2 (one match wrapping), 4
+        for (abs, rows) in [(0, &["xx"][..]), (1, &["   x", "x  "]), (4, &["xx"])] {
+            let (text, cells) = line(rows, narrow);
+            e.feed_line(abs, &text, &cells);
+        }
+        let all = e.matches().to_vec();
+        assert_eq!(all, [m(0, 0, 0, 1), m(1, 3, 2, 0), m(4, 0, 4, 1)]);
+        assert_eq!(e.matches_in_lines(2, 4), &all[1..2], "a match ending in the window is in it");
+        assert_eq!(e.matches_in_lines(0, 2), &all[..2], "a match starting in the window is in it");
+        assert_eq!(e.matches_in_lines(3, 4), []);
+        assert_eq!(e.matches_in_lines(0, 9), &all[..]);
+        assert_eq!(e.matches_in_lines(4, 4), [], "an empty window holds nothing");
     }
 }

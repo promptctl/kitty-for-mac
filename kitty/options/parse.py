@@ -1022,6 +1022,12 @@ class Parser:
         for k, v in filter_notification(val, ans["filter_notification"]):
             ans["filter_notification"][k] = v
 
+    def find_match_background(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['find_match_background'] = to_color(val)
+
+    def find_match_foreground(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['find_match_foreground'] = to_color(val)
+
     def focus_follows_mouse(self, val: str, ans: dict[str, typing.Any]) -> None:
         val = val.lower()
         if val not in self.choices_for_focus_follows_mouse:

@@ -12,6 +12,18 @@ from kitty.window import pagerhist
 from .base import BaseTest, draw_multicell, parse_bytes
 
 
+# the bits of the per-cell selection byte screen_apply_selection writes
+SELECTION_BIT, FIND_MATCH_BIT = 1, 32
+
+
+def cells_with(s, bits, all_bits=False):
+    ''' The (x, y) screen cells whose selection byte has any (or all) of bits '''
+    data = s.current_selections()
+    # the render buffer may start with a pixel scroll row above screen row 0
+    leading = (len(data) // s.columns - s.lines) * s.columns
+    return [(i % s.columns, i // s.columns) for i, b in enumerate(data[leading:]) if (b & bits == bits if all_bits else b & bits)]
+
+
 class TestScreen(BaseTest):
     def test_wide_character_after_scaled_text_collision(self) -> None:
         for lines in (2, 4):
@@ -1717,6 +1729,189 @@ class TestScreen(BaseTest):
         # the query is text: bytes, even valid UTF-8, are refused before reaching the engine
         self.assertRaises(TypeError, s.find_set_query, b'\xff', False)
         self.assertRaises(TypeError, s.find_set_query, b'x', False)
+
+    def test_find_highlight(self):
+        from kitty.constants import is_macos
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+        from .base import draw_multicell
+
+        def highlighted(s):
+            return cells_with(s, FIND_MATCH_BIT)
+
+        def search(s, query):
+            s.find_set_query(query, False)
+            return highlighted(s)
+
+        # one physical line, a wrapped line (fill to the row end, from column 0 after), wide chars
+        s = self.create_screen(cols=10, lines=2)
+        s.draw('abxab')
+        self.ae(search(s, 'ab'), [(0, 0), (1, 0), (3, 0), (4, 0)])
+        s = self.create_screen(cols=5, lines=3)
+        s.draw('abcdefghijk')
+        self.ae(search(s, 'dej'), [])
+        self.ae(search(s, 'efghijk'), [(4, 0), (0, 1), (1, 1), (2, 1), (3, 1), (4, 1), (0, 2)])
+        s = self.create_screen(cols=10, lines=1)
+        s.draw('a中b中c')
+        self.ae(search(s, '中'), [(1, 0), (2, 0), (4, 0), (5, 0)])
+
+        # scaled text: the highlight covers every row of the cell's scale, as selection does
+        s = self.create_screen(cols=8, lines=3)
+        s.draw('a'), draw_multicell(s, 'b', scale=2), s.draw('c')
+        self.ae(search(s, 'bc'), [(1, 0), (2, 0), (3, 0), (1, 1), (2, 1)])
+
+        # scrolled into history: the viewport shows earlier lines and their matches
+        s = self.create_screen(cols=5, lines=2, scrollback=10)
+        for i in range(6):
+            s.draw(f'x{i}')
+            s.carriage_return(), s.linefeed()
+        self.ae(search(s, 'x'), [(0, 0)])
+        s.scroll(3, True)
+        self.ae(highlighted(s), [(0, 0), (0, 1)])
+        s.scroll(3, False)
+        self.ae(highlighted(s), [(0, 0)])
+
+        # output that scrolls the screen moves the highlights with the text and marks them dirty
+        self.assertFalse(s.is_selection_dirty())
+        s.draw('x6'), s.carriage_return(), s.linefeed()
+        self.assertTrue(s.is_selection_dirty())
+        self.ae(highlighted(s), [])
+        self.assertFalse(s.is_selection_dirty())
+        s.find_set_query('x6', False)
+        self.assertTrue(s.is_selection_dirty())
+        self.ae(highlighted(s), [(0, 0), (1, 0)])
+        s.find_clear()
+        self.assertTrue(s.is_selection_dirty())
+        self.ae(highlighted(s), [])
+        # output that moves no highlight repaints nothing, with no query or with no match in view
+        s.draw('y'), s.carriage_return(), s.linefeed()
+        self.assertFalse(s.is_selection_dirty())
+        s.find_set_query('x0', False)
+        self.ae(highlighted(s), [])
+        s.draw('y'), s.carriage_return(), s.linefeed()
+        self.assertFalse(s.is_selection_dirty())
+
+        # paused rendering keeps the highlights on the paused snapshot while output arrives
+        s = self.create_screen(cols=10, lines=3, scrollback=50)
+        for i in range(40):
+            s.draw(f'row{i:03d}')
+            s.carriage_return(), s.linefeed()
+        s.scroll(20, True)
+        top = s.abs_line_at_viewport_top()
+        self.ae(search(s, f'row{top + 1:03d}'), [(x, 1) for x in range(6)])
+        before = s.current_selections()
+        self.assertTrue(s.pause_rendering(True, 5000))
+        s.draw('row0zz'), s.carriage_return(), s.linefeed()
+        self.ae(s.current_selections(), before)
+
+        # the alternate screen shows no main buffer line, so no main buffer match
+        s = self.create_screen(cols=10, lines=2)
+        s.draw('abc')
+        self.ae(search(s, 'b'), [(1, 0)])
+        s.toggle_alt_screen()
+        s.draw('abc')
+        self.assertTrue(s.is_selection_dirty())
+        self.ae(highlighted(s), [])
+        s.toggle_alt_screen()
+        self.ae(highlighted(s), [(1, 0)])
+
+        # a user selection over a match carries both bits; the shaders paint selection over match
+        s.start_selection(0, 0)
+        s.update_selection(2, 0)
+        self.ae(cells_with(s, SELECTION_BIT), [(0, 0), (1, 0), (2, 0)])
+        self.ae(highlighted(s), [(1, 0)])
+        s.clear_selection()
+
+        # user markers are untouched by a search
+        s = self.create_screen(cols=10, lines=1)
+        s.draw('abab')
+        s.set_marker(marker_from_regex('a', 2))
+        self.ae(s.marked_cells(), [(0, 0, 2), (2, 0, 2)])
+        self.ae(search(s, 'b'), [(1, 0), (3, 0)])
+        self.ae(s.marked_cells(), [(0, 0, 2), (2, 0, 2)])
+
+    def test_find_current_match(self):
+        from kitty.constants import is_macos
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+
+        def text(s):
+            return ''.join(s.text_for_selection())
+
+        s = self.create_screen(cols=5, lines=2, scrollback=10)
+        for i in range(4):
+            s.draw(f'ab{i}')
+            s.carriage_return(), s.linefeed()
+        self.ae(s.find_set_query('ab', False), 4)
+        matches = s.find_matches()
+        # the current match is the selection, also when its line is in history
+        both = SELECTION_BIT | FIND_MATCH_BIT
+        s.find_set_current(matches[3])
+        self.ae(text(s), 'ab')
+        self.ae(cells_with(s, both, all_bits=True), [(0, 0), (1, 0)])
+        s.find_set_current(matches[0])
+        self.ae(text(s), 'ab')
+        s.scroll(3, True)
+        self.ae(cells_with(s, both, all_bits=True), [(0, 0), (1, 0)])
+        s.scroll(3, False)
+        first, *_, last = matches
+        self.assertRaises(LookupError, s.find_set_current, (last[0] + 1, 0, last[0] + 1, 1))
+        self.assertRaises(TypeError, s.find_set_current, 3)
+        self.ae(text(s), 'ab')
+        # find_clear clears the selection find made, even after output scrolled it
+        s.draw('zz'), s.carriage_return(), s.linefeed()
+        s.find_clear()
+        self.assertFalse(s.has_selection())
+        # and so does a new query, which ends the current match whether or not it finds any
+        s.find_set_query('ab', False)
+        s.find_set_current(s.find_matches()[1])
+        self.ae(s.find_set_query('abz', False), 0)
+        self.assertFalse(s.has_selection())
+        # a match names itself, so one still in the list stays selectable after eviction moves the list
+        s.find_set_query('ab', False)
+        kept = s.find_matches()[-1]
+        while first in s.find_matches():
+            s.draw('qq'), s.carriage_return(), s.linefeed()
+        self.assertIn(kept, s.find_matches())
+        self.assertRaises(LookupError, s.find_set_current, first)
+        s.find_set_current(kept)
+        self.ae(text(s), 'ab')
+        # the alternate screen shows none of the main buffer, so nothing there can be selected
+        s.toggle_alt_screen()
+        self.assertRaises(RuntimeError, s.find_set_current, kept)
+        s.toggle_alt_screen()
+        # find_clear leaves alone a selection the user made since
+        s.find_set_query('ab', False)
+        s.find_set_current(s.find_matches()[1])
+        s.start_selection(0, 0)
+        s.update_selection(1, 0)
+        selected = text(s)
+        s.find_clear()
+        self.ae(text(s), selected)
+
+        # the selection is find's by how it was made, not by its cells: one the user makes over
+        # the same cells, or extends, is theirs; one whose match eviction ended is still find's
+        s = self.create_screen(cols=5, lines=2, scrollback=2)
+        s.draw('ab'), s.carriage_return(), s.linefeed()
+        s.find_set_query('ab', False)
+        s.find_set_current(s.find_matches()[0])
+        finds = s.current_selections()
+        s.start_selection(0, 0)
+        s.update_selection(1, 0)
+        self.ae(s.current_selections(), finds)
+        s.find_clear()
+        self.assertTrue(s.has_selection())
+        s.find_set_query('ab', False)
+        s.find_set_current(s.find_matches()[0])
+        s.update_selection(0, 1)
+        s.find_clear()
+        self.assertTrue(s.has_selection())
+        s.find_set_query('ab', False)
+        s.find_set_current(s.find_matches()[0])
+        while s.find_matches():
+            s.draw('qq'), s.carriage_return(), s.linefeed()
+        s.find_clear()
+        self.assertFalse(s.has_selection())
 
     def test_user_marking(self):
 

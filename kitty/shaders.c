@@ -1157,7 +1157,7 @@ cell_update_uniform_block(
         // once per vertex. These must come first and the fourth component of
         // each is unused padding, see CellRenderData in background.slang.
         GLfloat default_fg_lin[4], default_bg_lin[4], highlight_fg_lin[4], highlight_bg_lin[4];
-        GLfloat main_cursor_fg_lin[4], main_cursor_bg_lin[4], url_color_lin[4];
+        GLfloat main_cursor_fg_lin[4], main_cursor_bg_lin[4], url_color_lin[4], find_match_fg_lin[4], find_match_bg_lin[4];
         GLfloat extra_cursor_fg_lin[4], extra_cursor_bg_lin[4];
 
         GLfloat use_cell_bg_for_selection_fg, use_cell_fg_for_selection_color, use_cell_for_selection_bg;
@@ -1345,6 +1345,8 @@ cell_update_uniform_block(
     linear_color_vec4(rd->main_cursor_fg_lin, main_cursor_fg);
     linear_color_vec4(rd->main_cursor_bg_lin, main_cursor_bg);
     linear_color_vec4(rd->url_color_lin, OPT(url_color));
+    linear_color_vec4(rd->find_match_fg_lin, OPT(find_match_foreground));
+    linear_color_vec4(rd->find_match_bg_lin, OPT(find_match_background));
     linear_color_vec4(rd->extra_cursor_fg_lin, dynamic_color_for_gpu(cp, rd->extra_cursor_fg));
     linear_color_vec4(rd->extra_cursor_bg_lin, dynamic_color_for_gpu(cp, rd->extra_cursor_bg));
     color_type default_bg = rd->bg_colors0;
