@@ -59,6 +59,8 @@ typedef void (*FindMatchVisitor)(void *ctx, const FindMatch *run, size_t n);
 // Calls visit with the matches covering any of the lines [first, limit), in buffer order, a
 // run at a time, before it returns. visit must not use the engine.
 void kitty_rs_find_each_match_in_lines(const FindEngine *engine, uint64_t first, uint64_t limit, FindMatchVisitor visit, void *ctx);
+// How many matches cover any of the lines [first, limit).
+size_t kitty_rs_find_count_in_lines(const FindEngine *engine, uint64_t first, uint64_t limit);
 // Counts the changes to the match list: equal generations mean the same matches.
 uint64_t kitty_rs_find_generation(const FindEngine *engine);
 // The current match, always one of the matches: set_query and the cuts that drop it end it.

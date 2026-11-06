@@ -209,6 +209,20 @@ pub unsafe extern "C" fn kitty_rs_find_each_match_in_lines(
     }
 }
 
+/// How many matches cover any of the lines `first..limit`.
+///
+/// # Safety
+/// `engine` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_count_in_lines(
+    engine: *const FindEngine,
+    first: u64,
+    limit: u64,
+) -> usize {
+    // SAFETY: the caller's contract above.
+    unsafe { &*engine }.count_in_lines(first, limit)
+}
+
 /// Counts the changes to the match list.
 ///
 /// # Safety

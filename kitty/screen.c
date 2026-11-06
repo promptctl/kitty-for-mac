@@ -4719,18 +4719,21 @@ match_as_selection(FindMatch m, uint64_t abs_row0) {
     };
 }
 
-// Visits the matches on the rows from the pixel scroll row through the last screen row: none
-// while the alternate screen shows, since the engine searches the main buffer.
-static void
-visit_visible_find_matches(Screen *self, MainBufferView view, int extra_leading_rows, int scrolled_by, FindMatchVisitor visit, void *ctx) {
+typedef struct { uint64_t first, limit; } FindLines;
+
+// The rows from the pixel scroll row through the last screen row: none while the alternate
+// screen shows, since the engine searches the main buffer.
+static FindLines
+visible_find_lines(Screen *self, MainBufferView view, int extra_leading_rows, int scrolled_by) {
     const int64_t top = (int64_t)view.abs_row0 - scrolled_by;
-    const uint64_t first = MAX(top - extra_leading_rows, 0), limit = view.shows_main_buffer ? (uint64_t)top + self->lines : first;
-    kitty_rs_find_each_match_in_lines(screen_find_engine(self), first, limit, visit, ctx);
+    const uint64_t first = MAX(top - extra_leading_rows, 0);
+    return (FindLines){.first = first, .limit = view.shows_main_buffer ? (uint64_t)top + self->lines : first};
 }
 
 static void
-count_find_match_run(void *count, const FindMatch *run UNUSED, size_t n) {
-    *(size_t*)count += n;
+visit_visible_find_matches(Screen *self, MainBufferView view, int extra_leading_rows, int scrolled_by, FindMatchVisitor visit, void *ctx) {
+    const FindLines l = visible_find_lines(self, view, extra_leading_rows, scrolled_by);
+    kitty_rs_find_each_match_in_lines(screen_find_engine(self), l.first, l.limit, visit, ctx);
 }
 
 struct PauseFindMatches { struct PausedFindMatches *p; bool out_of_memory; };
@@ -6593,8 +6596,8 @@ screen_is_selection_dirty(Screen *self) {
 #ifdef __APPLE__
     // a moved view repaints only when it moves highlights: some were drawn or some are due
     const MainBufferView view = main_buffer_view(self);
-    size_t visible = 0;
-    visit_visible_find_matches(self, view, pixel_scroll_enabled(self), self->scrolled_by, count_find_match_run, &visible);
+    const FindLines l = visible_find_lines(self, view, pixel_scroll_enabled(self), self->scrolled_by);
+    const size_t visible = kitty_rs_find_count_in_lines(screen_find_engine(self), l.first, l.limit);
     const bool view_moved = view.abs_row0 != self->find_last_rendered.view.abs_row0 || view.shows_main_buffer != self->find_last_rendered.view.shows_main_buffer;
     if (kitty_rs_find_generation(self->find_engine) != self->find_last_rendered.generation ||
         (view_moved && (visible || self->find_last_rendered.painted)))
@@ -7288,7 +7291,7 @@ find_logical_lines(Screen *self, PyObject *o UNUSED) {
 #ifdef __APPLE__
 static PyObject *
 find_count(Screen *self, PyObject *o UNUSED) {
-    return PyLong_FromSize_t(kitty_rs_find_status(screen_find_engine(self), find_buffer_bounds(self)).total);
+    return PyLong_FromSize_t(kitty_rs_find_count_in_lines(screen_find_engine(self), 0, UINT64_MAX));
 }
 
 static PyObject *
@@ -7569,22 +7572,31 @@ find_set_query(Screen *self, PyObject *args) {
     Py_RETURN_TRUE;
 }
 
-// a Python error raised by one run leaves list NULL and ends the collection
 static void
-collect_find_match_run(void *list, const FindMatch *run, size_t n) {
-    PyObject **ans = list;
-    for (size_t i = 0; *ans && i < n; i++) {
-        RAII_PyObject(t, find_match_as_tuple(run[i]));
-        if (!t || PyList_Append(*ans, t) != 0) Py_CLEAR(*ans);
-    }
+copy_find_match_run(void *dest, const FindMatch *run, size_t n) {
+    FindMatch **d = dest;
+    memcpy(*d, run, n * sizeof(FindMatch));
+    *d += n;
 }
 
+// The matches are copied out before any Python object is made: making one can run arbitrary
+// Python, which may use the engine the visit is reading.
 static PyObject *
 find_matches(Screen *self, PyObject *o UNUSED) {
-    RAII_PyObject(ans, PyList_New(0));
+    const FindEngine *engine = screen_find_engine(self);
+    const size_t count = kitty_rs_find_count_in_lines(engine, 0, UINT64_MAX);
+    RAII_ALLOC(FindMatch, matches, malloc(MAX(count, 1u) * sizeof(FindMatch)));
+    if (!matches) return PyErr_NoMemory();
+    FindMatch *end = matches;
+    kitty_rs_find_each_match_in_lines(engine, 0, UINT64_MAX, copy_find_match_run, &end);
+    RAII_PyObject(ans, PyTuple_New(count));
     if (!ans) return NULL;
-    kitty_rs_find_each_match_in_lines(screen_find_engine(self), 0, UINT64_MAX, collect_find_match_run, &ans);
-    return ans ? PyList_AsTuple(ans) : NULL;
+    for (size_t i = 0; i < count; i++) {
+        PyObject *t = find_match_as_tuple(matches[i]);
+        if (!t) return NULL;
+        PyTuple_SET_ITEM(ans, i, t);
+    }
+    return Py_NewRef(ans);
 }
 #endif
 

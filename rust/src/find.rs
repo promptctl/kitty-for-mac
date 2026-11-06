@@ -419,10 +419,8 @@ impl FindEngine {
     /// True when the buffer's first line is searched, so a logical line the eviction cut holds
     /// matches the caller must re-feed.
     pub fn evict_before(&mut self, oldest: u64) -> bool {
-        let gone = self.matches.partition_point(|m| m.abs_start_line < oldest);
-        self.matches.replace(0..gone, Vec::new());
+        self.replace(0..oldest, Vec::new());
         self.searched.evict_before(oldest);
-        self.changed(gone);
         self.searched.contains(oldest)
     }
 
@@ -472,13 +470,24 @@ impl FindEngine {
     /// The matches covering any of the lines `first..limit`, in buffer order, as the
     /// contiguous runs they are stored in.
     pub fn matches_in_lines(&self, first: u64, limit: u64) -> impl Iterator<Item = &[FindMatch]> {
-        // matches never overlap, so their ends are in buffer order as well as their starts
+        self.matches.runs(self.lines_cut(first, limit))
+    }
+
+    /// How many matches cover any of the lines `first..limit`.
+    pub fn count_in_lines(&self, first: u64, limit: u64) -> usize {
+        self.lines_cut(first, limit).len()
+    }
+
+    fn lines_cut(&self, first: u64, limit: u64) -> Range<usize> {
+        // matches never overlap, so their ends are in buffer order as well as their starts. A
+        // match covers a line of the window when it ends at `first` or later and its first line
+        // from `first` on is inside it, so an empty window holds nothing.
         let from = self.matches.partition_point(|m| m.abs_end_line < first);
         let to = self
             .matches
-            .partition_point(|m| m.abs_start_line < limit)
+            .partition_point(|m| m.abs_start_line.max(first) < limit)
             .max(from);
-        self.matches.runs(from..to)
+        from..to
     }
 
     pub const fn generation(&self) -> u64 {
@@ -1317,6 +1326,9 @@ mod tests {
         assert_eq!(e.in_lines(3, 4), []);
         assert_eq!(e.in_lines(0, 9), &all[..]);
         assert_eq!(e.in_lines(4, 4), [], "an empty window holds nothing");
+        assert_eq!(e.in_lines(2, 2), [], "nor one a match crosses");
+        assert_eq!(e.count_in_lines(2, 4), 1);
+        assert_eq!(e.count_in_lines(2, 2), 0);
     }
 
     #[test]
