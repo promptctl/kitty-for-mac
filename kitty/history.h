@@ -44,13 +44,6 @@ typedef struct {
 } HistoryBuf;
 
 
-// Absolute line number of the physical line at index i, counting from the oldest held line
-// down through the screen rows below the ring: screen row y is i = count + y.
-static inline uint64_t
-historybuf_abs_line(const HistoryBuf *self, index_type i) {
-    return self->abs_oldest_line + i;
-}
-
 HistoryBuf *alloc_historybuf(unsigned int, unsigned int, unsigned int, TextCache *tc);
 HistoryBuf *historybuf_alloc_for_rewrap(unsigned int columns, HistoryBuf *self);
 void historybuf_finish_rewrap(HistoryBuf *dest, HistoryBuf *src);

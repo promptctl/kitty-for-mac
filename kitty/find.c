@@ -89,7 +89,7 @@ find_walk_main_buffer(Screen *self, FindLineSink sink, void *ctx) {
         if (!append_physical_line(&b, line, i - first)) return FIND_WALK_OUT_OF_MEMORY;
         const bool continues = line->cpu_cells[line->xnum - 1].next_char_was_wrapped && i + 1 < num_lines;
         if (!continues) {
-            const FindLogicalLine l = {.abs_first_line = historybuf_abs_line(hb, first), .text = b.text, .text_len = b.len, .cells = b.cells};
+            const FindLogicalLine l = {.abs_first_line = hb->abs_oldest_line + first, .text = b.text, .text_len = b.len, .cells = b.cells};
             if (!sink(ctx, &l)) return FIND_WALK_SINK_STOPPED;
             b.len = 0;
             first = i + 1;

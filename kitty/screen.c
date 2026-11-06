@@ -7443,10 +7443,10 @@ static PyMethodDef methods[] = {
                         MND(pause_rendering, METH_VARARGS) MND(hyperlink_at, METH_VARARGS) MND(toggle_alt_screen, METH_NOARGS) MND(reset_callbacks, METH_NOARGS)
                             MND(paste, METH_O) MND(paste_bytes, METH_O) MND(focus_changed, METH_O) MND(has_focus, METH_NOARGS)
                                 MND(has_activity_since_last_focus, METH_NOARGS) MND(copy_colors_from, METH_O) MND(set_marker, METH_VARARGS)
-                                    MND(marked_cells, METH_NOARGS) MND(find_logical_lines, METH_NOARGS) MND(scroll_to_next_mark, METH_VARARGS)
-                                        MND(update_only_line_graphics_data, METH_NOARGS) MND(bell, METH_NOARGS) MND(current_selections, METH_NOARGS)
-                                            MND(is_selection_dirty,
-                                                METH_NOARGS){"select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
+                                    MND(marked_cells, METH_NOARGS) MND(scroll_to_next_mark, METH_VARARGS) MND(update_only_line_graphics_data, METH_NOARGS)
+                                        MND(bell, METH_NOARGS) MND(current_selections, METH_NOARGS) MND(is_selection_dirty, METH_NOARGS){
+                                            "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
+    MND(find_logical_lines, METH_NOARGS)
 
     {NULL} /* Sentinel */
 };

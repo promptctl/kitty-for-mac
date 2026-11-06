@@ -1607,6 +1607,28 @@ class TestScreen(BaseTest):
         s.draw('x'), s.cursor_forward(1), s.draw('y')
         self.ae(s.find_logical_lines(), [(0, 'x y', row(0, 0, 1, 2))])
 
+        # find searches the text the line itself reports
+        s = self.create_screen(cols=20, lines=1)
+        s.draw('a中🐈bé\tz'), s.cursor_forward(2), s.draw('q')
+        self.ae(s.find_logical_lines()[0][1], str(s.line(0)))
+
+        # scaled text: each character covers its scale in cells
+        s = self.create_screen(cols=10, lines=2)
+        parse_bytes(s, b'\x1b]66;s=2;XY\x07')
+        self.ae(s.find_logical_lines()[0], (0, 'XY', [(0, 0, 1), (0, 2, 3)]))
+
+        # a rewrap renumbers every line after the first one it wraps; a taller window that
+        # rewraps nothing changes no number
+        s = self.create_screen(cols=5, lines=3, scrollback=10)
+        for i in range(6):
+            s.draw(str(i) * 4)
+            if i != 5:
+                s.carriage_return(), s.linefeed()
+        s.resize(3, 2)
+        self.ae(written(s), [(2 * i, str(i) * 4) for i in range(6)])
+        s.resize(5, 2)
+        self.ae(written(s), [(2 * i, str(i) * 4) for i in range(6)])
+
         # history ring full: surviving lines keep their absolute numbers, evicted ones are gone
         s = self.create_screen(cols=5, lines=2, scrollback=3)
         for i in range(10):
