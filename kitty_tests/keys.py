@@ -712,7 +712,7 @@ class TestKeys(BaseTest):
             af(tm.keyboard_mode_stack)
 
         # a multi-key mapping begun in a native view sends nothing to the child: on failure the
-        # failing key is the view's, as though the prefix had never been pressed
+        # failing key is the view's, as in the terminal the failing key is the child's
         tm = TM('map cmd+k>n new_window')
         self.ae(tm.native('cmd+k', 'x'), [True, False])
         af(tm.actions)
