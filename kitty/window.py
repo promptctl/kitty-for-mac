@@ -65,6 +65,8 @@ from .fast_data_types import (
     base64_decode,
     base64_encode,
     buffer_keys_in_window,
+    cocoa_find_bar_covered_pixels,
+    cocoa_update_find_bar,
     cell_size_for_window,
     click_mouse_cmd_output,
     click_mouse_url,
@@ -812,6 +814,9 @@ class Window:
         self.actions_on_focus_change: list[Callable[['Window', bool], None]] = []
         self.actions_on_removal: list[Callable[['Window'], None]] = []
         self.current_marker_spec: tuple[str, str | tuple[tuple[int, str], ...]] | None = None
+        # [LAW:one-source-of-truth] the last find query: the engine's copy is derived from it and the
+        # find bar's field shows it
+        self.find_query = ''
         self.kitten_result_processors: list[Callable[['Window', Any], None]] = []
         self.child_is_launched = False
         self.restored_scrollback = b''
@@ -2998,15 +3003,35 @@ class Window:
         if not self.screen.is_main_linebuf():
             return True
         self.finish_scroll_animation()
+        # Esc ended the engine's search but not the query: stepping searches for it again
+        if self.find_query and not self.screen.find_status()[1]:
+            self.screen.find_set_query(self.find_query, self.find_query == self.find_query.lower())
         # with nothing to move to there is nothing new to show, so a paused frame stays paused
-        if self.screen.find_step(backwards) is not None:
+        if self.screen.find_step(backwards, self.find_bar_top_inset()) is not None:
             self.screen.pause_rendering(False)
+        self.push_find_bar()
         return None
 
     def find(self, text: str) -> None:
         "Search the whole buffer for text, case-insensitively unless it has an uppercase letter, and step to the first match"
+        self.find_query = text
         self.screen.find_set_query(text, text == text.lower())
         self.find_step(False)
+
+    def find_bar_top_inset(self) -> int:
+        "The rows at the top of this window the find bar covers: a match is revealed below them"
+        if not is_macos:
+            return 0
+        covered = cocoa_find_bar_covered_pixels(self.os_window_id) - self.geometry.top
+        return max(0, -(-covered // cell_size_for_window(self.os_window_id)[1]))
+
+    # [LAW:single-enforcer] the one place the find bar is told what the search is. The bar belongs
+    # to its OS window and shows the search of that window's active kitty window.
+    def push_find_bar(self) -> None:
+        tm = get_boss().os_window_map.get(self.os_window_id)
+        if is_macos and tm and tm.active_window is self:
+            current, total, _ = self.screen.find_status()
+            cocoa_update_find_bar(self.os_window_id, self.find_query, current, total)
 
     @ac('sc', 'Make the next match of the find query, later in the buffer, the current match and the selection, scrolling it into view and wrapping at the end, on macOS')
     def find_next(self) -> bool | None:
@@ -3029,6 +3054,7 @@ class Window:
     def find_clear(self) -> None:
         self.screen.pause_rendering(False)
         self.screen.find_clear()
+        self.push_find_bar()
 
     @ac(
         'misc',

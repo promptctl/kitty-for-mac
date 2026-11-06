@@ -871,6 +871,16 @@ def cocoa_minimize_os_window(os_window_id: Optional[int] = None) -> None:
 def cocoa_show_find_bar_for_os_window(os_window_id: int = 0) -> None:
     pass
 
+def cocoa_update_find_bar(os_window_id: int, query: str, current: int, total: int) -> None:
+    """Show the query in the OS window's find bar field and "current of total" beside it; nothing
+    when it has no bar. macOS only."""
+    pass
+
+def cocoa_find_bar_covered_pixels(os_window_id: int) -> int:
+    """How far down from the top of the OS window's terminal the find bar covers it, in pixels;
+    0 while the bar is hidden. macOS only."""
+    pass
+
 def locale_is_valid(name: str) -> bool:
     pass
 
@@ -1277,12 +1287,12 @@ class Screen:
         screen shows. macOS only."""
         pass
 
-    def find_step(self, backwards: bool) -> tuple[int, int, int, int] | None:
+    def find_step(self, backwards: bool, top_inset: int = 0) -> tuple[int, int, int, int] | None:
         """Make the next match, or the previous one when backwards, the current match and the
-        selection, scrolling it to the middle of the screen when it is not wholly on screen, and
-        return it; None when there are no matches. From the current match it steps past it,
+        selection, scrolling it to the middle of the screen below its top_inset rows, which
+        something covers, when it is not wholly on those rows, and return it; None when there are no matches. From the current match it steps past it,
         wrapping at either end. With none it starts where the user is looking: their selection,
-        else the screen. A selection the user makes or changes ends the current match.
+        else the rows below the inset. A selection the user makes or changes ends the current match.
         RuntimeError while the alternate screen shows. macOS only."""
         pass
 

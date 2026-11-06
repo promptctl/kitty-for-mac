@@ -272,6 +272,23 @@ key_window_screen(void) {
     return tab->num_windows > tab->active_window ? tab->windows[tab->active_window].render_data.screen : NULL;
 }
 
+// The find bar's events, run on the main thread as plain calls into Boss: they must not
+// reorder behind keystrokes typed after them, which a pending action would.
+@interface FindBarBridge : NSObject <KittyFindBarDelegate>
+@end
+
+@implementation FindBarBridge
+- (void)findBar:(NSWindow *)window queryChanged:(NSString *)text {
+    call_boss(find_bar_query_changed, "Ks", cocoa_os_window_id_for_window(window), [text UTF8String]);
+}
+- (void)findBar:(NSWindow *)window step:(BOOL)forward {
+    call_boss(find_bar_step, "KO", cocoa_os_window_id_for_window(window), forward ? Py_True : Py_False);
+}
+- (void)findBarClosed:(NSWindow *)window {
+    call_boss(find_bar_closed, "K", cocoa_os_window_id_for_window(window));
+}
+@end
+
 @implementation GlobalMenuTarget
 
 - (void)user_menu_action:(id)sender {
@@ -986,6 +1003,12 @@ update_global_shortcuts_in_menu(void) {
 
 static void
 cocoa_create_global_menu(void) {
+    // the bar needs its delegate before the first Cmd+F, which needs this menu
+    static FindBarBridge *find_bar_bridge;
+    if (!find_bar_bridge) {
+        find_bar_bridge = [[FindBarBridge alloc] init];
+        KittyFindBar.delegate = find_bar_bridge;
+    }
     NSString *app_name = find_app_name();
     NSMenu *bar = [[NSMenu alloc] init];
     GlobalMenuTarget *global_menu_target = [GlobalMenuTarget shared_instance];
@@ -1880,6 +1903,16 @@ cocoa_keychain_list_accounts(PyObject *self UNUSED, PyObject *args) {
 void
 cocoa_show_find_bar(void *w) {
     [KittyFindBar showIn:(NSWindow *)w];
+}
+
+void
+cocoa_update_find_bar(void *w, const char *query, long current, long total) {
+    [KittyFindBar updateIn:(NSWindow *)w query:@(query) current:current total:total];
+}
+
+long
+cocoa_find_bar_covered_pixels(void *w) {
+    return [KittyFindBar coveredPixelsIn:(NSWindow *)w];
 }
 // }}}
 

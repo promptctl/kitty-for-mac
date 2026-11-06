@@ -4292,6 +4292,22 @@ class Boss:
         if (osw_id := self.os_window_id_for_dispatch()) is not None:
             cocoa_show_find_bar_for_os_window(osw_id)
 
+    # The find bar's events. The bar targets the active window of its OS window.
+    def find_bar_window(self, os_window_id: int) -> Window | None:
+        return tm.active_window if (tm := self.os_window_map.get(os_window_id)) else None
+
+    def find_bar_query_changed(self, os_window_id: int, text: str) -> None:
+        if w := self.find_bar_window(os_window_id):
+            w.find(text)
+
+    def find_bar_step(self, os_window_id: int, forward: bool) -> None:
+        if w := self.find_bar_window(os_window_id):
+            w.find_step(not forward)
+
+    def find_bar_closed(self, os_window_id: int) -> None:
+        if w := self.find_bar_window(os_window_id):
+            w.find_clear()
+
     def copy_or_noop(self) -> bool | None:
         if w := self.active_window:
             ans = w.copy_or_noop()

@@ -7123,12 +7123,12 @@ find_set_current(Screen *self, PyObject *args) {
 }
 
 // Where the user is looking, from the first cell to just past the last in buffer order: the
-// selection, or with none the rows on screen. The empty selection a click leaves shows
+// selection, or with none the rows on screen below the top_inset rows something covers. The empty selection a click leaves shows
 // nothing and outlives the click, so it is no place the user can see.
 static void
-find_step_origin(Screen *self, MainBufferView view, FindPos *start, FindPos *end) {
+find_step_origin(Screen *self, MainBufferView view, index_type top_inset, FindPos *start, FindPos *end) {
     const uint64_t top = view.abs_row0 - self->scrolled_by;
-    *start = (FindPos){.line = top};
+    *start = (FindPos){.line = top + top_inset};
     *end = (FindPos){.line = top + self->lines};
     IterationData idata;
     if (self->selections.count) iteration_data(self->selections.items, &idata, self->columns, -(int)self->historybuf->count, 0);
@@ -7139,29 +7139,32 @@ find_step_origin(Screen *self, MainBufferView view, FindPos *start, FindPos *end
     *end = (FindPos){.line = view.abs_row0 + idata.y_limit - 1, .x = last_x_limit};
 }
 
-// Scrolls a match that is not wholly on screen to its middle; one taller than the screen to
-// its first line on the top row.
+// Scrolls a match that is not wholly on screen below the top_inset rows something covers to the
+// middle of those rows; one taller than them to its first line on the first of them.
 static void
-reveal_find_match(Screen *self, FindMatch m, MainBufferView view) {
-    const int64_t top = (int64_t)view.abs_row0 - self->scrolled_by, lines = self->lines;
+reveal_find_match(Screen *self, FindMatch m, MainBufferView view, index_type top_inset) {
+    const int64_t top = (int64_t)view.abs_row0 - self->scrolled_by + top_inset, lines = self->lines - top_inset;
     const int64_t start = m.abs_start_line, span = (int64_t)m.abs_end_line - start + 1;
     if (start >= top && start + span <= top + lines) return;
-    const int64_t new_top = start - MAX(lines - span, 0) / 2;
+    const int64_t new_top = start - MAX(lines - span, 0) / 2 - top_inset;
     screen_history_scroll_to_absolute(self, (double)((int64_t)view.abs_row0 - new_top));
 }
 
 static PyObject *
 find_step(Screen *self, PyObject *args) {
     int backwards;
-    if (!PyArg_ParseTuple(args, "p", &backwards)) return NULL;
+    index_type top_inset = 0;
+    if (!PyArg_ParseTuple(args, "p|I", &backwards, &top_inset)) return NULL;
+    // at least one row stays to show a match on
+    top_inset = MIN(top_inset, self->lines - 1);
     MainBufferView view;
     if (!main_buffer_view_for_selecting(self, &view)) return NULL;
     FindEngine *engine = screen_find_engine(self);
     FindPos start, end;
-    find_step_origin(self, view, &start, &end);
+    find_step_origin(self, view, top_inset, &start, &end);
     FindMatch m;
     if (!kitty_rs_find_step(engine, backwards, start, end, &m)) Py_RETURN_NONE;
-    reveal_find_match(self, m, view);
+    reveal_find_match(self, m, view, top_inset);
     select_find_match(self, m, view);
     return find_match_as_tuple(m);
 }

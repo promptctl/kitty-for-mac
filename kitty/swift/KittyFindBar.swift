@@ -6,19 +6,57 @@
 
 import AppKit
 
+// What the bar tells kitty: it knows a query string, a step direction and an "n of m" status,
+// and nothing of the engine. kitty's Objective-C implements this and sets KittyFindBar.delegate.
+@MainActor
+@objc public protocol KittyFindBarDelegate: AnyObject {
+    func findBar(_ window: NSWindow, queryChanged text: String)
+    func findBar(_ window: NSWindow, step forward: Bool)
+    func findBarClosed(_ window: NSWindow)
+}
+
 @MainActor
 @objc(KittyFindBar)
 public final class KittyFindBar: NSView, NSSearchFieldDelegate {
+    // Set once at launch, before any bar exists; unset, the first edit crashes instead of going nowhere
+    @objc public static var delegate: KittyFindBarDelegate!
+
     private let field = NSSearchField()
+    private let status = NSTextField(labelWithString: "")
 
     // [LAW:dataflow-not-control-flow] The same steps whether the bar is new, hidden or already open:
-    // a repeated Cmd+F lands in the field with all of its text selected.
+    // a repeated Cmd+F lands in the field with all of its text selected. Showing a hidden bar also
+    // searches its text again, since hiding the bar cleared the highlights; an open bar's match stays.
     @objc public static func show(in window: NSWindow) {
         // Every GLFW window has a content view: the terminal
         let bar = bar(in: window.contentView!)
+        let wasHidden = bar.isHidden
         bar.isHidden = false
         window.makeFirstResponder(bar.field)
         bar.field.selectText(nil)
+        if wasHidden { bar.queryChanged() }
+    }
+
+    // Python owns the query and reports it with where the search stands: the current match's place
+    // among the matches, 0 when none is current. A window without a bar has nothing to show it in.
+    @objc public static func update(in window: NSWindow, query: String, current: Int, total: Int) {
+        guard let bar = window.contentView?.subviews.lazy.compactMap({ $0 as? KittyFindBar }).first else { return }
+        // typing in the field is what usually changed the query, and rewriting the text would reset its cursor
+        if bar.field.stringValue != query { bar.field.stringValue = query }
+        bar.status.stringValue = switch (current, total) {
+        case (_, 0): bar.field.stringValue.isEmpty ? "" : "0 of 0"
+        case (0, _): "\(total) matches"
+        default: "\(current) of \(total)"
+        }
+    }
+
+    // How far down from the top of the terminal the bar covers it, in pixels: 0 while it is hidden,
+    // so a match is never revealed under it.
+    @objc public static func coveredPixels(in window: NSWindow) -> Int {
+        guard let terminal = window.contentView,
+              let bar = terminal.subviews.lazy.compactMap({ $0 as? KittyFindBar }).first, !bar.isHidden
+        else { return 0 }
+        return Int(((terminal.bounds.maxY - bar.frame.minY) * window.backingScaleFactor).rounded(.up))
     }
 
     // [LAW:one-source-of-truth] The view hierarchy is the only record of a window's bar,
@@ -42,14 +80,26 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
 
         field.controlSize = .small
         field.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+        // the action runs on every edit, the field's clear button included
         field.sendsWholeSearchString = false
-        field.sendsSearchStringImmediately = false
+        field.sendsSearchStringImmediately = true
+        field.target = self
+        field.action = #selector(queryChanged)
         field.delegate = self
+        status.controlSize = .small
+        status.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize(for: .small), weight: .regular)
+        status.textColor = .secondaryLabelColor
+        let steps = NSSegmentedControl(
+            images: ["chevron.up", "chevron.down"].map { NSImage(systemSymbolName: $0, accessibilityDescription: nil)! },
+            trackingMode: .momentary, target: self, action: #selector(stepPressed))
+        steps.controlSize = .small
+        steps.setToolTip("Previous match", forSegment: 0)
+        steps.setToolTip("Next match", forSegment: 1)
         let done = NSButton(title: "Done", target: self, action: #selector(dismiss))
         done.controlSize = .small
         done.bezelStyle = .rounded
 
-        let row = NSStackView(views: [field, done])
+        let row = NSStackView(views: [field, status, steps, done])
         row.edgeInsets = NSEdgeInsets(top: 4, left: 6, bottom: 4, right: 6)
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
@@ -84,17 +134,34 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
     public override func otherMouseDragged(with event: NSEvent) {}
     public override func scrollWheel(with event: NSEvent) {}
 
-    // Esc in the field. Handling it here also stops NSSearchField's default of clearing the text,
-    // which the next Cmd+F shows again.
+    @objc private func queryChanged() {
+        Self.delegate?.findBar(window!, queryChanged: field.stringValue)
+    }
+
+    // 0 is the previous match, 1 the next
+    @objc private func stepPressed(_ sender: NSSegmentedControl) {
+        Self.delegate?.findBar(window!, step: sender.selectedSegment == 1)
+    }
+
+    // Esc in the field closes the bar; handling it here also stops NSSearchField's default of
+    // clearing the text, which the next Cmd+F shows again. Return steps, and Shift+Return steps back.
     public func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        guard selector == #selector(cancelOperation(_:)) else { return false }
-        dismiss()
+        switch selector {
+        case #selector(cancelOperation(_:)):
+            dismiss()
+        case #selector(insertNewline(_:)):
+            Self.delegate?.findBar(window!, step: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false))
+        default:
+            return false
+        }
         return true
     }
 
     // Give focus back before hiding, so the terminal, not AppKit's fallback, takes it.
     @objc private func dismiss() {
-        window!.makeFirstResponder(window!.contentView)
+        let window = window!
+        window.makeFirstResponder(window.contentView)
         isHidden = true
+        Self.delegate?.findBarClosed(window)
     }
 }

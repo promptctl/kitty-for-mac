@@ -2010,9 +2010,45 @@ class TestScreen(BaseTest):
         self.ae(m[2] - m[0], 2)
         self.ae(s.abs_line_at_viewport_top(), m[0])
 
+        # rows something covers at the top are not where a match is revealed: it is centred on the rest
+        def row_of_revealed(top_inset):
+            s = self.create_screen(cols=3, lines=6, scrollback=40)
+            for i in range(30):
+                s.draw('Q' if i == 3 else 'ab'), s.carriage_return(), s.linefeed()
+            s.find_set_query('Q', False)
+            return s.find_step(False, top_inset)[0] - s.abs_line_at_viewport_top()
+        self.ae(row_of_revealed(0), 2)
+        self.ae(row_of_revealed(2), 3)
+
         # the alternate screen shows none of the main buffer, so nothing there can be stepped to
         s.toggle_alt_screen()
         self.assertRaises(RuntimeError, s.find_step, False)
+
+    def test_window_find_keeps_its_query_after_clear(self):
+        from types import SimpleNamespace
+
+        from kitty.constants import is_macos
+        from kitty.window import Window
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+        s = self.create_screen(cols=5, lines=4, scrollback=50)
+        for i in range(20):
+            s.draw(f'x{i:02d}')
+            s.carriage_return(), s.linefeed()
+        pushes = []
+        w = SimpleNamespace(screen=s, find_query='', finish_scroll_animation=lambda: None, find_bar_top_inset=lambda: 0,
+                            push_find_bar=lambda: pushes.append(s.find_status()))
+        w.find_step = lambda backwards: Window.find_step(w, backwards)
+        Window.find(w, 'x')
+        self.ae(w.find_query, 'x')
+        self.ae(pushes[-1][1], 20, 'the bar is told how many matches there are')
+        # Esc: the highlights go, the query stays, so Find Next with the bar hidden searches again
+        Window.find_clear(w)
+        self.ae(s.find_status(), (0, 0, False))
+        self.ae(pushes[-1], (0, 0, False))
+        Window.find_step(w, False)
+        self.ae(s.find_status()[1], 20)
+        self.assertGreater(pushes[-1][0], 0, 'and steps to a match')
 
     def test_user_marking(self):
 
