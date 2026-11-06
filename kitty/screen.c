@@ -7296,8 +7296,9 @@ find_status(Screen *self, PyObject *o UNUSED) {
 }
 
 // [LAW:one-source-of-truth] find_reported has this one writer, the read the window tells the
-// bar from, so it holds what the bar was last told. Reads that tell no bar, such as
-// follow_find_bar's, use find_status() and leave it alone.
+// bar from, so it holds what the window last told its bar. The bar shows it while the window
+// is active, and a window that becomes active tells the bar again. Reads that tell no bar, such
+// as follow_find_bar's, use find_status() and leave it alone.
 static PyObject *
 find_status_for_bar(Screen *self, PyObject *o UNUSED) {
     const FindStatus st = kitty_rs_find_status(screen_find_engine(self));
@@ -7312,8 +7313,9 @@ find_status_for_bar(Screen *self, PyObject *o UNUSED) {
 // the report runs Python. Until a report reaches the bar it is asked again every frame.
 bool
 screen_find_status_changed(Screen *self) {
-    // a paused screen shows the frame of the pause, and the engine read could release the find
-    // selection that frame copied: its status is reported once the pause ends
+    // a paused screen's buffer is the program's update half drawn, and the engine read would
+    // release a find selection over cells the update has not yet written back: its status is
+    // reported once the pause ends
     if (self->paused_rendering.expires_at) return false;
     const FindStatus st = kitty_rs_find_status(screen_find_engine(self));
     return st.current != self->find_reported.current || st.total != self->find_reported.total;

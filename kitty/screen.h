@@ -192,7 +192,7 @@ typedef struct {
         MainBufferView view;
         size_t painted;
     } find_last_rendered;
-    // the find status the find bar was last told, written only by find_status_for_bar
+    // the find status this window last told its find bar, written only by find_status_for_bar
     struct { size_t current, total; } find_reported;
 #endif
     bool has_focus;
