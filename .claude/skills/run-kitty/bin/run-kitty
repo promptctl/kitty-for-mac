@@ -30,28 +30,37 @@ case "$c" in
 esac
 
 ROOT=$(git rev-parse --show-toplevel)
-OUT=${KITTY_RUN_OUT:-/tmp/kitty-run}
 SETTLE=${KITTY_RUN_SETTLE:-0.4}
-RDIR=code/kitty-run  # relative to the remote home
-STATE=.cache/kitty-run
+[[ $SETTLE =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "run-kitty: KITTY_RUN_SETTLE is seconds, e.g. 0.4" >&2; exit 2; }
+# Parallel sessions in sibling worktrees share the test Mac, so each checkout gets its own
+# remote copy, state (pid, wid, shots) and local dir. Only the vendored crates and slang,
+# which are keyed by content and land whole, are shared.
+KEY=$(basename "$ROOT")-$(printf %s "$ROOT" | shasum | cut -c1-8)
+OUT=${KITTY_RUN_OUT:-/tmp/kitty-run/$KEY}
+CACHE=.cache/kitty-run  # relative to the remote home
+RDIR=code/kitty-run/$KEY
+STATE=$CACHE/$KEY
 KITTY_BIN="$RDIR/kitty/launcher/kitty"
-# One ssh connection carries every command of a session.
-SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=$OUT/ssh-%C" -o ControlPersist=10m)
-mkdir -p "$OUT"
+# One ssh connection carries every command; the socket path stays short whatever OUT is.
+mkdir -p "$OUT" /tmp/kitty-run/ssh
+SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=/tmp/kitty-run/ssh/%C" -o ControlPersist=10m)
 
 # up and sync pick a host and record it; every other command goes to the recorded host, so
 # keys and shots reach the Mac kitty was launched on even after the other one comes back.
 pick_host() {
-    if [[ -n "${KITTY_RUN_HOST:-}" ]]; then echo "$KITTY_RUN_HOST"; return; fi
-    if [[ $c != up && $c != sync && -s $OUT/host ]]; then cat "$OUT/host"; return; fi
-    local h
-    for h in studious.local inferno.local; do
-        if ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 -o BatchMode=yes "$h" true 2>/dev/null; then
-            echo "$h" > "$OUT/host"; echo "$h"; return
-        fi
-    done
-    echo "run-kitty: neither studious.local nor inferno.local is reachable; running kitty on this Mac needs Brandon's go first" >&2
-    exit 1
+    local h=${KITTY_RUN_HOST:-}
+    if [[ -z $h && $c != up && $c != sync && -s $OUT/host ]]; then cat "$OUT/host"; return; fi
+    if [[ -z $h ]]; then
+        for h in studious.local inferno.local ""; do
+            [[ -n $h ]] && ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 -o BatchMode=yes "$h" true 2>/dev/null && break
+        done
+    fi
+    if [[ -z $h ]]; then
+        echo "run-kitty: neither studious.local nor inferno.local is reachable; running kitty on this Mac needs Brandon's go first" >&2
+        exit 1
+    fi
+    [[ $c == up || $c == sync ]] && echo "$h" > "$OUT/host"
+    echo "$h"
 }
 r() { ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
 
@@ -61,7 +70,7 @@ RUNNING="p=\$(cat $STATE/pid 2>/dev/null) && kill -0 \$p 2>/dev/null || { echo '
 IN_FRONT="$RUNNING; /usr/local/bin/eyes windows 2>/dev/null | grep -qF \"Frontmost: kitty (pid \$p)\" || { echo \"run-kitty: our kitty (pid \$p) is not in front\" >&2; exit 1; }"
 
 cmd_sync() {
-    r "mkdir -p $STATE && { [ -d $RDIR/.git ] || git init -q $RDIR; }"
+    r "mkdir -p $STATE $RDIR && { [ -d $RDIR/.git ] || git init -q $RDIR; }"
     GIT_SSH_COMMAND="ssh $(printf '%q ' "${SSH_OPTS[@]}")" \
         git -C "$ROOT" push -q --force --no-verify "$HOST:$RDIR" HEAD:refs/run-kitty/sync
     # checkout -f + clean without -x: tracked files match HEAD, stale untracked files go,
@@ -80,27 +89,32 @@ cmd_build() {
     local lock vendor v
     lock=$(shasum -a 256 "$ROOT/rust/Cargo.lock" | cut -c1-16)
     vendor=vendor-$lock
-    if ! r "test -d $STATE/$vendor"; then
+    local rc=0
+    r "test -d $CACHE/$vendor" || rc=$?
+    ((rc == 0 || rc == 1)) || { echo "run-kitty: lost $HOST (ssh exit $rc)" >&2; exit 1; }
+    if ((rc == 1)); then
         VTMP=$(mktemp -d)
         trap 'rm -rf "$VTMP"' EXIT
         cargo vendor --locked --manifest-path "$ROOT/rust/Cargo.toml" "$VTMP/$vendor" > /dev/null
-        # Caches are unpacked beside their final name and renamed into place, so a cut-off copy
-        # leaves only a .part directory, which the next build replaces.
-        tar -C "$VTMP" -cf - "$vendor" | r "rm -rf $STATE/$vendor.part && mkdir -p $STATE/$vendor.part && tar -C $STATE/$vendor.part -xf - && mv $STATE/$vendor.part/$vendor $STATE/$vendor && rmdir $STATE/$vendor.part"
+        # Shared caches are unpacked into a .part dir of this process's own and renamed into
+        # place, so a cut-off copy or a concurrent build never leaves a partial cache.
+        tar -C "$VTMP" -cf - "$vendor" | r "p=$CACHE/$vendor.part.\$\$ && mkdir -p \$p && tar -C \$p -xf - && { [ -d $CACHE/$vendor ] || mv \$p/$vendor $CACHE/$vendor; } && rm -rf \$p"
     fi
     # slangc builds the shaders; the version is the one bypy pins.
     v=$(python3 -c 'import json,sys; print(next(s["name"].split()[1] for s in json.load(open(sys.argv[1])) if s["name"].startswith("slang ")))' "$ROOT/bypy/sources.json")
-    r bash -s "$v" "$vendor" "$RDIR" "$STATE" <<'EOF'
+    r bash -s "$v" "$vendor" "$RDIR" "$STATE" "$CACHE" <<'EOF'
 set -euo pipefail
-v=$1 vendor=$2 rdir=$HOME/$3 state=$HOME/$4
-slang=$state/slang-$v
+v=$1 vendor=$2 rdir=$HOME/$3 state=$HOME/$4 cache=$HOME/$5
+slang=$cache/slang-$v
 if [ ! -d "$slang" ]; then
-    rm -rf "$slang.part" && mkdir -p "$slang.part"
-    curl -fsSL "https://github.com/shader-slang/slang/releases/download/v$v/slang-$v-macos-aarch64.tar.gz" | tar -xz -C "$slang.part"
-    mv "$slang.part" "$slang"
+    part=$slang.part.$$
+    mkdir -p "$part"
+    curl -fsSL "https://github.com/shader-slang/slang/releases/download/v$v/slang-$v-macos-aarch64.tar.gz" | tar -xz -C "$part"
+    [ -d "$slang" ] || mv "$part" "$slang"
+    rm -rf "$part"
 fi
 mkdir -p "$state/cargo"
-printf '[source.crates-io]\nreplace-with = "vendored"\n[source.vendored]\ndirectory = "%s"\n' "$state/$vendor" > "$state/cargo/config.toml"
+printf '[source.crates-io]\nreplace-with = "vendored"\n[source.vendored]\ndirectory = "%s"\n' "$cache/$vendor" > "$state/cargo/config.toml"
 cd "$rdir"
 CARGO_HOME=$state/cargo PATH=$slang/bin:/opt/homebrew/bin:$PATH make debug > "$state/build.log" 2>&1 || { tail -40 "$state/build.log"; exit 1; }
 tail -3 "$state/build.log"
@@ -112,7 +126,7 @@ cmd_launch() {
     (($#)) && args=$(printf ' %q' "$@")
     r bash -s <<EOF
 set -euo pipefail
-pkill -f "$KITTY_BIN" 2>/dev/null && sleep 1 || true
+old=\$(cat ~/$STATE/pid 2>/dev/null) && kill \$old 2>/dev/null && sleep 1 || true
 rm -f ~/$STATE/wid ~/$STATE/pid
 # --config NONE: the user's kitty.conf on the test Mac is not part of what is being run.
 # No cursor blink: a blink is a redraw, and it would hide a missing one.
@@ -127,7 +141,7 @@ for _ in \$(seq 40); do
     [ -n "\$wid" ] && break
     sleep 0.25
 done
-[ -n "\$wid" ] || { echo "kitty (pid \$pid) never came to the front; log:"; cat ~/$STATE/kitty.log; exit 1; }
+[ -n "\$wid" ] || { echo "kitty (pid \$pid) never came to the front, killed it; log:"; kill \$pid; cat ~/$STATE/kitty.log; exit 1; }
 echo "\$wid" > ~/$STATE/wid
 echo "\$pid" > ~/$STATE/pid
 # Park the pointer off the window: a pointer move over it is a redraw too.
@@ -142,13 +156,12 @@ cmd_type() { r "$IN_FRONT; /usr/local/bin/vhid type --into kitty -- $(printf '%q
 cmd_shot() {
     local name=${1:?shot needs a name}
     [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || { echo "run-kitty: a shot name is letters, digits, . _ and - only" >&2; exit 2; }
-    r "$RUNNING; sleep $SETTLE && screencapture -x -o -l \$(cat $STATE/wid) $STATE/$name.png"
-    scp -q "${SSH_OPTS[@]}" "$HOST:$STATE/$name.png" "$OUT/$name.png"
+    r "$RUNNING; f=$STATE/shot.\$\$.png; sleep $SETTLE && screencapture -x -o -l \$(cat $STATE/wid) \$f && cat \$f && rm \$f" > "$OUT/$name.png" || { rm -f "$OUT/$name.png"; exit 1; }
     echo "$OUT/$name.png"
 }
 
 cmd_log() { r "cat $STATE/kitty.log"; }
-cmd_stop() { r "pkill -f $KITTY_BIN || true; rm -f $STATE/pid $STATE/wid"; }
+cmd_stop() { r "p=\$(cat $STATE/pid 2>/dev/null) && kill \$p; rm -f $STATE/pid $STATE/wid"; }
 cmd_sh() { r "$*"; }
 cmd_up() { cmd_sync; cmd_build; cmd_launch "$@"; }
 

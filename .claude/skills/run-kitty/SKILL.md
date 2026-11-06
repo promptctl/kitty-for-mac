@@ -16,7 +16,7 @@ R=.claude/skills/run-kitty/bin/run-kitty   # from the checkout root
 $R up                       # sync this checkout (uncommitted work too), make debug, launch
 $R press leftCommand+f      # vhid chord names: leftCommand, leftShift, return, escape, delete, ...
 $R type zebra
-$R shot after-zebra         # prints /tmp/kitty-run/after-zebra.png; Read it
+$R shot after-zebra         # prints the local png path; Read it
 ```
 
 `launch` and `up` pass extra arguments to kitty, so `$R launch -o font_size=16 /tmp/fill.sh`
@@ -34,7 +34,8 @@ anything with it.
   captures.
 - **Rust crates:** cargo on studious can't reach crates.io, even though curl can. `build`
   vendors the crates here once per `Cargo.lock` and points cargo on the test Mac at them.
-- **Build failure:** a failed `build` prints the tail of `~/.cache/kitty-run/build.log` on
-  the test Mac.
-- **Remote copy:** the copy on the test Mac is `~/code/kitty-run`, a git checkout that
-  `sync` overwrites. Never edit it there.
+- **Per checkout:** each checkout gets its own copy on the test Mac (`~/code/kitty-run/<key>`,
+  a git checkout that `sync` overwrites; never edit it there), its own kitty and its own
+  shots, so sessions in sibling worktrees don't drive each other's kitty. A checkout's
+  first `build` is a full one.
+- **Build failure:** a failed `build` prints the tail of its `build.log` on the test Mac.
