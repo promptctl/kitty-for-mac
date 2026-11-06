@@ -1,0 +1,39 @@
+---
+name: run-kitty
+description: Build this checkout's kitty on a test Mac (studious, else inferno), launch it, type and press keys into it, and screenshot its window back here. Use to run kitty, see a change working in the real app, or live-check a GUI behaviour such as the find bar.
+---
+
+# Run kitty
+
+kitty runs on a test Mac, never on this one: it takes focus when it starts, and the keys are
+real input that would land in whatever Brandon is typing into. `bin/run-kitty` picks
+studious.local, else inferno.local, and exits if neither answers. Do not work around that by
+running kitty here.
+
+```bash
+R=.claude/skills/run-kitty/bin/run-kitty   # from the checkout root
+$R up                       # sync this checkout (uncommitted work too), make debug, launch
+$R press leftCommand+f      # vhid chord names: leftCommand, leftShift, return, escape, delete, ...
+$R type zebra
+$R shot after-zebra         # prints /tmp/kitty-run/after-zebra.png; Read it
+```
+
+`launch` and `up` pass extra arguments to kitty, so `$R launch -o font_size=16 /tmp/fill.sh`
+runs a program instead of the shell. The program's path is a path on the test Mac: put it
+there with `scp` first.
+
+Look at every screenshot. A command returning means the key was sent, not that kitty did
+anything with it.
+
+- **Redraws:** kitty draws only when something asks it to. The launch turns off cursor
+  blink and parks the pointer off the window, because a blink or a mouse move would draw
+  the frame and hide a redraw that is missing. Don't move the pointer over the window
+  before a `shot` unless the mouse is what you are testing.
+- **Settling:** `shot` waits `KITTY_RUN_SETTLE` seconds (0.4 by default) before it
+  captures.
+- **Rust crates:** cargo on studious can't reach crates.io, even though curl can. `build`
+  vendors the crates here once per `Cargo.lock` and points cargo on the test Mac at them.
+- **Build failure:** a failed `build` prints the tail of `~/.cache/kitty-run/build.log` on
+  the test Mac.
+- **Remote copy:** the copy on the test Mac is `~/code/kitty-run`, a git checkout that
+  `sync` overwrites. Never edit it there.

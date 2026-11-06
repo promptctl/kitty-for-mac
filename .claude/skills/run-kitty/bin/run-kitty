@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Build, launch and drive this checkout's kitty on a test Mac (studious, else inferno), never on
+# the Mac you are typing on: kitty takes focus when it starts and vhid sends real input.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: run-kitty <command> [args]
+  up [kitty args...]   sync + build + launch
+  sync                 make the test Mac's copy match this checkout, uncommitted work included
+  build                make debug there
+  launch [kitty args]  (re)start kitty, extra args go to kitty (e.g. -o font_size=14 /tmp/fill.sh)
+  press <chord>...     vhid press into kitty, e.g. leftCommand+f, return, leftShift+return
+  type <text>          vhid type into kitty
+  shot <name>          screenshot kitty's window after a settle, print the local png path
+  log                  kitty's stdout/stderr so far
+  stop                 quit kitty
+  sh <command>         run a shell command on the test Mac
+env: KITTY_RUN_HOST (default: first reachable of studious.local, inferno.local)
+     KITTY_RUN_OUT (local screenshot dir, default /tmp/kitty-run)
+     KITTY_RUN_SETTLE (seconds shot waits for the frame, default 0.4)
+EOF
+}
+
+c=${1:-}
+case "$c" in
+    up|sync|build|launch|press|type|shot|log|stop|sh) shift ;;
+    *) usage; exit 2 ;;
+esac
+
+ROOT=$(git rev-parse --show-toplevel)
+OUT=${KITTY_RUN_OUT:-/tmp/kitty-run}
+SETTLE=${KITTY_RUN_SETTLE:-0.4}
+RDIR=code/kitty-run  # relative to the remote home
+STATE=.cache/kitty-run
+KITTY_BIN="$RDIR/kitty/launcher/kitty"
+
+pick_host() {
+    if [[ -n "${KITTY_RUN_HOST:-}" ]]; then echo "$KITTY_RUN_HOST"; return; fi
+    local h
+    for h in studious.local inferno.local; do
+        if ssh -o ConnectTimeout=5 -o BatchMode=yes "$h" true 2>/dev/null; then echo "$h"; return; fi
+    done
+    echo "run-kitty: neither studious.local nor inferno.local is reachable; do not fall back to this Mac" >&2
+    exit 1
+}
+r() { ssh "$HOST" "$@"; }
+
+cmd_sync() {
+    r "mkdir -p $STATE && { [ -d $RDIR/.git ] || git init -q $RDIR; }"
+    git -C "$ROOT" push -q --force --no-verify "$HOST:$RDIR" HEAD:refs/run-kitty/sync
+    # checkout -f + clean without -x: tracked files match HEAD, stale untracked files go,
+    # ignored build outputs stay so the next make is incremental.
+    r "cd $RDIR && git checkout -qf --detach refs/run-kitty/sync && git clean -qfd"
+    git -C "$ROOT" diff --binary HEAD | r "cd $RDIR && git apply --allow-empty"
+    git -C "$ROOT" ls-files -oz --exclude-standard | (cd "$ROOT" && tar -c --null -T - -f -) | r "cd $RDIR && tar -xf -"
+    echo "synced $(git -C "$ROOT" rev-parse --short HEAD)$(git -C "$ROOT" diff --quiet HEAD || echo ' + uncommitted changes') to $HOST:$RDIR"
+}
+
+cmd_build() {
+    # cargo on studious cannot reach crates.io (TLS times out though curl from the same shell
+    # gets through), so crates are vendored here, once per Cargo.lock, and cargo there is
+    # pointed at them through its own CARGO_HOME and never touches the network.
+    local lock vendor v
+    lock=$(shasum -a 256 "$ROOT/rust/Cargo.lock" | cut -c1-16)
+    vendor=vendor-$lock
+    if ! r "test -d $STATE/$vendor"; then
+        local tmp
+        tmp=$(mktemp -d)
+        cargo vendor --locked --manifest-path "$ROOT/rust/Cargo.toml" "$tmp/$vendor" > /dev/null
+        tar -C "$tmp" -cf - "$vendor" | r "mkdir -p $STATE && tar -C $STATE -xf -"
+        rm -rf "$tmp"
+    fi
+    # slangc builds the shaders; the version is the one bypy pins.
+    v=$(python3 -c 'import json,sys; print(next(s["name"].split()[1] for s in json.load(open(sys.argv[1])) if s["name"].startswith("slang ")))' "$ROOT/bypy/sources.json")
+    r bash -s "$v" "$vendor" <<'EOF'
+set -euo pipefail
+v=$1 state=$HOME/.cache/kitty-run
+slang=$state/slang-$v
+if [ ! -x "$slang/bin/slangc" ]; then
+    mkdir -p "$slang"
+    curl -fsSL "https://github.com/shader-slang/slang/releases/download/v$v/slang-$v-macos-aarch64.tar.gz" | tar -xz -C "$slang"
+fi
+mkdir -p "$state/cargo"
+printf '[source.crates-io]\nreplace-with = "vendored"\n[source.vendored]\ndirectory = "%s"\n' "$state/$2" > "$state/cargo/config.toml"
+cd ~/code/kitty-run
+CARGO_HOME=$state/cargo PATH=$slang/bin:/opt/homebrew/bin:$PATH make debug > "$state/build.log" 2>&1 || { tail -40 "$state/build.log"; exit 1; }
+tail -3 "$state/build.log"
+EOF
+}
+
+cmd_launch() {
+    local args=""
+    (($#)) && args=$(printf ' %q' "$@")
+    r bash -s <<EOF
+set -euo pipefail
+pkill -f "$KITTY_BIN" 2>/dev/null && sleep 1 || true
+rm -f ~/$STATE/wid
+# --config NONE: the user's kitty.conf on the test Mac is not part of what is being run.
+# No cursor blink: a blink is a redraw, and it would hide a missing one.
+nohup ~/$KITTY_BIN --config NONE -o cursor_blink_interval=0 -o remember_window_size=no \
+    -o initial_window_width=900 -o initial_window_height=600$args > ~/$STATE/kitty.log 2>&1 < /dev/null &
+pid=\$!
+# Another kitty may be running, so the window is ours only once eyes names our pid as frontmost.
+wid=
+for _ in \$(seq 40); do
+    kill -0 \$pid 2>/dev/null || { echo "kitty exited; log:"; cat ~/$STATE/kitty.log; exit 1; }
+    wid=\$(/usr/local/bin/eyes windows --owner kitty 2>/dev/null | awk -v p="(pid \$pid)" 'index(\$0, "Frontmost: kitty " p) {ours=1} ours && \$2 == "kitty" && /front\$/ {print \$1; exit}')
+    [ -n "\$wid" ] && break
+    sleep 0.25
+done
+[ -n "\$wid" ] || { echo "kitty (pid \$pid) never came to the front; log:"; cat ~/$STATE/kitty.log; exit 1; }
+echo "\$wid" > ~/$STATE/wid
+# Park the pointer off the window: a pointer move over it is a redraw too.
+/usr/local/bin/vhid move 50 850 > /dev/null
+echo "kitty up on $HOST, window \$wid"
+EOF
+}
+
+cmd_press() { r /usr/local/bin/vhid press --into kitty "$@" > /dev/null; }
+cmd_type() { r /usr/local/bin/vhid type --into kitty "$(printf '%q' "$*")" > /dev/null; }
+
+cmd_shot() {
+    local name=${1:?shot needs a name}
+    mkdir -p "$OUT"
+    r "sleep $SETTLE && screencapture -x -o -l \$(cat $STATE/wid) $STATE/$name.png"
+    scp -q "$HOST:$STATE/$name.png" "$OUT/$name.png"
+    echo "$OUT/$name.png"
+}
+
+cmd_log() { r "cat $STATE/kitty.log"; }
+cmd_stop() { r "pkill -f $KITTY_BIN || true"; }
+cmd_sh() { r "$*"; }
+cmd_up() { cmd_sync; cmd_build; cmd_launch "$@"; }
+
+HOST=$(pick_host)
+"cmd_$c" "$@"
