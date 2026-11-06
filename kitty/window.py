@@ -69,6 +69,7 @@ from .fast_data_types import (
     click_mouse_cmd_output,
     click_mouse_url,
     cocoa_find_bar_covered_pixels,
+    cocoa_find_bar_state,
     cocoa_update_find_bar,
     current_focused_os_window_id,
     draw_single_line_of_text,
@@ -1614,8 +1615,7 @@ class Window:
                 traceback.print_exc()
         self.screen.focus_changed(focused)
         if focused:
-            # the bar shows the search of the window it steers, which this one now is
-            self.push_find_bar()
+            self.follow_find_bar()
             self.last_focused_at = monotonic()
             update_ime_position_for_window(self.id, False, 1)
             self.program_status_seen_by_user()
@@ -3044,6 +3044,30 @@ class Window:
         if is_macos and (tm := get_boss().os_window_map.get(self.os_window_id)) and tm.active_window is self:
             current, total, _ = self.screen.find_status()
             cocoa_update_find_bar(self.os_window_id, self.find_query, current, total)
+
+    # [LAW:one-source-of-truth] The bar's field is the query of its OS window, whichever kitty window is
+    # active. A window that becomes active takes the query over and the windows it replaces drop
+    # their search. Gaining focus is how every change of active window arrives, tabs and splits alike.
+    # A window that is already searching for the query, such as the one the OS window refocuses
+    # on, keeps its current match.
+    def follow_find_bar(self) -> None:
+        if not is_macos or not (tm := get_boss().os_window_map.get(self.os_window_id)) or tm.active_window is not self:
+            return
+        for tab in tm:
+            for w in tab:
+                if w is not self and w.screen.find_status()[1]:
+                    w.find_clear()
+        if (bar := cocoa_find_bar_state(self.os_window_id)) is None:
+            return
+        shown, query = bar
+        if not shown:
+            # hidden, the bar searches nothing; Cmd+G searches this window for the query the bar kept
+            self.find_query = query
+        elif not (self.screen.find_status()[1] and self.find_query == query):
+            self.set_find_query(query)
+        # a full-screen program takes no query, and its stale one would overwrite what the field holds
+        if self.find_query == query:
+            self.push_find_bar()
 
     @ac('sc', 'Make the next match of the find query, later in the buffer, the current match and the selection, scrolling it into view and wrapping at the end, on macOS')
     def find_next(self) -> bool | None:

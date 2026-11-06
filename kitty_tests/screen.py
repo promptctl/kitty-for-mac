@@ -2068,6 +2068,76 @@ class TestScreen(BaseTest):
         self.ae(w.find_query, 'nomatch')
         self.ae(Window.find_step(w, False), True)
 
+    def test_find_bar_follows_the_active_window(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from kitty import window as window_module
+        from kitty.boss import Boss
+        from kitty.constants import is_macos
+        from kitty.window import Window
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+
+        def make_window(text):
+            s = self.create_screen(cols=6, lines=4, scrollback=50)
+            for i in range(10):
+                s.draw(f'{text}{i}')
+                s.carriage_return(), s.linefeed()
+            w = SimpleNamespace(screen=s, find_query='', os_window_id=1, finish_scroll_animation=lambda: None,
+                                find_bar_top_inset=lambda: 0, push_find_bar=lambda: None)
+            for name in ('find_step', 'set_find_query', 'step_to_match', 'find_clear', 'follow_find_bar'):
+                setattr(w, name, getattr(Window, name).__get__(w))
+            return w
+
+        a, b, other_tab = make_window('ab'), make_window('xb'), make_window('ab')
+        pushes = []
+        a.push_find_bar = b.push_find_bar = lambda: pushes.append((active[0].find_query, active[0].screen.find_status()))
+        active = [a]
+        tab_manager = type('TM', (), {'active_window': a, '__iter__': lambda self: iter([[a, b], [other_tab]])})()
+        boss = SimpleNamespace(os_window_map={1: tab_manager})
+        bar = [(True, 'b')]
+
+        def follow(window):
+            active[0] = tab_manager.active_window = window
+            window.follow_find_bar()
+
+        with mock.patch.object(window_module, 'is_macos', True), mock.patch.object(window_module, 'get_boss', lambda: boss), \
+                mock.patch.object(window_module, 'cocoa_find_bar_state', lambda os_window_id: bar[0]):
+            follow(a)
+            self.ae(a.find_query, 'b')
+            self.ae(a.screen.find_status()[1], 10, 'the shown bar searches the window it follows')
+            self.ae(pushes[-1][1][1], 10, 'and reports it')
+            # Switching to b: a's search ends, b searches the bar's query without stepping to a match
+            follow(b)
+            self.ae(a.screen.find_status(), (0, 0, False))
+            self.ae((b.find_query, b.screen.find_status()), ('b', (0, 10, False)))
+            # the OS window regaining focus keeps the match the window was on
+            b.step_to_match(False)
+            current = b.screen.find_status()
+            self.assertGreater(current[0], 0)
+            follow(b)
+            self.ae(b.screen.find_status(), current)
+            # a window in another tab that was left searching is dropped as well
+            other_tab.set_find_query('b')
+            follow(a)
+            self.ae(other_tab.screen.find_status()[1], 0)
+            self.ae(b.screen.find_status()[1], 0)
+            # a hidden bar searches nothing, but Cmd+G in the window it moves to uses the query it kept
+            bar[0] = (False, 'zz')
+            follow(b)
+            self.ae((a.screen.find_status()[1], b.screen.find_status()[1], b.find_query), (0, 0, 'zz'))
+            # a window with no bar at all keeps what it has, other windows still drop their search
+            bar[0] = None
+            a.set_find_query('b')
+            follow(b)
+            self.ae((a.screen.find_status()[1], b.find_query), (0, 'zz'))
+            # closing the bar ends the search in every window of its OS window, whichever tab it is in
+            for w in (a, other_tab):
+                w.set_find_query('b')
+            Boss.find_bar_closed(boss, 1)
+            self.ae([w.screen.find_status()[1] for w in (a, b, other_tab)], [0, 0, 0])
+
     def test_user_marking(self):
 
         def cells(*a, y=0, mark=3):

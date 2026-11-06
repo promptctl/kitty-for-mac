@@ -50,6 +50,16 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         }
     }
 
+    // The text in the window's field, which a hidden bar keeps for the next Cmd+F; nil for a window
+    // that has never had a bar.
+    @objc public static func query(in window: NSWindow) -> String? {
+        window.contentView?.subviews.lazy.compactMap { $0 as? KittyFindBar }.first?.field.stringValue
+    }
+
+    @objc public static func isShown(in window: NSWindow) -> Bool {
+        window.contentView?.subviews.lazy.compactMap { $0 as? KittyFindBar }.first.map { !$0.isHidden } ?? false
+    }
+
     // How far down from the top of the terminal the bar covers it, in pixels: 0 while it is hidden,
     // so a match is never revealed under it.
     @objc public static func coveredPixels(in window: NSWindow) -> Int {

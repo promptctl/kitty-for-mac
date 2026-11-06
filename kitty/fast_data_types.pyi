@@ -881,6 +881,11 @@ def cocoa_find_bar_covered_pixels(os_window_id: int) -> int:
     0 while the bar is hidden. macOS only."""
     pass
 
+def cocoa_find_bar_state(os_window_id: int) -> tuple[bool, str] | None:
+    """Whether the OS window's find bar is shown and the text in its field, which a hidden bar keeps
+    for the next Cmd+F; None when the window has never had a bar. macOS only."""
+    pass
+
 def locale_is_valid(name: str) -> bool:
     pass
 
