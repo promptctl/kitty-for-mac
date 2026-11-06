@@ -2338,8 +2338,9 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
 - (void)doCommandBySelector:(SEL)selector {
     debug_input("\n\tdoCommandBySelector: (%s)\n", [NSStringFromSelector(selector) UTF8String]);
     if (forward_dictation_selector_to_app(selector, self)) return;
-    // a command from a native view inside this one goes on up to the window
-    if (glfwCocoaNativeViewHasFocus()) [super doCommandBySelector:selector];
+    // A command from a native view inside this one goes on up to the window.
+    // One from this view's own keyDown is not: kitty takes that key there.
+    if (!in_key_handler && glfwCocoaNativeViewHasFocus()) [super doCommandBySelector:selector];
 }
 
 - (void)startDictation:(id)sender {

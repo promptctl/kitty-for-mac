@@ -866,8 +866,6 @@ global_shortcut_for_action(GlobalShortcuts *shortcuts, SEL action) {
     Q(search_scrollback);
     Q(macos_cycle_through_os_windows);
     Q(macos_cycle_through_os_windows_backwards);
-    Q(paste_from_clipboard);
-    Q(copy_or_noop);
 #undef Q
     return NULL;
 }
