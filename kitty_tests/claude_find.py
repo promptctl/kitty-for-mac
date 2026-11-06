@@ -12,6 +12,7 @@ from unittest import mock
 
 from kitty import claude_find as cf
 from kitty.claude_find import (
+    COPY_LATENCY,
     Cause,
     ClaudeFind,
     ClaudeFindFailure,
@@ -623,27 +624,32 @@ class SelectionTest(BaseTest):
         with private_tmux('sleep 600') as t:
             state = ClaudeFindState()
 
+            def newest_copy_made_at() -> float:
+                "When tmux says its newest buffer was made: the release is placed against tmux's own clock, not the test's"
+                return float(max(int(c) for c in t.tmux('list-buffers', '-F', '#{buffer_created}').split()))
+
             class f:  # a find is built for one operation, on the budget of it: each read gets its own
                 @staticmethod
                 def program_selection_text() -> str | None:
                     return self.claude(t, state).program_selection_text()
 
             t.tmux('set-buffer', 'an old copy')
-            time.sleep(1.1)  # tmux counts whole seconds
             self.assertIsNone(f.program_selection_text(), 'no drag has been made in this window')
-            state.released_at = time.time()
+            state.released_at = newest_copy_made_at() + 1
             self.assertIsNone(f.program_selection_text(), 'the newest buffer was made before the release')
             t.tmux('set-buffer', 'needle')  # Claude copies at the release
+            state.released_at = newest_copy_made_at()
             self.ae(f.program_selection_text(), 'needle')
             t.tmux('set-buffer', '-b', 'mine', 'a named buffer')
             self.ae(f.program_selection_text(), 'needle', 'a named buffer is not a copy')
             t.tmux('set-buffer', 'two\nlines')
             self.assertIsNone(f.program_selection_text(), 'a query is one line')
-            state.released_at = time.time() - 10
+            t.tmux('set-buffer', 'late')
+            state.released_at = newest_copy_made_at() - COPY_LATENCY - 1
             self.assertIsNone(f.program_selection_text(), 'a copy long after the release is some other copy')
-            state.released_at = time.time()
+            state.released_at = newest_copy_made_at()
             t.tmux('delete-buffer', '-b', 'mine')
-            while t.tmux('list-buffers', check=False):
+            while t.tmux('list-buffers'):
                 t.tmux('delete-buffer')
             self.assertIsNone(f.program_selection_text(), 'nothing copied')
 
