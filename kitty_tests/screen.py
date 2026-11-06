@@ -2138,7 +2138,7 @@ class TestScreen(BaseTest):
             follow(b)
             self.ae(a.screen.find_status(), (0, 0, False))
             self.ae((b.find_query, b.screen.find_status()), ('b', (0, 10, False)))
-            # the OS window regaining focus keeps the match the window was on
+            # following the window the bar is already on keeps the match it was on
             b.step_to_match(False)
             current = b.screen.find_status()
             self.assertGreater(current[0], 0)
@@ -2360,6 +2360,56 @@ class TestScreen(BaseTest):
         lines_of(s, 'y', 'y', 'y')
         self.ae(s.find_status(), (2, 2, False))
         self.ae(s.find_step(False), (0, 0, 0, 0))
+
+    def test_activating_a_window_without_the_keyboard_sends_no_focus_event(self):
+        from unittest import mock
+
+        from kitty import window as window_module
+        from kitty.window import Window
+
+        class FakeWindow:
+            os_window_id, id, destroyed, ignore_focus_changes, is_focused = 1, 1, False, False, False
+            needs_attention, last_cmd_end_notification, last_focused_at = False, None, 0
+
+            def __init__(self):
+                self.screen = self.create_screen()
+                parse_bytes(self.screen, b'\x1b[?1004h')  # focus reporting on, as an editor or tmux asks for
+                self.actions_on_focus_change = []
+
+            create_screen = self.create_screen
+            program_status_seen_by_user = lambda self: None  # noqa: E731
+            activation_changed, focus_changed = Window.activation_changed, Window.focus_changed
+
+            def follow_find_bar(self):
+                followed.append(self)
+
+        followed, keys = [], [True]
+        a, b = FakeWindow(), FakeWindow()
+
+        def sent(w):
+            ans, w.screen.callbacks.wtcbuf = w.screen.callbacks.wtcbuf, b''
+            return ans
+
+        with mock.patch.object(window_module, 'terminal_has_focus', lambda os_window_id: keys[0]), \
+                mock.patch.object(window_module, 'call_watchers', lambda *a: None), \
+                mock.patch.object(window_module, 'update_ime_position_for_window', lambda *a: None), \
+                mock.patch.object(window_module, 'current_focused_os_window_id', lambda: 1):
+            a.activation_changed(True)
+            self.ae((a.is_focused, sent(a)), (True, b'\x1b[I'))  # ]
+            # the find bar's field takes the keys: the program loses focus once
+            keys[0] = False
+            a.focus_changed(False)
+            self.ae(sent(a), b'\x1b[O')  # ]
+            # switching to b with the bar holding the keys reaches neither program, and b is still followed
+            followed.clear()
+            a.activation_changed(False)
+            b.activation_changed(True)
+            self.ae((sent(a), sent(b), a.is_focused, b.is_focused, followed), (b'', b'', False, False, [b]))
+            # the keys come back, Esc: b alone is told, once
+            keys[0] = True
+            b.focus_changed(True)
+            b.focus_changed(True)
+            self.ae((sent(a), sent(b), b.is_focused), (b'', b'\x1b[I', True))  # ]
 
     def test_user_marking(self):
 

@@ -1196,9 +1196,9 @@ class Boss:
         window = self.active_window
         if window is not prev_active_window:
             if prev_active_window is not None:
-                prev_active_window.focus_changed(False)
+                prev_active_window.activation_changed(False)
             if window is not None:
-                window.focus_changed(True)
+                window.activation_changed(True)
 
     def mark_window_for_close(self, q: Window | None | int = None) -> None:
         if isinstance(q, int):

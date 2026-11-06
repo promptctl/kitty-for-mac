@@ -1074,6 +1074,15 @@ PYWRAP0(last_focused_os_window_id) { return PyLong_FromUnsignedLongLong(last_foc
 
 PYWRAP0(current_focused_os_window_id) { return PyLong_FromUnsignedLongLong(current_focused_os_window_id()); }
 
+// An OS window that is gone has no keyboard, so its answer is false
+PYWRAP1(terminal_has_focus) {
+    id_type os_window_id;
+    PA("K", &os_window_id);
+    OSWindow *w = os_window_for_id(os_window_id);
+    if (w && terminal_has_focus(w)) Py_RETURN_TRUE;
+    Py_RETURN_FALSE;
+}
+
 
 PYWRAP1(handle_for_window_id) {
     id_type os_window_id;
@@ -2135,6 +2144,7 @@ static PyMethodDef module_methods[] = {
     MW(next_window_id, METH_NOARGS),
     MW(last_focused_os_window_id, METH_NOARGS),
     MW(current_focused_os_window_id, METH_NOARGS),
+    MW(terminal_has_focus, METH_VARARGS),
     MW(set_options, METH_VARARGS),
     MW(get_options, METH_NOARGS),
     MW(click_mouse_url, METH_VARARGS),

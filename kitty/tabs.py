@@ -1543,7 +1543,7 @@ class TabManager:  # {{{
         for tab in added_tabs:
             w = tab.active_window
             for q in tab:
-                q.focus_changed(w is q and tab is active_tab)
+                q.activation_changed(w is q and tab is active_tab)
 
     @property
     def active_tab_idx(self) -> int:
@@ -1570,11 +1570,11 @@ class TabManager:  # {{{
             if old_active_tab is not None:
                 w = old_active_tab.active_window
                 if w is not None:
-                    w.focus_changed(False)
+                    w.activation_changed(False)
             if new_active_tab is not None:
                 w = new_active_tab.active_window
                 if w is not None:
-                    w.focus_changed(True)
+                    w.activation_changed(True)
 
     def refresh_sprite_positions(self) -> None:
         if not self.tab_bar_hidden:

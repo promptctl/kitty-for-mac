@@ -98,6 +98,7 @@ from .fast_data_types import (
     set_window_render_data,
     set_window_title_bar_render_data,
     start_drag_with_data,
+    terminal_has_focus,
     update_ime_position_for_window,
     update_pointer_shape,
     update_window_title,
@@ -1601,7 +1602,11 @@ class Window:
             log_error(f'Failed to send signal for key to child with err: {err}')
             return False
 
+    # [LAW:single-enforcer] The one place a program is told it has the keyboard. Becoming the active window
+    # does not give the window the keys while the OS window is not key or the find bar's field holds
+    # them; the focus change that hands the keys back reaches here again and delivers it.
     def focus_changed(self, focused: bool) -> None:
+        focused = focused and terminal_has_focus(self.os_window_id)
         if self.destroyed or self.ignore_focus_changes or self.is_focused == focused:
             return
         self.is_focused = focused
@@ -1615,7 +1620,6 @@ class Window:
                 traceback.print_exc()
         self.screen.focus_changed(focused)
         if focused:
-            self.follow_find_bar()
             self.last_focused_at = monotonic()
             update_ime_position_for_window(self.id, False, 1)
             self.program_status_seen_by_user()
@@ -1635,6 +1639,13 @@ class Window:
         elif self.os_window_id == current_focused_os_window_id():
             # Cancel IME composition after loses focus
             update_ime_position_for_window(self.id, False, -1)
+
+    # Every change of the active window arrives here, tabs and splits alike. The find bar follows the
+    # activation itself: whether the window also gets the keyboard is focus_changed's business.
+    def activation_changed(self, active: bool) -> None:
+        self.focus_changed(active)
+        if active:
+            self.follow_find_bar()
 
     def title_changed(self, new_title: memoryview | None, is_base64: bool = False) -> None:
         self.child_title = process_title_from_child(new_title or memoryview(b''), is_base64, self.default_title)
@@ -3047,9 +3058,7 @@ class Window:
 
     # [LAW:one-source-of-truth] The bar's field is the query of its OS window, whichever kitty window is
     # active. A window that becomes active takes the query over and the windows it replaces drop
-    # their search. Gaining focus is how every change of active window arrives, tabs and splits alike.
-    # A window that is already searching for the query, such as the one the OS window refocuses
-    # on, keeps its current match.
+    # their search. A window that is already searching for the query keeps its current match.
     def follow_find_bar(self) -> None:
         if not is_macos or not (tm := get_boss().os_window_map.get(self.os_window_id)) or tm.active_window is not self:
             return
