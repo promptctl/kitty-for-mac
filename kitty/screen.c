@@ -7123,8 +7123,9 @@ find_set_current(Screen *self, PyObject *args) {
 }
 
 // Where the user is looking, from the first cell to just past the last in buffer order: the
-// selection, or with none the rows on screen below the top_inset rows something covers. The empty selection a click leaves shows
-// nothing and outlives the click, so it is no place the user can see.
+// selection, or with none the rows on screen below the top_inset rows something covers. The
+// empty selection a click leaves shows nothing and outlives the click, so it is no place the
+// user can see.
 static void
 find_step_origin(Screen *self, MainBufferView view, index_type top_inset, FindPos *start, FindPos *end) {
     const uint64_t top = view.abs_row0 - self->scrolled_by;

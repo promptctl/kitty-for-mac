@@ -3009,9 +3009,10 @@ class Window:
 
     def set_find_query(self, text: str) -> None:
         "Search the whole buffer for text, case-insensitively unless it has an uppercase letter"
-        # the alternate screen shows none of the buffer: the query waits for the next step on the main screen
-        if self.screen.is_main_linebuf():
-            self.screen.find_set_query(text, text == text.lower())
+        # the alternate screen shows none of the buffer, so there is nothing to search or to show
+        if not self.screen.is_main_linebuf():
+            return
+        self.screen.find_set_query(text, text == text.lower())
         # the engine took it: a query it rejects never becomes the one the bar shows and stepping repeats
         self.find_query = text
 

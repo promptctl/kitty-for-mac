@@ -1290,9 +1290,10 @@ class Screen:
     def find_step(self, backwards: bool, top_inset: int = 0) -> tuple[int, int, int, int] | None:
         """Make the next match, or the previous one when backwards, the current match and the
         selection, scrolling it to the middle of the screen below its top_inset rows, which
-        something covers, when it is not wholly on those rows, and return it; None when there are no matches. From the current match it steps past it,
-        wrapping at either end. With none it starts where the user is looking: their selection,
-        else the rows below the inset. A selection the user makes or changes ends the current match.
+        something covers, when it is not wholly on those rows, and return it; None when there
+        are no matches. From the current match it steps past it, wrapping at either end. With
+        none it starts where the user is looking: their selection, else the rows below the
+        inset. A selection the user makes or changes ends the current match.
         RuntimeError while the alternate screen shows. macOS only."""
         pass
 

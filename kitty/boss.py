@@ -4305,8 +4305,10 @@ class Boss:
             w.find_step(not forward)
 
     def find_bar_closed(self, os_window_id: int) -> None:
-        if w := self.find_bar_window(os_window_id):
-            w.find_clear()
+        # the bar followed focus between the windows of its OS window, so any of them may hold a search
+        for tab in self.os_window_map.get(os_window_id, ()):
+            for w in tab:
+                w.find_clear()
 
     def copy_or_noop(self) -> bool | None:
         if w := self.active_window:

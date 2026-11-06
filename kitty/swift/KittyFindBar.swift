@@ -56,6 +56,8 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         guard let terminal = window.contentView,
               let bar = terminal.subviews.lazy.compactMap({ $0 as? KittyFindBar }).first, !bar.isHidden
         else { return 0 }
+        // a bar just shown has not been laid out yet, and its frame says nothing until it has
+        terminal.layoutSubtreeIfNeeded()
         return Int(((terminal.bounds.maxY - bar.frame.minY) * window.backingScaleFactor).rounded(.up))
     }
 
