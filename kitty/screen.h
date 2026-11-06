@@ -173,6 +173,10 @@ typedef struct {
 
     DisableLigature disable_ligatures;
     PyObject *marker;
+#ifdef __APPLE__
+    // owned, never NULL; the empty query is "no search"
+    struct FindEngine *find_engine;
+#endif
     bool has_focus;
     uint8_t visibility_state; // 0 = unknown, 1 = potentially visible, 2 = not visible
     bool has_activity_since_last_focus;

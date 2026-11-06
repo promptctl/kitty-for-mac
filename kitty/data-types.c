@@ -64,17 +64,6 @@ process_group_map(PyObject *self UNUSED, PyObject *args UNUSED) {
     }
     return ans;
 }
-
-#include "kitty_rs.h"
-
-// Wiring probe for the Rust crate, replaced by the find engine
-static PyObject *
-rust_count_codepoints(PyObject *self UNUSED, PyObject *text) {
-    Py_ssize_t len;
-    const char *utf8 = PyUnicode_AsUTF8AndSize(text, &len);
-    if (!utf8) return NULL;
-    return PyLong_FromSize_t(kitty_rs_count_codepoints((const uint8_t*)utf8, (size_t)len));
-}
 #endif
 
 static PyObject *
@@ -877,7 +866,6 @@ static PyMethodDef module_methods[] = {
 #ifdef __APPLE__
     METHODB(user_cache_dir, METH_NOARGS),
     METHODB(process_group_map, METH_NOARGS),
-    METHODB(rust_count_codepoints, METH_O),
 #endif
     {NULL, NULL, 0, NULL} /* Sentinel */
 };

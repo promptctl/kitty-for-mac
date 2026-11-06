@@ -50,11 +50,11 @@ class TestBuild(BaseTest):
 
         if not is_macos:
             self.skipTest('The Rust crate is linked on macOS only')
-        from kitty.fast_data_types import rust_count_codepoints
+        from kitty.fast_data_types import Screen
 
-        self.ae(rust_count_codepoints('kitty'), 5)
-        self.ae(rust_count_codepoints('héllo, 世界 🐱'), 11)
-        self.ae(rust_count_codepoints(''), 0)
+        s = Screen(None, 1, 10)
+        s.draw('héllo')
+        self.ae(s.find_set_query('L', True), 2)
 
     def test_slang_build(self) -> None:
         from kitty.shaders.slang import test_slang_build
