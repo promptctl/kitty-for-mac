@@ -608,7 +608,6 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
 
 // Delegate for window related notifications {{{
 
-static void restore_focus_owner(_GLFWwindow *window);
 
 @interface GLFWWindowDelegate : NSObject {
     _GLFWwindow *window;
@@ -837,7 +836,7 @@ static void flush_focus_loss_text(_GLFWwindow *window);
                   [nswindow setStyleMask:savedMask];
                   [nswindow setFrame:savedFrame display:YES];
                   update_titlebar_button_visibility_after_fullscreen_transition(w, true, false);
-                                    NSNotification *resize = [NSNotification notificationWithName:NSWindowDidResizeNotification object:nswindow];
+                  NSNotification *resize = [NSNotification notificationWithName:NSWindowDidResizeNotification object:nswindow];
                   [w->ns.delegate performSelector:@selector(windowDidResize:) withObject:resize afterDelay:0];
               }
               // Lift the constraint guard after a delay, even if the window
@@ -1886,9 +1885,9 @@ build_uri_list(_GLFWDropData *d) {
         for (size_t i = 0; i < num_accepted; i++) _glfwPlatformRequestDropData(window, d->copy_mimes[i]);
     }
 
-    // The drag operation can displace the first responder, silently breaking
-    // keyboard input even though osw->is_focused remains true.
-    restore_focus_owner(window);
+    // The drop landed on the terminal, so it takes keyboard focus, which the drag
+    // may also have displaced while osw->is_focused stayed true.
+    [window->ns.object makeFirstResponder:window->ns.view];
     return YES;
 }
 
@@ -2534,7 +2533,7 @@ focus_owner_of(NSResponder *responder) {
     NSView *owner = focus_owner_of(self.firstResponder);
     if (!owner || owner == focus_owner) return ok;
     // Focus leaves the terminal: commit its IME composition, as native text views do.
-    if (glfw_window && focus_owner == glfw_window->ns.view) [glfw_window->ns.view commitMarkedText];
+    if (glfw_window && focus_owner == glfw_window->ns.view && [glfw_window->ns.view hasMarkedText]) [glfw_window->ns.view commitMarkedText];
     [focus_owner release];
     focus_owner = [owner retain];
     return ok;
@@ -2549,10 +2548,11 @@ focus_owner_of(NSResponder *responder) {
     [self makeFirstResponder:self.contentView];
 }
 
-// AppKit clears the first responder on style mask changes, so every one restores it.
+// AppKit clears the first responder on style mask changes, so every one restores
+// it, except before the GLFW window is attached (NSWindow init) or after it is removed.
 - (void)setStyleMask:(NSWindowStyleMask)style {
     [super setStyleMask:style];
-    [self restoreFocusOwner];
+    if (glfw_window) [self restoreFocusOwner];
 }
 
 - (instancetype)initWithGlfwWindow:(NSRect)contentRect
@@ -2678,10 +2678,6 @@ update_titlebar_button_visibility_after_fullscreen_transition(_GLFWwindow *w, bo
 
 @end
 
-static void
-restore_focus_owner(_GLFWwindow *window) {
-    [(GLFWWindow *)window->ns.object restoreFocusOwner];
-}
 // }}}
 
 
@@ -3040,7 +3036,7 @@ _glfwPlatformSetLayerShellConfig(_GLFWwindow *window, const GLFWLayerShellConfig
     [[nswindow standardWindowButton:NSWindowMiniaturizeButton] setHidden:true];
     [[nswindow standardWindowButton:NSWindowZoomButton] setHidden:true];
     [nswindow setStyleMask:NSWindowStyleMaskBorderless];
-        NSScreen *screen = screen_for_window_center(window);
+    NSScreen *screen = screen_for_window_center(window);
     if (config.output_name[0]) {
         NSScreen *q = screen_for_name(config.output_name);
         if (q) screen = q;
@@ -3891,7 +3887,7 @@ _glfwPlatformToggleFullscreen(_GLFWwindow *w, unsigned int flags) {
             }
             [window setStyleMask:sm];
         }
-                // If the dock and menubar are hidden going from maximized to fullscreen doesn't change the window size
+        // If the dock and menubar are hidden going from maximized to fullscreen doesn't change the window size
         // and macOS forgets to trigger windowDidResize, so call it ourselves
         NSNotification *notification = [NSNotification notificationWithName:NSWindowDidResizeNotification object:window];
         [w->ns.delegate performSelector:@selector(windowDidResize:) withObject:notification afterDelay:0];
@@ -4440,7 +4436,7 @@ glfwCocoaSetWindowChrome(
         if (desired_mask != current_style_mask) { [nsw setStyleMask:desired_mask]; }
 #undef tc
         apply_titlebar_color_settings(window);
-                window->ns.notch_cover_color = color;
+        window->ns.notch_cover_color = color;
         window->ns.notch_cover_opacity = background_opacity;
         if (window->ns.notch_cover_window) _glfwUpdateNotchCover(window);
     }
