@@ -1,0 +1,5 @@
+// The C side of kitty that its Swift module may call: `import KittyC` in Swift.
+module KittyC {
+    header "kitty_c.h"
+    export *
+}

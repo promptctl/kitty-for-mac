@@ -104,6 +104,7 @@ Run-time dependencies:
 Build-time dependencies:
 
 * ``gcc`` or ``clang``
+* ``swiftc`` from a Swift 6 toolchain, macOS only (Xcode or the Command Line Tools)
 * ``simde``
 * ``shader-slang``
 * ``go`` >= _build_go_version (see :file:`go.mod` for go packages used during building)

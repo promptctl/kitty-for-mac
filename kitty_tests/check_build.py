@@ -36,6 +36,15 @@ class TestBuild(BaseTest):
 
         del fdt, rsync
 
+    def test_swift_wiring(self) -> None:
+        from kitty.constants import is_macos
+
+        if not is_macos:
+            self.skipTest('The Swift module is built on macOS only')
+        from kitty.fast_data_types import cocoa_swift_wiring_probe
+
+        self.assertEqual(cocoa_swift_wiring_probe('objc'), 'objc -> swift -> c')
+
     def test_slang_build(self) -> None:
         from kitty.shaders.slang import test_slang_build
 
