@@ -1873,6 +1873,10 @@ class Boss:
             w.program_status_seen_by_user()
         return self.mappings.dispatch_possible_special_key(ev)
 
+    def dispatch_native_view_key(self, ev: KeyEvent) -> bool:
+        # a key typed into a native view is not one pressed in the terminal, so it marks no program status seen
+        return self.mappings.dispatch_native_view_key(ev)
+
     def on_shortcut_key_release(self, ev: KeyEvent) -> bool:
         window = self.active_window
         if window is not None:

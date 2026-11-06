@@ -213,11 +213,21 @@ class Mappings:
         return matches
 
     def dispatch_possible_special_key(self, ev: KeyEvent) -> bool:
-        # Handles shortcuts, return True if the key was consumed
+        # Handles shortcuts for a key bound for the child, return True if the key was consumed
+        return self._dispatch(ev, (ev,), self.global_shortcuts_map)
+
+    def dispatch_native_view_key(self, ev: KeyEvent) -> bool:
+        # A key from a focused native view: none of it is the child's, and the menu bar is the
+        # one place global shortcuts run for it, so no global map is consulted.
+        # [LAW:dataflow-not-control-flow] where the key came from is these two values, not a branch
+        return self._dispatch(ev, (), {})
+
+    def _dispatch(self, ev: KeyEvent, child_keys: tuple[KeyEvent, ...], global_shortcuts_map: KeyMap) -> bool:
+        # child_keys: what of ev the child receives if a sequence it is part of fails
         is_root_mode = not self.keyboard_mode_stack
         mode = self.keyboard_modes[''] if is_root_mode else self.keyboard_mode_stack[-1]
         key_action = get_shortcut(mode.keymap, ev)
-        if key_action is None and self.global_shortcuts_map and (global_key_action := get_shortcut(self.global_shortcuts_map, ev)) is not None:
+        if key_action is None and global_shortcuts_map and (global_key_action := get_shortcut(global_shortcuts_map, ev)) is not None:
             # the shortcuts in the global menubar will have been bypassed so trigger them here;
             # otherwise the key is here because its menu item is disabled, which swallows it
             # unless the action is one that passes a key it has no use for on to the program
@@ -255,7 +265,7 @@ class Mappings:
                     if mode.sequence_keys is None:
                         sm = KeyboardMode('__sequence__')
                         sm.on_action = 'end'
-                        sm.sequence_keys = [ev]
+                        sm.sequence_keys = list(child_keys)
                         sm.timeout = self._get_effective_timeout(final_actions[0])
                         for fa in final_actions:
                             sm.keymap[fa.rest[0]].append(fa.shift_sequence_and_copy())
@@ -270,7 +280,7 @@ class Mappings:
                                 if w is not None:
                                     w.send_key_sequence(*mode.sequence_keys)
                             return consumed
-                        mode.sequence_keys.append(ev)
+                        mode.sequence_keys.extend(child_keys)
                         self._start_mode_timeout(mode)
                         self.debug_print('\n\x1b[35mKeyPress\x1b[m matched sequence prefix, ', end='')
                         mode.keymap.clear()

@@ -1219,22 +1219,35 @@ add_alternate_keys(GLFWkeyevent *ev, NSEvent *event) {
     }
 }
 
-// A key the focused native view has no binding for ends as noop: at the end
-// of the responder chain, where AppKit would beep. It goes to the app's
-// shortcuts instead, so kitty mappings apply wherever the view leaves them
-// free. Returns true if a shortcut took it.
-static bool
-offer_unbound_key_to_shortcuts(_GLFWwindow *window, SEL selector) {
-    if (selector != @selector(noop:) || !window || !_glfw.ns.native_view_shortcut_callback || !glfwCocoaNativeViewHasFocus()) return false;
-    NSEvent *event = [NSApp currentEvent];
-    if ([event type] != NSEventTypeKeyDown) return false;
+// [LAW:single-enforcer] The one place a key press bound for a focused native
+// view reaches the app's shortcuts, and it does so once per press: before the
+// view while a keyboard mode is active (the keydown monitor), otherwise after
+// it, when the view has no binding for the key and it ends as noop: where
+// AppKit would beep. A press the monitor offered comes back here through noop:
+// after a mode let it pass, and is not offered again. Returns true if a
+// shortcut took it.
+bool
+_glfwCocoaOfferKeyToShortcuts(id event_) {
+    NSEvent *event = event_;
+    // retained, so no later event can be allocated at its address and compare equal
+    static NSEvent *offered = nil;
+    if (event == offered) {
+        debug_input("Key already offered to shortcuts, left to the focused native view\n");
+        return false;
+    }
+    if ([event type] != NSEventTypeKeyDown || !_glfw.ns.native_view_shortcut_callback || !glfwCocoaNativeViewHasFocus()) return false;
+    _GLFWwindow *window = _glfw.windowListHead;
+    while (window && window->ns.object != [event window]) window = window->next;
+    if (!window) return false;
+    [offered release];
+    offered = [event retain];
     const NSUInteger flags = remap_cocoa_flags([event modifierFlags]);
     const unsigned int keycode = [event keyCode];
     GLFWkeyevent ev = {
         .key = translateKey(keycode, true), .native_key = keycode, .native_key_id = keycode,
         .action = [event isARepeat] ? GLFW_REPEAT : GLFW_PRESS, .mods = translateFlags(flags)};
     add_alternate_keys(&ev, event_with_remapped_flags(event, flags));
-    debug_input("Offering key unbound in the focused native view to shortcuts: 0x%x %s\n", keycode, format_mods(ev.mods));
+    debug_input("Offering key bound for the focused native view to shortcuts: 0x%x %s\n", keycode, format_mods(ev.mods));
     return _glfw.ns.native_view_shortcut_callback((GLFWwindow *)window, &ev);
 }
 
@@ -2632,7 +2645,7 @@ focus_owner_of(NSResponder *responder) {
 // [LAW:single-enforcer] Every native view's unhandled commands end here,
 // wherever in the window the view sits.
 - (void)doCommandBySelector:(SEL)selector {
-    if (offer_unbound_key_to_shortcuts(glfw_window, selector)) return;
+    if (selector == @selector(noop:) && _glfwCocoaOfferKeyToShortcuts([NSApp currentEvent])) return;
     [super doCommandBySelector:selector];
 }
 
