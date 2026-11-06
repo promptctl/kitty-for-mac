@@ -4,6 +4,8 @@
 
 mod find;
 
+use std::ffi::c_void;
+
 use find::{
     Direction, FindBufferBounds, FindCellSpan, FindEngine, FindFill, FindMatch, FindOrigin,
     FindPos, FindQueryChange, FindRefeed, FindRefeedRange, FindStatus, FindWant, StepOutcome,
@@ -185,37 +187,40 @@ pub unsafe extern "C" fn kitty_rs_find_evict_before(engine: *mut FindEngine, old
     unsafe { &mut *engine }.evict_before(oldest)
 }
 
-/// The matches in buffer order, `*count` of them, valid until the engine next changes.
-///
-/// # Safety
-/// `engine` is live and `count` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kitty_rs_find_matches(
-    engine: *const FindEngine,
-    count: *mut usize,
-) -> *const FindMatch {
-    // SAFETY: the caller's contract above.
-    let matches = unsafe { &*engine }.matches();
-    unsafe { *count = matches.len() };
-    matches.as_ptr()
-}
+/// `kitty/kitty_rs.h`'s `FindMatchVisitor`: handed `n` matches in buffer order.
+pub type FindMatchVisitor = unsafe extern "C" fn(ctx: *mut c_void, run: *const FindMatch, n: usize);
 
-/// The matches covering any of the lines `first..limit`, `*count` of them, valid until the
-/// engine next changes.
+/// Hands `visit` the matches covering any of the lines `first..limit`, in buffer order, a run
+/// at a time, before it returns. A run is valid only during its call.
 ///
 /// # Safety
-/// `engine` is live and `count` is writable.
+/// `engine` is live, and `visit` is safe to call with `ctx` and does not use the engine.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kitty_rs_find_matches_in_lines(
+pub unsafe extern "C" fn kitty_rs_find_each_match_in_lines(
     engine: *const FindEngine,
     first: u64,
     limit: u64,
-    count: *mut usize,
-) -> *const FindMatch {
+    visit: FindMatchVisitor,
+    ctx: *mut c_void,
+) {
     // SAFETY: the caller's contract above.
-    let matches = unsafe { &*engine }.matches_in_lines(first, limit);
-    unsafe { *count = matches.len() };
-    matches.as_ptr()
+    for run in unsafe { &*engine }.matches_in_lines(first, limit) {
+        unsafe { visit(ctx, run.as_ptr(), run.len()) };
+    }
+}
+
+/// How many matches cover any of the lines `first..limit`.
+///
+/// # Safety
+/// `engine` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_count_in_lines(
+    engine: *const FindEngine,
+    first: u64,
+    limit: u64,
+) -> usize {
+    // SAFETY: the caller's contract above.
+    unsafe { &*engine }.count_in_lines(first, limit)
 }
 
 /// Counts the changes to the match list.
@@ -322,7 +327,10 @@ pub unsafe extern "C" fn kitty_rs_find_next_fill(
 /// # Safety
 /// `engine` is live and `out` is writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kitty_rs_find_current(engine: *const FindEngine, out: *mut FindMatch) -> bool {
+pub unsafe extern "C" fn kitty_rs_find_current(
+    engine: *const FindEngine,
+    out: *mut FindMatch,
+) -> bool {
     // SAFETY: the caller's contract above.
     unsafe { &*engine }
         .current()
@@ -433,11 +441,20 @@ mod tests {
 
     #[test]
     fn a_search_crosses_the_abi() {
+        unsafe extern "C" fn collect(ctx: *mut c_void, run: *const FindMatch, n: usize) {
+            let all = unsafe { &mut *ctx.cast::<Vec<FindMatch>>() };
+            all.extend_from_slice(unsafe { std::slice::from_raw_parts(run, n) });
+        }
         let engine = searched_engine();
-        let mut count = 0;
-        let matches = unsafe {
-            std::slice::from_raw_parts(kitty_rs_find_matches(engine, &raw mut count), count)
-                .to_vec()
+        let mut matches = Vec::<FindMatch>::new();
+        unsafe {
+            kitty_rs_find_each_match_in_lines(
+                engine,
+                0,
+                u64::MAX,
+                collect,
+                (&raw mut matches).cast(),
+            );
         };
         assert_eq!(matches, [FOUND]);
         unsafe { kitty_rs_find_engine_free(engine) };
