@@ -36,7 +36,10 @@ typedef struct {
     index_type start_of_data, count;
     // Absolute line number of the oldest line held: the number of lines that have left the
     // top of the ring (evicted or cleared). Line i from the oldest is abs_oldest_line + i, and
-    // the screen continues the numbering, so a line keeps its number whatever the ring does.
+    // the screen continues the numbering. It never decreases, and a line keeps its number
+    // through scrolling and eviction; a rewrap or historybuf_delete_newest_lines renumbers the
+    // lines below what changed. A number names a position, not content: a reset or a redraw
+    // writes new text at the same number.
     uint64_t abs_oldest_line;
 } HistoryBuf;
 

@@ -1614,7 +1614,8 @@ class TestScreen(BaseTest):
             if i != 9:
                 s.carriage_return(), s.linefeed()
         self.ae(written(s), [(i, str(i)) for i in range(5, 10)])
-        # numbering survives a resize, which rebuilds the ring, and clearing the scrollback
+        # the rebuilt ring keeps the numbering base: widening without rewrapping changes no number;
+        # clearing the scrollback advances the base past what it dropped
         s.resize(2, 10)
         self.ae(written(s), [(i, str(i)) for i in range(5, 10)])
         s.clear_scrollback()

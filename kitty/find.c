@@ -68,17 +68,14 @@ append_physical_line(FindLineBuf *b, const Line *line, uint32_t row) {
     return true;
 }
 
-bool
+FindWalkResult
 find_walk_main_buffer(Screen *self, FindLineSink sink, void *ctx) {
     HistoryBuf *hb = self->historybuf;
     LineBuf *lb = self->main_linebuf;
     const index_type num_lines = hb->count + lb->ynum;
     __attribute__((cleanup(free_find_line_buf))) FindLineBuf b = {0};
     // allocated up front so even an empty first line hands the sink non-NULL pointers
-    if (!reserve(&b, 4 * lb->xnum)) {
-        PyErr_NoMemory();
-        return false;
-    }
+    if (!reserve(&b, 4 * lb->xnum)) return FIND_WALK_OUT_OF_MEMORY;
     index_type first = 0;
     for (index_type i = 0; i < num_lines; i++) {
         Line *line;
@@ -89,17 +86,14 @@ find_walk_main_buffer(Screen *self, FindLineSink sink, void *ctx) {
             linebuf_init_line(lb, i - hb->count);
             line = lb->line;
         }
-        if (!append_physical_line(&b, line, i - first)) {
-            PyErr_NoMemory();
-            return false;
-        }
+        if (!append_physical_line(&b, line, i - first)) return FIND_WALK_OUT_OF_MEMORY;
         const bool continues = line->cpu_cells[line->xnum - 1].next_char_was_wrapped && i + 1 < num_lines;
         if (!continues) {
             const FindLogicalLine l = {.abs_first_line = historybuf_abs_line(hb, first), .text = b.text, .text_len = b.len, .cells = b.cells};
-            if (!sink(ctx, &l)) return false;
+            if (!sink(ctx, &l)) return FIND_WALK_SINK_STOPPED;
             b.len = 0;
             first = i + 1;
         }
     }
-    return true;
+    return FIND_WALK_COMPLETE;
 }

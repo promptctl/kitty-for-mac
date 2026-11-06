@@ -6942,8 +6942,14 @@ append_logical_line_tuple(void *ans, const FindLogicalLine *l) {
 static PyObject *
 find_logical_lines(Screen *self, PyObject *o UNUSED) {
     RAII_PyObject(ans, PyList_New(0));
-    if (!ans || !find_walk_main_buffer(self, append_logical_line_tuple, ans)) return NULL;
-    return Py_NewRef(ans);
+    if (!ans) return NULL;
+    switch (find_walk_main_buffer(self, append_logical_line_tuple, ans)) {
+        case FIND_WALK_COMPLETE: return Py_NewRef(ans);
+        // the sink stops only when a Python call failed, so the error is already set
+        case FIND_WALK_SINK_STOPPED: return NULL;
+        case FIND_WALK_OUT_OF_MEMORY: return PyErr_NoMemory();
+    }
+    return NULL;
 }
 
 static PyObject *
