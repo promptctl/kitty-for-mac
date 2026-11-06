@@ -2050,6 +2050,23 @@ class TestScreen(BaseTest):
         s.toggle_alt_screen()
         self.assertRaises(RuntimeError, s.find_step, False)
 
+    def find_window(self, s, bound=(), **attrs):
+        """A stand-in for a Window whose foreground is a shell, with the real find methods bound to it.
+        Attributes in attrs replace the method of that name."""
+        from types import SimpleNamespace
+
+        from kitty.find_backends import EngineFind
+        from kitty.tmux_find import TmuxFindState
+        from kitty.window import Window
+        w = SimpleNamespace(screen=s, find_query='', os_window_id=1, finish_scroll_animation=lambda: None, find_bar_top_inset=lambda: 0,
+                            child=SimpleNamespace(foreground_processes=[]), tmux_find_state=TmuxFindState(), **attrs)
+        w.engine_find = EngineFind(w)
+        for name in ('find_backend', 'find_holder', 'end_finds', 'find_backend_to_search', 'find_step', 'set_find_query', 'find', 'find_clear',
+                     *bound):
+            if name not in attrs:
+                setattr(w, name, getattr(Window, name).__get__(w))
+        return w
+
     def test_window_find_keeps_its_query_after_clear(self):
         from types import SimpleNamespace
 
@@ -2062,10 +2079,7 @@ class TestScreen(BaseTest):
             s.draw(f'x{i:02d}')
             s.carriage_return(), s.linefeed()
         pushes = []
-        w = SimpleNamespace(screen=s, find_query='', finish_scroll_animation=lambda: None, find_bar_top_inset=lambda: 0,
-                            push_find_bar=lambda: pushes.append(s.find_status()))
-        for name in ('find_step', 'set_find_query', 'step_to_match'):
-            setattr(w, name, getattr(Window, name).__get__(w))
+        w = self.find_window(s, push_find_bar=lambda: pushes.append(s.find_status()))
         Window.find(w, 'x')
         self.ae(w.find_query, 'x')
         self.ae(pushes[-1][1], 20, 'the bar is told how many matches there are')
@@ -2110,11 +2124,7 @@ class TestScreen(BaseTest):
             for i in range(10):
                 s.draw(f'{text}{i}')
                 s.carriage_return(), s.linefeed()
-            w = SimpleNamespace(screen=s, find_query='', os_window_id=1, finish_scroll_animation=lambda: None,
-                                find_bar_top_inset=lambda: 0, push_find_bar=lambda: None)
-            for name in ('find_step', 'set_find_query', 'step_to_match', 'find_clear', 'follow_find_bar'):
-                setattr(w, name, getattr(Window, name).__get__(w))
-            return w
+            return self.find_window(s, ('follow_find_bar',), push_find_bar=lambda: None)
 
         a, b, other_tab = make_window('ab'), make_window('xb'), make_window('ab')
         pushes = []
@@ -2139,7 +2149,7 @@ class TestScreen(BaseTest):
             self.ae(a.screen.find_status(), (0, 0, False))
             self.ae((b.find_query, b.screen.find_status()), ('b', (0, 10, False)))
             # following the window the bar is already on keeps the match it was on
-            b.step_to_match(False)
+            b.find_step(False)
             current = b.screen.find_status()
             self.assertGreater(current[0], 0)
             follow(b)
@@ -2469,15 +2479,14 @@ class TestScreen(BaseTest):
 
         # the window pushes the status to the bar only while it is its OS window's active window
         pushed = []
-        w = SimpleNamespace(screen=s, find_query='x', os_window_id=1)
-        for name in ('push_find_bar', 'find_status_changed'):
-            setattr(w, name, getattr(Window, name).__get__(w))
+        w = self.find_window(s, ('push_find_bar', 'find_status_changed'))
+        w.find_query = 'x'
         tab_manager = SimpleNamespace(active_window=w)
         boss = SimpleNamespace(os_window_map={1: tab_manager})
         with mock.patch.object(window_module, 'is_macos', True), mock.patch.object(window_module, 'get_boss', lambda: boss), \
                 mock.patch.object(window_module, 'cocoa_update_find_bar', lambda *a: pushed.append(a)):
             w.find_status_changed()
-            self.ae(pushed, [(1, 'x', *s.find_status()[:2])])
+            self.ae(pushed, [(1, 'x', *s.find_status()[:2], 0)])
             tab_manager.active_window = None
             w.find_status_changed()
             self.ae(len(pushed), 1)

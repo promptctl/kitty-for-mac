@@ -3295,10 +3295,10 @@ COCOA_OS_WINDOW_FUNC(cocoa_show_find_bar_for_os_window, cocoa_show_find_bar)
 #ifdef __APPLE__
 static PyObject *
 cocoa_update_find_bar_py(PyObject UNUSED *self, PyObject *args) {
-    id_type os_window_id; const char *query; long current, total;
-    if (!PyArg_ParseTuple(args, "Ksll", &os_window_id, &query, &current, &total)) return NULL;
+    id_type os_window_id; const char *query; long current, total, count;
+    if (!PyArg_ParseTuple(args, "Kslll", &os_window_id, &query, &current, &total, &count)) return NULL;
     void *window = chrome_window(os_window_for_id(os_window_id));
-    if (window) cocoa_update_find_bar(window, query, current, total);
+    if (window) cocoa_update_find_bar(window, query, current, total, count);
     Py_RETURN_NONE;
 }
 

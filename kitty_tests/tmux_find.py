@@ -1,0 +1,657 @@
+#!/usr/bin/env python
+# License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
+
+import fcntl
+import os
+import pty
+import shutil
+import signal
+import struct
+import subprocess
+import tempfile
+import termios
+import threading
+import time
+from collections.abc import Generator
+from contextlib import contextmanager, suppress
+from types import SimpleNamespace
+from typing import Any
+from unittest import mock
+
+from kitty import tmux_find as tf
+from kitty import window as window_module
+from kitty.boss import Boss
+from kitty.child import ProcessDesc
+from kitty.constants import is_macos
+from kitty.find_backends import EngineFind, FindCount, FindStatus
+from kitty.tmux_find import (
+    TMUX_DEADLINE,
+    Counted,
+    PaneRef,
+    TmuxClient,
+    TmuxError,
+    TmuxFind,
+    TmuxFindState,
+    batch,
+    cancel_batch,
+    find_command,
+    parse_count,
+    parse_pane,
+    parse_selection,
+    query_argument,
+    search_batch,
+    server_args_of,
+    step_command,
+    tmux_client_of,
+)
+from kitty.window import Window
+
+from .base import BaseTest
+
+TMUX = shutil.which('tmux')
+
+
+def proc(pid: int, *cmdline: str) -> ProcessDesc:
+    return {'pid': pid, 'cwd': None, 'cmdline': list(cmdline)}
+
+
+def holding(state: TmuxFindState) -> TmuxFind:
+    f = TmuxFind.holding(state)
+    assert f is not None, 'the window holds no tmux search'
+    return f
+
+
+def held_pane(state: TmuxFindState) -> str:
+    assert state.held is not None, 'the window holds no tmux search'
+    return state.held.pane
+
+
+class TmuxFindPureTest(BaseTest):
+    "What is sent to tmux and what is read back from it, without a tmux"
+
+    def test_server_args(self):
+        for args, expected in {
+            (): (),
+            ('new', '-s', 'x'): (),
+            ('-L', 'work'): ('-L', 'work'),
+            ('-Lwork', 'attach'): ('-L', 'work'),
+            ('-S', '/tmp/sock', 'attach', '-L', 'ignored'): ('-S', '/tmp/sock'),
+            ('-2u', '-f', '/my/tmux.conf', '-L', 'a'): ('-L', 'a'),
+            ('-f', '-L', 'a'): (),  # -L is the value of -f
+            ('-uSpath', 'a'): ('-S', 'path'),
+        }.items():
+            self.ae(server_args_of(args), expected, args)
+
+    def test_tmux_client_of(self):
+        env = {'TMUX_TMPDIR': '/var/t', 'PATH': '/opt/bin'}
+
+        def of(*procs):
+            return tmux_client_of(procs, lambda pid: env)
+
+        self.ae(of(proc(5, 'tmux', 'attach')), TmuxClient(5, 'tmux', (), '/var/t', '/opt/bin'))
+        self.ae(of(proc(5, '/opt/homebrew/bin/tmux', '-L', 'w', 'a')), TmuxClient(5, '/opt/homebrew/bin/tmux', ('-L', 'w'), '/var/t', '/opt/bin'))
+        self.ae(of(proc(5, 'tmux: client')).exe, 'tmux: client')
+        for not_tmux in (proc(5, 'vim', 'tmux'), proc(5, 'zsh'), proc(5, '/usr/bin/tmuxinator', 'start'), proc(5)):
+            self.assertIsNone(of(not_tmux), not_tmux)
+        self.assertIsNone(of())
+        # the lowest pid among tmux processes, and an unreadable environment is no environment
+        self.ae(of(proc(9, 'tmux'), proc(7, 'tmux')).pid, 7)
+
+        def boom(pid):
+            raise PermissionError
+
+        self.ae(tmux_client_of([proc(5, 'tmux')], boom), TmuxClient(5, 'tmux', (), None, None))
+
+    def test_parsing(self):
+        out = '12 %3 0\n99 %7 1\n'
+        self.ae(parse_pane(out, 99), PaneRef('%7', True))
+        self.ae(parse_pane(out, 12), PaneRef('%3', False))
+        with self.assertRaises(TmuxError):
+            parse_pane(out, 5)
+        with self.assertRaises(TmuxError):
+            parse_pane('', 5)
+        self.ae(parse_count('1|111|0\n'), Counted(True, 111, False))
+        self.ae(parse_count('1|42|1'), Counted(True, 42, True))
+        self.ae(parse_count('0||\n'), Counted(False, None, False))
+        self.ae(parse_count('1||'), Counted(True, None, False))
+        for bad in ('', 'x', '1|2', '1|a|0', 'error'):
+            with self.assertRaises(TmuxError, msg=bad):
+                parse_count(bad)
+        self.ae(parse_selection('need\n'), 'need')
+        self.ae(parse_selection('need le'), 'need le')
+        for nothing in ('', '\n', 'a\nb', 'a\nb\n'):
+            self.assertIsNone(parse_selection(nothing), nothing)
+
+    def test_commands(self):
+        # a semicolon ends a tmux command unless it is escaped, and an option cannot be told from a query
+        for text, arg in {'foo': 'foo', 'foo;': 'foo\\;', ';': '\\;', 'a;b': 'a;b', '-n': '-n', '#{x}': '#{x}', 'é日': 'é日', '': ''}.items():
+            self.ae(query_argument(text), arg, text)
+        self.ae(find_command('%1', 'foo;'), ['send', '-t', '%1', '-X', 'search-backward-incremental', '=foo\\;'])
+        self.ae(step_command('%1', '-n', False), ['send', '-t', '%1', '-X', 'search-forward-text', '--', '-n'])
+        self.ae(step_command('%1', '-n', True)[4:], ['search-backward-text', '--', '-n'])
+        self.ae(batch(['a', 'b'], ['c']), ['a', 'b', ';', 'c'])
+        self.ae(batch(['a']), ['a'])
+        b = search_batch('%1', ['SEARCH'])
+        self.ae(b[0:3], ['copy-mode', '-t', '%1'])
+        self.assertLess(b.index('if-shell'), b.index('SEARCH'))
+        self.assertLess(b.index('SEARCH'), b.index('display-message'))
+        self.ae(b.count(';'), 3)
+        self.assertIn('send -t %1 -X cancel', cancel_batch('%1'))
+
+
+# A tmux server of our own with a real client attached on a pty, so that pane lookup runs through list-clients
+class PrivateTmux:
+    def __init__(self, directory: str) -> None:
+        assert TMUX
+        self.exe: str = TMUX
+        self.socket = os.path.join(directory, 'sock')
+        self.master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
+        self.output = bytearray()
+        self.slave = slave
+        # a client needs a terminal type, and wide characters a server that knows it speaks UTF-8
+        self.env = {**os.environ, 'TERM': 'xterm-256color', 'LC_ALL': 'en_US.UTF-8'}
+        self.client_proc: subprocess.Popen | None = None
+        threading.Thread(target=self.drain, daemon=True).start()
+
+    def drain(self) -> None:
+        with suppress(OSError):
+            while data := os.read(self.master, 65536):
+                self.output += data
+
+    def tmux(self, *args: str, check: bool = True) -> str:
+        cp = subprocess.run([self.exe, '-u', '-S', self.socket, *args], capture_output=True, text=True, timeout=10, env=self.env)
+        if check and cp.returncode:
+            raise AssertionError(f'tmux {args} failed: {cp.stderr}')
+        return cp.stdout.strip('\n')
+
+    def start(self, script: str, history_limit: int = 5000) -> None:
+        self.tmux('-f', '/dev/null', 'new-session', '-d', '-x', '100', '-y', '23', '-s', 'p', f'sh -c {script!r}')
+        for opt, val in (('mode-keys', 'vi'), ('history-limit', str(history_limit)), ('set-clipboard', 'on'), ('status', 'off')):
+            self.tmux('set', '-g', opt, val)
+        self.client_proc = subprocess.Popen(
+            [self.exe, '-u', '-S', self.socket, 'attach', '-t', 'p'],
+            stdin=self.slave, stdout=self.slave, stderr=self.slave, start_new_session=True, env=self.env,
+        )
+        deadline = time.monotonic() + 10
+        while not self.tmux('list-clients', check=False) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.pane = self.tmux('display', '-p', '-t', 'p', '#{pane_id}')
+
+    def fmt(self, f: str, pane: str | None = None) -> str:
+        return self.tmux('display', '-p', '-t', pane or self.pane, f)
+
+    def stop(self) -> None:
+        # the private server exits with its only session
+        with suppress(Exception):
+            self.tmux('kill-session', '-t', 'p', check=False)
+        if self.client_proc is not None:
+            with suppress(Exception):
+                self.client_proc.kill()
+                self.client_proc.wait(5)
+        os.close(self.slave)
+        with suppress(OSError):
+            os.close(self.master)
+
+    def client(self) -> TmuxClient:
+        assert self.client_proc is not None
+        return TmuxClient(self.client_proc.pid, self.exe, ('-S', self.socket), None, os.environ.get('PATH'))
+
+    def finder(self, state: TmuxFindState, **kw: Any) -> TmuxFind:
+        return TmuxFind(self.client(), state, **kw)
+
+
+@contextmanager
+def private_tmux(script: str, **kw: Any) -> Generator[PrivateTmux, None, None]:
+    with tempfile.TemporaryDirectory(prefix='kitty-find-test-') as d:
+        t = PrivateTmux(d)
+        try:
+            t.start(script, **kw)
+            yield t
+        finally:
+            t.stop()
+
+
+NEEDLES = 'i=1; while [ $i -le 300 ]; do echo "line $i needle-$i"; i=$((i+1)); done; sleep 600'
+AWKWARD = (
+    'for i in 1 2 3; do echo "alpha foo; x$i"; done; for i in 1 2 3 4 5 6 7; do echo "alpha foo y$i"; done;'
+    ' for i in 1 2 3; do echo "beta -n z$i"; done; echo "back\\\\slash"; echo "日本語テキスト and é"; sleep 600'
+)
+
+
+class TmuxFindIntegrationTest(BaseTest):
+    "The batches the bar sends, run against a real tmux server and its attached client"
+
+    def setUp(self) -> None:
+        super().setUp()
+        if not TMUX:
+            self.skipTest('tmux is not installed')
+
+    def in_mode(self, t: PrivateTmux, pane: str | None = None) -> bool:
+        return t.fmt('#{pane_in_mode}', pane) == '1'
+
+    def test_find_step_clear(self):
+        with private_tmux(NEEDLES) as t:
+            state = TmuxFindState()
+            f = t.finder(state)
+            f.find('needle-5')
+            self.ae(state.status, FindStatus(0, 11, FindCount.exact))
+            self.assertTrue(self.in_mode(t))
+            self.assertTrue(f.searching())
+            # the incremental search lands on the match nearest below the end of the buffer
+            line = t.fmt('#{copy_cursor_line}')
+            self.assertIn('needle-5', line)
+            # later in the buffer is forward and earlier is backward, and both wrap
+            n = lambda: int(t.fmt('#{copy_cursor_line}').split()[1])  # noqa: E731
+            at = n()
+            t.finder(state).step('needle-5', True)
+            self.assertLess(n(), at)
+            t.finder(state).step('needle-5', False)
+            self.ae(n(), at)
+            self.ae(state.status, FindStatus(0, 11, FindCount.exact))
+            for _ in range(11):
+                t.finder(state).step('needle-5', False)
+            self.ae(n(), at, 'eleven matches later is the same match: the search wraps')
+            self.ae(state.status.total, 11)
+            holding(state).clear()
+            self.assertFalse(self.in_mode(t))
+            self.assertIsNone(state.held)
+            self.ae(state.status, FindStatus(0, 0, FindCount.exact))
+            self.assertIsNone(TmuxFind.holding(state))
+
+    def test_no_match_is_zero_not_unavailable(self):
+        with private_tmux(NEEDLES) as t:
+            state = TmuxFindState()
+            t.finder(state).find('no-such-text')
+            self.ae(state.status, FindStatus(0, 0, FindCount.exact))
+            t.finder(state).find('needle-29')
+            self.ae(state.status.total, 11)
+
+    def test_awkward_queries_search_what_was_typed(self):
+        with private_tmux(AWKWARD) as t:
+            counts = {'foo;': 3, 'foo': 10, ';': 3, '-n': 3, '--': 0, 'z1': 1, '=': 0, 'back\\slash': 1, '#{pane_id}': 0, '日本語': 1, 'é': 1, '"': 0, "'": 0}
+            for query, total in counts.items():
+                state = TmuxFindState()
+                f = t.finder(state)
+                f.find(query)
+                self.ae(state.status, FindStatus(0, total, FindCount.exact), query)
+                # stepping with the same awkward text finds the same matches
+                t.finder(state).step(query, False)
+                self.ae(state.status.total, total, query)
+                holding(state).clear()
+            # the match is where the text is
+            state = TmuxFindState()
+            t.finder(state).find('foo;')
+            self.assertIn('foo; x', t.fmt('#{copy_cursor_line}'))
+            t.finder(state).find('-n')
+            self.assertIn('beta -n', t.fmt('#{copy_cursor_line}'))
+
+    def test_empty_query_clears(self):
+        with private_tmux(NEEDLES) as t:
+            state = TmuxFindState()
+            t.finder(state).find('needle')
+            self.assertTrue(self.in_mode(t))
+            t.finder(state).find('')
+            self.assertFalse(self.in_mode(t))
+            self.assertIsNone(state.held)
+
+    def test_leaving_copy_mode_by_hand_is_entered_again(self):
+        with private_tmux(NEEDLES) as t:
+            state = TmuxFindState()
+            t.finder(state).find('needle-5')
+            t.tmux('send', '-t', t.pane, '-X', 'cancel')
+            self.assertFalse(self.in_mode(t))
+            t.finder(state).step('needle-5', True)
+            self.assertTrue(self.in_mode(t))
+            self.ae(state.status, FindStatus(0, 11, FindCount.exact))
+
+    def test_one_pane_at_a_time(self):
+        with private_tmux(NEEDLES) as t:
+            a = t.pane
+            t.tmux('split-window', '-d', '-t', a, 'sh -c ' + repr(NEEDLES))
+            b = [p for p in t.tmux('list-panes', '-F', '#{pane_id}').split() if p != a][0]
+            state = TmuxFindState()
+            t.finder(state).find('needle-5')
+            self.assertTrue(self.in_mode(t, a))
+            self.ae(held_pane(state), a)
+            # the user switches pane inside tmux: the client's active pane is now the other one
+            t.tmux('select-pane', '-t', b)
+            time.sleep(0.2)
+            t.finder(state).find('needle-5')
+            self.assertFalse(self.in_mode(t, a), 'the pane the search left is out of copy mode')
+            self.assertTrue(self.in_mode(t, b))
+            self.ae(held_pane(state), b)
+            holding(state).clear()
+            self.assertFalse(self.in_mode(t, a) or self.in_mode(t, b))
+
+    def test_live_selection_is_not_stretched_by_the_search(self):
+        with private_tmux(NEEDLES) as t:
+            state = TmuxFindState()
+            t.finder(state).find('needle-5')
+            t.tmux('send', '-t', t.pane, '-X', 'begin-selection')
+            for _ in range(5):
+                t.tmux('send', '-t', t.pane, '-X', 'cursor-right')
+            self.assertEqual(t.fmt('#{selection_present}'), '1')
+            t.finder(state).find('needle-2')
+            self.ae(t.fmt('#{selection_present}'), '0')
+            self.ae(t.fmt('#{selection_active}'), '0')
+            self.ae(state.status, FindStatus(0, 111, FindCount.exact))
+            # a new drag, then a step of the unchanged query: tmux withholds the count, the state has it
+            t.tmux('send', '-t', t.pane, '-X', 'begin-selection')
+            t.tmux('send', '-t', t.pane, '-X', 'cursor-right')
+            t.finder(state).step('needle-2', False)
+            self.ae(t.fmt('#{selection_present}'), '0')
+            self.ae(state.status, FindStatus(0, 111, FindCount.exact))
+            t.tmux('send', '-t', t.pane, '-X', 'begin-selection')
+            t.finder(state).step('needle-2', True)
+            self.ae(state.status, FindStatus(0, 111, FindCount.exact))
+
+    def selection_made(self, t: PrivateTmux, search: str, right: int = 5, left: bool = False) -> None:
+        t.tmux('copy-mode', '-t', t.pane)
+        t.tmux('send', '-t', t.pane, '-X', 'search-backward-text', search)
+        t.tmux('send', '-t', t.pane, '-X', 'begin-selection')
+        for _ in range(right):
+            t.tmux('send', '-t', t.pane, '-X', 'cursor-left' if left else 'cursor-right')
+
+    def test_selection_text(self):
+        with private_tmux(NEEDLES) as t:
+            state = TmuxFindState()
+            f = lambda: t.finder(state).program_selection_text()  # noqa: E731
+            self.assertIsNone(f(), 'a pane not in a mode has no selection')
+            t.tmux('copy-mode', '-t', t.pane)
+            self.assertIsNone(f(), 'copy mode without a selection')
+            self.selection_made(t, 'needle-59')
+            self.ae(f(), 'needle')
+            self.ae(f(), 'needle', 'reading it leaves it')
+            self.ae(t.fmt('#{selection_present}'), '1')
+            self.ae(t.tmux('list-buffers'), '', 'no paste buffer was made')
+            t.tmux('send', '-t', t.pane, '-X', 'clear-selection')
+            self.selection_made(t, 'needle-59', right=4, left=True)
+            self.ae(len(f() or ''), 5, 'a selection made backward')
+            t.tmux('send', '-t', t.pane, '-X', 'cursor-down')
+            self.assertIsNone(f(), 'a selection over two rows is no one-line query')
+            self.ae(t.tmux('list-buffers'), '')
+            # nothing was written for the terminal's clipboard either: tmux does that as an OSC 52 to the client
+            time.sleep(0.2)
+            self.assertNotIn(b'\x1b]52', bytes(t.output))
+            self.assertIsNone(TmuxFind.holding(state), 'reading a selection holds no search')
+
+    def test_selection_text_of_wide_characters(self):
+        with private_tmux(AWKWARD) as t:
+            state = TmuxFindState()
+            t.tmux('copy-mode', '-t', t.pane)
+            t.tmux('send', '-t', t.pane, '-X', 'search-backward-text', '日本語')
+            t.tmux('send', '-t', t.pane, '-X', 'begin-selection')
+            for _ in range(5):
+                t.tmux('send', '-t', t.pane, '-X', 'cursor-right')
+            # the character under the cursor and five to its right
+            self.ae(t.finder(state).program_selection_text(), '日本語テキス')
+
+    def test_selection_text_on_a_pane_that_keeps_printing(self):
+        # rows of a pane move under tmux's coordinates as it prints and evicts: the text is tmux's own
+        script = (
+            'i=1; while [ $i -le 400 ]; do echo "row $i needle-$i"; i=$((i+1)); done; sleep 1;'
+            ' j=0; while [ $j -lt 2000 ]; do echo "stream $j"; j=$((j+1)); sleep 0.01; done; sleep 600'
+        )
+        with private_tmux(script, history_limit=60) as t:
+            time.sleep(0.5)
+            state = TmuxFindState()
+            t.tmux('copy-mode', '-t', t.pane)
+            t.tmux('send', '-t', t.pane, '-X', 'search-backward-text', 'row ')
+            t.tmux('send', '-t', t.pane, '-X', 'begin-selection')
+            for _ in range(5):
+                t.tmux('send', '-t', t.pane, '-X', 'cursor-right')
+            expected = t.finder(state).program_selection_text()
+            self.assertTrue(expected and expected.startswith('row '))
+            for _ in range(30):
+                time.sleep(0.05)
+                self.ae(t.finder(state).program_selection_text(), expected)
+            for _ in range(5):
+                t.tmux('send', '-t', t.pane, '-X', 'scroll-up')
+                self.ae(t.finder(state).program_selection_text(), expected)
+
+    def test_a_pipe_that_cannot_run_ends_in_the_deadline_with_a_typed_error(self):
+        with private_tmux(NEEDLES) as t:
+            self.selection_made(t, 'needle-59')
+            state = TmuxFindState()
+            client = t.client()
+            bad = TmuxClient(client.pid, '/bin/echo-not-here', client.server_args, None, client.path)
+
+            def run(argv, env, timeout):
+                # the real tmux, but the job that would signal the channel is told to do something else
+                argv = [a.replace('wait-for -S', 'display-message -p') if 'wait-for -S' in a else a for a in argv]
+                return tf.run_tmux(argv, env, timeout)
+
+            f = TmuxFind(client, state, run=run)
+            start = time.monotonic()
+            self.assertIsNone(f.program_selection_text())
+            self.assertLess(time.monotonic() - start, TMUX_DEADLINE + 1)
+            # and the next read works
+            self.ae(t.finder(TmuxFindState()).program_selection_text(), 'needle')
+            del bad
+
+    def test_a_wedged_server_ends_in_the_deadline_and_the_pane_is_cancelled_when_it_wakes(self):
+        with private_tmux(NEEDLES) as t:
+            state = TmuxFindState()
+            t.finder(state).find('needle-5')
+            server = int(t.fmt('#{pid}'))
+            os.kill(server, signal.SIGSTOP)
+            try:
+                start = time.monotonic()
+                t.finder(state).step('needle-5', False)
+                took = time.monotonic() - start
+                self.assertLess(took, TMUX_DEADLINE + 1)
+                self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
+                self.assertIsNotNone(state.held, 'the pane is on record')
+                holding(state).clear()
+                self.assertIsNotNone(state.held, 'a clear that timed out is tried again')
+            finally:
+                os.kill(server, signal.SIGCONT)
+            time.sleep(0.3)
+            holding(state).clear()
+            self.assertIsNone(state.held)
+            self.assertFalse(self.in_mode(t))
+
+    def test_find_in_a_pane_that_is_gone_is_unavailable_and_loud(self):
+        with private_tmux(NEEDLES) as t:
+            state = TmuxFindState()
+            client = t.client()
+            dead = TmuxClient(2**22 + 5, client.exe, client.server_args, None, client.path)
+            TmuxFind(dead, state).find('needle')
+            self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
+            self.assertIsNone(state.held, 'no pane was reached')
+
+
+class FakeTmux:
+    "Stands in for the one effect: answers what the bar's batches ask, and records what was sent"
+
+    def __init__(self, pane: str = '%1', counted: str = '1|5|0', selection: str = 'sel') -> None:
+        self.pane, self.counted, self.selection = pane, counted, selection
+        self.calls: list[list[str]] = []
+        self.client_pid = 77
+        self.timeout_cancel = False
+
+    def __call__(self, argv: Any, env: Any, timeout: float) -> str:
+        self.calls.append(list(argv))
+        if 'list-clients' in argv:
+            return f'{self.client_pid} {self.pane} 1\n'
+        if 'display-message' in argv:
+            return self.counted + '\n'
+        if 'copy-pipe-no-clear' in argv:
+            out = argv[argv.index('copy-pipe-no-clear') + 2].split('>')[1].split(';')[0].strip().strip("'")
+            with open(out, 'w') as f:
+                f.write(self.selection)
+        if self.timeout_cancel and any('send -t' in a and 'cancel' in a for a in argv):
+            raise TmuxError('no answer', timed_out=True)
+        return ''
+
+    def cancelled(self) -> list[list[str]]:
+        return [c for c in self.calls if any('-X cancel' in a for a in c)]
+
+
+class TmuxFindWindowTest(BaseTest):
+    "The window's find, with the foreground changing under a search"
+
+    def setUp(self) -> None:
+        super().setUp()
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+        self.dir = tempfile.TemporaryDirectory()
+        self.tmux_exe = os.path.join(self.dir.name, 'tmux')
+        with open(self.tmux_exe, 'w') as f:
+            f.write('#!/bin/sh\n')
+        os.chmod(self.tmux_exe, 0o755)
+        self.addCleanup(self.dir.cleanup)
+
+    def make_window(self, s: Any, fake: FakeTmux) -> SimpleNamespace:
+        foreground: list[dict[str, Any]] = []
+        w: Any = SimpleNamespace(
+            screen=s, find_query='', os_window_id=1, text_for_selection=lambda: s.callbacks.kitty_selection, geometry=None,
+            child=SimpleNamespace(foreground_processes=foreground), tmux_find_state=TmuxFindState(),
+            finish_scroll_animation=lambda: None, find_bar_top_inset=lambda: 0,
+        )
+        w.foreground = foreground
+        w.engine_find = EngineFind(w)
+        for name in (
+            'find_backend', 'find_holder', 'end_finds', 'find_backend_to_search', 'find_step', 'set_find_query', 'find', 'push_find_bar',
+            'find_selection_text', 'find_clear', 'find_status_changed', 'use_selection_for_find',
+        ):
+            setattr(w, name, getattr(Window, name).__get__(w))
+        w.pushed = []
+        tab_manager = SimpleNamespace(active_window=w)
+        boss = SimpleNamespace(os_window_map={1: tab_manager}, find_bar_window=lambda osw: tab_manager.active_window)
+        patches = [
+            mock.patch.object(window_module, 'is_macos', True),
+            mock.patch.object(window_module, 'get_boss', lambda: boss),
+            mock.patch.object(window_module, 'cocoa_update_find_bar', lambda *a: w.pushed.append(a)),
+            mock.patch.object(tf, 'run_tmux', fake),
+            mock.patch.object(tf, 'environ_of_process', lambda pid: {}),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        w.boss = boss
+        return w
+
+    def run_in_tmux(self, w: SimpleNamespace, pid: int = 77) -> None:
+        w.foreground[:] = [{'pid': pid, 'cwd': None, 'cmdline': [self.tmux_exe, '-S', '/x/sock', 'attach']}]
+
+    def screen_with_matches(self) -> Any:
+        s = self.create_screen(cols=10, lines=4, scrollback=20)
+        s.callbacks.kitty_selection = ''
+        for t in ('x0', 'x1', 'x2', 'x3', 'x4'):
+            s.draw(t), s.carriage_return(), s.linefeed()
+        return s
+
+    def reports(self, s: Any) -> int:
+        before = s.callbacks.find_status_changes
+        s.find_report_status_change()
+        return s.callbacks.find_status_changes - before
+
+    def test_a_bare_window_searches_in_the_engine(self):
+        s = self.screen_with_matches()
+        fake = FakeTmux()
+        w = self.make_window(s, fake)
+        w.find('x')
+        self.ae(s.find_status()[1], 5)
+        current = s.find_status()[0]
+        self.assertGreater(current, 0)
+        self.ae(w.pushed[-1][1:5], ('x', current, 5, 0))
+        self.ae(fake.calls, [], 'tmux is not asked about a window that does not run it')
+        self.assertIsNone(w.find_step(False))
+        w.find_clear()
+        self.ae(s.find_status()[1], 0)
+        self.ae(w.pushed[-1][3:5], (0, 0))
+
+    def test_tmux_starting_under_an_engine_search_takes_it_over(self):
+        s = self.screen_with_matches()
+        fake = FakeTmux(counted='1|42|0')
+        w = self.make_window(s, fake)
+        w.find('x')
+        self.ae(self.reports(s), 0, 'the bar has been told')
+        self.run_in_tmux(w)
+        w.find('x')
+        self.ae(s.find_status()[1], 0, 'the engine search ended: a window holds one search')
+        self.ae(w.pushed[-1][1:5], ('x', 0, 42, 0), 'the bar shows what tmux found')
+        # the screen's record of what the bar was told moved with it, so no frame keeps reporting the old total
+        self.ae(self.reports(s), 0)
+        self.ae(self.reports(s), 0)
+        self.assertTrue(w.find_holder().searching())
+        self.assertIsNot(w.find_holder(), w.engine_find)
+
+    def test_tmux_ending_under_its_search_still_cancels_it(self):
+        s = self.screen_with_matches()
+        fake = FakeTmux()
+        w = self.make_window(s, fake)
+        self.run_in_tmux(w)
+        w.find('x')
+        self.ae(fake.cancelled(), [])
+        w.foreground[:] = []  # tmux exited, or the shell has a different program now
+        w.find_clear()
+        self.ae(len(fake.cancelled()), 1, 'the pane this window put in copy mode is cancelled through the client it was reached with')
+        self.assertIn('%1', ' '.join(fake.cancelled()[0]))
+        self.assertIsNone(w.tmux_find_state.held)
+        self.ae(w.pushed[-1][3:5], (0, 0))
+
+    def test_an_engine_search_after_a_clear_that_timed_out_is_what_the_bar_shows(self):
+        s = self.screen_with_matches()
+        fake = FakeTmux()
+        w = self.make_window(s, fake)
+        self.run_in_tmux(w)
+        w.find('x')
+        fake.timeout_cancel = True
+        w.foreground[:] = []
+        w.find('x')  # the engine searches; tmux's pane could not be cancelled and stays on record
+        self.assertIsNotNone(w.tmux_find_state.held)
+        self.ae(s.find_status()[1], 5)
+        self.assertIs(w.find_holder(), w.engine_find)
+        self.ae(w.pushed[-1][1:5], ('x', s.find_status()[0], 5, 0), 'the engine\'s matches are painted, so the bar says so')
+
+    def test_closing_a_window_that_holds_a_tmux_search_cancels_it(self):
+        s = self.screen_with_matches()
+        fake = FakeTmux()
+        w = self.make_window(s, fake)
+        self.run_in_tmux(w)
+        w.find('x')
+        closing: Any = SimpleNamespace(
+            tmux_find_state=w.tmux_find_state, call_watchers=lambda *a: None, watchers=SimpleNamespace(on_close=None), id=1,
+            clear_progress_timer=0, clipboard_request_manager=SimpleNamespace(close=lambda: None), kitten_result_processors=[],
+        )
+        Window.destroy(closing)
+        self.ae(len(fake.cancelled()), 1)
+        self.assertIsNone(w.tmux_find_state.held)
+
+    def test_the_selection_cmd_e_seeds_from(self):
+        s = self.screen_with_matches()
+        fake = FakeTmux(selection='from tmux')
+        w = self.make_window(s, fake)
+        s.callbacks.kitty_selection = 'from kitty'
+        self.ae(w.find_selection_text(), 'from kitty', 'a bare window uses kitty\'s selection')
+        self.run_in_tmux(w)
+        self.ae(w.find_selection_text(), 'from tmux', 'tmux\'s selection is the one the user made in a pane')
+        fake.selection = ''
+        self.ae(w.find_selection_text(), 'from kitty', 'with none in tmux, kitty\'s')
+        s.callbacks.kitty_selection = ''
+        self.assertIsNone(w.find_selection_text())
+        # the menu asks the same function the key does
+        has = Boss.find_has_selection.__get__(w.boss)
+        self.assertFalse(has(1))
+        fake.selection = 'from tmux'
+        self.assertTrue(has(1))
+        self.assertTrue(Boss.find_can_search.__get__(w.boss)(1))
+
+    def test_the_menu_and_the_key_agree_on_the_alternate_screen(self):
+        s = self.screen_with_matches()
+        s.callbacks.kitty_selection = 'sel'
+        w = self.make_window(s, FakeTmux())
+        can = Boss.find_can_search.__get__(w.boss)
+        s.toggle_alt_screen()
+        self.assertFalse(can(1), 'a full-screen program in a bare window: the keys are the program\'s')
+        self.assertTrue(w.find_step(False))
+        self.assertTrue(w.use_selection_for_find(), 'the key goes to the program')
+        self.assertFalse(Boss.find_has_selection.__get__(w.boss)(1))
+        self.run_in_tmux(w)
+        self.assertTrue(can(1), 'tmux draws on the alternate screen and can still be searched')
+        self.assertIsNone(w.find_step(False))
+        self.assertTrue(Boss.find_has_selection.__get__(w.boss)(1))
+        self.assertIsNone(w.use_selection_for_find(), 'the selection seeds the search')

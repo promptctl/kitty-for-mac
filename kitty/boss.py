@@ -4304,6 +4304,14 @@ class Boss:
         if w := self.find_bar_window(os_window_id):
             w.find_step(not forward)
 
+    # [LAW:single-enforcer] The Edit > Find items are enabled by asking the same functions the find
+    # actions use, so the menu and the keymap cannot disagree about when a key is the program's.
+    def find_can_search(self, os_window_id: int) -> bool:
+        return bool((w := self.find_bar_window(os_window_id)) and w.find_backend().can_search())
+
+    def find_has_selection(self, os_window_id: int) -> bool:
+        return bool((w := self.find_bar_window(os_window_id)) and w.find_selection_text() is not None)
+
     def find_bar_closed(self, os_window_id: int) -> None:
         # the bar followed focus between the windows of its OS window, so any of them may hold a search
         for tab in self.os_window_map.get(os_window_id, ()):
