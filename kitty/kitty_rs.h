@@ -29,10 +29,17 @@ void kitty_rs_find_engine_free(FindEngine *engine);
 // (NUL-terminated, truncated to err_size). utf8 must be non-NULL (even when len is 0) and
 // valid UTF-8; err_size must be at least 1.
 bool kitty_rs_find_set_query(FindEngine *engine, const uint8_t *utf8, size_t len, bool case_insensitive, char *err, size_t err_size);
-// Appends the matches in one logical line; lines must arrive in buffer order.
-void kitty_rs_find_feed_line(FindEngine *engine, const FindLogicalLine *line);
-// Drops the matches starting at abs_line or later, ahead of feeding those lines again.
-void kitty_rs_find_drop_lines_from(FindEngine *engine, uint64_t abs_line);
+// The matches in a range of lines searched afresh under the engine's query, spliced in whole.
+typedef struct FindRefeed FindRefeed;
+// Never NULL: allocation failure aborts.
+FindRefeed* kitty_rs_find_refeed_new(const FindEngine *engine, FindRefeedRange lines);
+// Adds the matches in one logical line; lines must lie in the range and arrive in buffer order.
+void kitty_rs_find_refeed_line(FindRefeed *refeed, const FindLogicalLine *line);
+// Replaces the matches starting in the refeed's lines with its own and frees the refeed. The
+// generation moves only when they differ.
+void kitty_rs_find_splice(FindEngine *engine, FindRefeed *refeed);
+// Frees a refeed without splicing it.
+void kitty_rs_find_refeed_free(FindRefeed *refeed);
 // Drops the matches starting before abs_line.
 void kitty_rs_find_evict_before(FindEngine *engine, uint64_t abs_line);
 // The matches in buffer order, *count of them, valid until the engine next changes.
@@ -43,7 +50,8 @@ const FindMatch* kitty_rs_find_matches_in_lines(const FindEngine *engine, uint64
 // Counts the changes to the match list: equal generations mean the same matches.
 uint64_t kitty_rs_find_generation(const FindEngine *engine);
 // The current match, always one of the matches: set_query and the cuts that drop it end it.
-// Makes m the current match, returning false and changing nothing when it is not one of the matches.
+// Makes m the current match, returning false and changing nothing when it is not one of the
+// matches. Setting the current match again keeps whether the step to it wrapped.
 bool kitty_rs_find_set_current(FindEngine *engine, FindMatch m);
 // Leaves no current match; the matches stay.
 void kitty_rs_find_end_current(FindEngine *engine);

@@ -4,7 +4,7 @@
 
 mod find;
 
-use find::{Direction, FindCellSpan, FindEngine, FindMatch, FindPos, FindStatus};
+use find::{Direction, FindCellSpan, FindEngine, FindMatch, FindPos, FindRefeed, FindRefeedRange, FindStatus};
 
 /// kitty/find.h's FindLogicalLine: the walker's view of one logical line.
 #[repr(C)]
@@ -62,23 +62,47 @@ fn write_c_string(s: &str, buf: &mut [u8]) {
     buf[n] = 0;
 }
 
-/// # Safety
-/// `engine` is live; `line` points to a FindLogicalLine whose text and cells each hold
-/// text_len entries (non-null even when text_len is 0).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kitty_rs_find_feed_line(engine: *mut FindEngine, line: *const FindLogicalLine) {
-    // SAFETY: the caller's contract above.
-    let (engine, l) = unsafe { (&mut *engine, &*line) };
-    let (text, cells) = unsafe { (std::slice::from_raw_parts(l.text, l.text_len), std::slice::from_raw_parts(l.cells, l.text_len)) };
-    engine.feed_line(l.abs_first_line, text, cells);
-}
-
+/// An empty refeed of `lines` under the engine's current query. Never NULL: allocation
+/// failure aborts. It owns its own copy of the query, so the engine stays usable meanwhile.
+///
 /// # Safety
 /// `engine` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kitty_rs_find_drop_lines_from(engine: *mut FindEngine, abs_line: u64) {
+pub unsafe extern "C" fn kitty_rs_find_refeed_new(engine: *const FindEngine, lines: FindRefeedRange) -> *mut FindRefeed {
     // SAFETY: the caller's contract above.
-    unsafe { &mut *engine }.drop_lines_from(abs_line);
+    Box::into_raw(Box::new(unsafe { &*engine }.refeed(lines)))
+}
+
+/// # Safety
+/// `refeed` is live; `line` points to a FindLogicalLine whose text and cells each hold
+/// text_len entries (non-null even when text_len is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_refeed_line(refeed: *mut FindRefeed, line: *const FindLogicalLine) {
+    // SAFETY: the caller's contract above.
+    let (refeed, l) = unsafe { (&mut *refeed, &*line) };
+    let (text, cells) = unsafe { (std::slice::from_raw_parts(l.text, l.text_len), std::slice::from_raw_parts(l.cells, l.text_len)) };
+    refeed.feed_line(l.abs_first_line, text, cells);
+}
+
+/// Replaces the matches starting in the refeed's lines with its own, and frees it.
+///
+/// # Safety
+/// `engine` is live; `refeed` came from kitty_rs_find_refeed_new and is not used again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_splice(engine: *mut FindEngine, refeed: *mut FindRefeed) {
+    // SAFETY: the caller's contract above.
+    let (engine, refeed) = unsafe { (&mut *engine, Box::from_raw(refeed)) };
+    engine.splice(*refeed);
+}
+
+/// Frees a refeed without splicing it: the engine keeps the matches it had.
+///
+/// # Safety
+/// `refeed` came from kitty_rs_find_refeed_new and is not used again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_refeed_free(refeed: *mut FindRefeed) {
+    // SAFETY: the caller's contract above.
+    drop(unsafe { Box::from_raw(refeed) });
 }
 
 /// # Safety
@@ -190,7 +214,9 @@ mod tests {
         let found = unsafe {
             let mut err = [0u8; 8];
             assert!(kitty_rs_find_set_query(engine, query.as_ptr(), query.len(), true, err.as_mut_ptr(), err.len()));
-            kitty_rs_find_feed_line(engine, &line);
+            let refeed = kitty_rs_find_refeed_new(engine, FindRefeedRange { from: 5, limit: u64::MAX });
+            kitty_rs_find_refeed_line(refeed, &line);
+            kitty_rs_find_splice(engine, refeed);
             std::slice::from_raw_parts(kitty_rs_find_matches(engine, &mut count), count).to_vec()
         };
         assert_eq!(found, [FindMatch { abs_start_line: 5, start_x: 1, abs_end_line: 5, end_x: 1 }]);

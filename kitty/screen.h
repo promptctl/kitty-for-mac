@@ -184,6 +184,8 @@ typedef struct {
 #ifdef __APPLE__
     // owned, never NULL; the empty query is "no search"
     struct FindEngine *find_engine;
+    // owned; what the engine was last fed (kitty/find.h), NULL while the query is empty
+    struct FindFedRecord *find_record;
     // what screen_apply_selection last painted the find highlights from
     struct {
         uint64_t generation;

@@ -68,16 +68,55 @@ append_physical_line(FindLineBuf *b, const Line *line, uint32_t row) {
     return true;
 }
 
+// The main buffer by absolute line: history oldest first, then the screen rows.
+static uint64_t
+buffer_limit(const Screen *self) {
+    return self->historybuf->abs_oldest_line + self->historybuf->count + self->main_linebuf->ynum;
+}
+
+static CPUCell*
+cells_at(Screen *self, uint64_t abs_line) {
+    HistoryBuf *hb = self->historybuf;
+    const uint64_t i = abs_line - hb->abs_oldest_line;
+    // historybuf numbers its lines newest first
+    return i < hb->count ? historybuf_cpu_cells(hb, hb->count - 1 - i) : linebuf_cpu_cells_for_line(self->main_linebuf, i - hb->count);
+}
+
+// whether abs_line's last cell wraps onto a next line that is in the buffer
+static bool
+continues(Screen *self, uint64_t abs_line) {
+    return abs_line + 1 < buffer_limit(self) && cells_at(self, abs_line)[self->main_linebuf->xnum - 1].next_char_was_wrapped;
+}
+
+FindRefeedRange
+find_onward_range(Screen *self, uint64_t abs_line) {
+    uint64_t from = abs_line;
+    while (from > self->historybuf->abs_oldest_line && continues(self, from - 1)) from--;
+    return (FindRefeedRange){.from = from, .limit = UINT64_MAX};
+}
+
+FindRefeedRange
+find_first_logical_line_range(Screen *self) {
+    const uint64_t from = self->historybuf->abs_oldest_line;
+    uint64_t last = from;
+    while (continues(self, last)) last++;
+    return (FindRefeedRange){.from = from, .limit = last + 1};
+}
+
 FindWalkResult
-find_walk_main_buffer(Screen *self, FindLineSink sink, void *ctx) {
+find_walk_main_buffer(Screen *self, FindRefeedRange lines, FindLineSink sink, void *ctx) {
     HistoryBuf *hb = self->historybuf;
     LineBuf *lb = self->main_linebuf;
     const index_type num_lines = hb->count + lb->ynum;
     __attribute__((cleanup(free_find_line_buf))) FindLineBuf b = {0};
     // allocated up front so even an empty first line hands the sink non-NULL pointers
     if (!reserve(&b, 4 * lb->xnum)) return FIND_WALK_OUT_OF_MEMORY;
-    index_type first = 0;
-    for (index_type i = 0; i < num_lines; i++) {
+    // [LAW:single-enforcer] the range already starts a logical line and ends one or runs onward:
+    // the walk feeds exactly its lines, so the refeed it fills covers what its splice replaces
+    const index_type start = lines.from - hb->abs_oldest_line;
+    const index_type end = MIN((uint64_t)num_lines, lines.limit - hb->abs_oldest_line);
+    index_type first = start;
+    for (index_type i = start; i < end; i++) {
         Line *line;
         if (i < hb->count) {
             historybuf_init_line(hb, hb->count - 1 - i, hb->line);
@@ -87,8 +126,8 @@ find_walk_main_buffer(Screen *self, FindLineSink sink, void *ctx) {
             line = lb->line;
         }
         if (!append_physical_line(&b, line, i - first)) return FIND_WALK_OUT_OF_MEMORY;
-        const bool continues = line->cpu_cells[line->xnum - 1].next_char_was_wrapped && i + 1 < num_lines;
-        if (!continues) {
+        const bool wraps_on = line->cpu_cells[line->xnum - 1].next_char_was_wrapped && i + 1 < num_lines;
+        if (!wraps_on) {
             const FindLogicalLine l = {.abs_first_line = hb->abs_oldest_line + first, .text = b.text, .text_len = b.len, .cells = b.cells};
             if (!sink(ctx, &l)) return FIND_WALK_SINK_STOPPED;
             b.len = 0;
@@ -96,4 +135,49 @@ find_walk_main_buffer(Screen *self, FindLineSink sink, void *ctx) {
         }
     }
     return FIND_WALK_COMPLETE;
+}
+
+FindFedRecord*
+find_record_capture(Screen *self) {
+    HistoryBuf *hb = self->historybuf;
+    const index_type columns = self->main_linebuf->xnum;
+    const uint64_t first_line = hb->abs_oldest_line + hb->count - MIN(hb->count, FIND_MULTICELL_REACH);
+    const index_type rows = buffer_limit(self) - first_line;
+    FindFedRecord *r = malloc(sizeof(FindFedRecord));
+    if (!r) return NULL;
+    *r = (FindFedRecord){.first_line = first_line, .abs_oldest_line = hb->abs_oldest_line, .rows = rows, .columns = columns};
+    r->cells = malloc((size_t)rows * columns * sizeof(CPUCell));
+    if (!r->cells) { free(r); return NULL; }
+    for (index_type y = 0; y < rows; y++) memcpy(r->cells + (size_t)y * columns, cells_at(self, first_line + y), columns * sizeof(CPUCell));
+    return r;
+}
+
+void
+find_record_free(FindFedRecord *r) {
+    if (r) free(r->cells);
+    free(r);
+}
+
+uint64_t
+find_changed_from(Screen *self, const FindFedRecord *r) {
+    HistoryBuf *hb = self->historybuf;
+    const uint64_t oldest = hb->abs_oldest_line, limit = buffer_limit(self), recorded_limit = r->first_line + r->rows;
+    const index_type columns = self->main_linebuf->xnum;
+    // the ring's own rewrites, widened by the multicell rows an edit could have reached above
+    // them once a pop or delete moved screen row 0 down
+    const uint64_t mark = hb->abs_lowest_rewritten_line;
+    uint64_t changed = mark == UINT64_MAX ? UINT64_MAX : mark - MIN(mark, FIND_MULTICELL_REACH);
+    // a recorded row differs when its line has left the end of the buffer or holds other
+    // cells, as every row does at another column count
+    for (uint64_t l = MAX(r->first_line, oldest); l < MIN(recorded_limit, changed); l++) {
+        const CPUCell *was = r->cells + (size_t)(l - r->first_line) * r->columns;
+        if (l >= limit || r->columns != columns || memcmp(cells_at(self, l), was, columns * sizeof(CPUCell)) != 0) {
+            changed = l;
+            break;
+        }
+    }
+    // lines past the last recorded row are new
+    if (limit > recorded_limit) changed = MIN(changed, recorded_limit);
+    // [LAW:single-enforcer] the one clamp: the walker and the refeed only see lines in the buffer
+    return changed == UINT64_MAX ? changed : MAX(changed, oldest);
 }
