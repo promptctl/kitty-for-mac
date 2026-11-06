@@ -311,17 +311,16 @@ class ClaudeFindIntegrationTest(BaseTest):
             c.holding(state).clear()
             self.assertIsNone(state.held)
             self.ae(c.view(), Transcript(), 'the person gets the view they were reading back')
-            self.assertIs(state.return_to, Prompt, 'a hold that is over remembers nothing')
 
     def test_the_starting_view_is_recorded_once_per_hold(self):
         with fake_claude(*CONVERSATION) as c:
             self.person_opens_transcript(c)
             state = ClaudeFindState()
             c.finder(state).find('zebra')  # leaves the pane in Claude's accepted search
-            self.assertIs(state.return_to, Transcript)
+            self.assertIs(state.held.return_to, Transcript)
             c.finder(state).find('filler')  # the pane shows our search now, which reads as the transcript either way
             c.finder(state).step('filler', False)
-            self.assertIs(state.return_to, Transcript)
+            self.assertIs(state.held.return_to, Transcript)
             c.holding(state).clear()
             self.ae(c.view(), Transcript())
 
@@ -330,11 +329,11 @@ class ClaudeFindIntegrationTest(BaseTest):
             state = ClaudeFindState()
             c.finder(state).find('zebra')
             c.finder(state).find('filler')
-            self.assertIs(state.return_to, Prompt)
+            self.assertIs(state.held.return_to, Prompt)
             c.holding(state).clear()
             self.ae(c.view(), Prompt())
             c.finder(state).find('zebra')  # a new hold reads the view again
-            self.assertIs(state.return_to, Prompt)
+            self.assertIs(state.held.return_to, Prompt)
 
     def test_a_pane_that_began_in_the_persons_own_search_ends_in_the_transcript(self):
         with fake_claude(*CONVERSATION) as c:
@@ -553,10 +552,13 @@ class ClaudeFindIntegrationTest(BaseTest):
             state = ClaudeFindState()
             c.finder(state).find('zebra')
             other = c.t.tmux('split-window', '-d', '-P', '-F', '#{pane_id}', "printf '❯ \\n'; sleep 600")  # a prompt row: a view of Claude Code
+            deadline = time.monotonic() + 5
+            while not isinstance(parse_view(c.t.tmux('capture-pane', '-p', '-t', other)), Prompt) and time.monotonic() < deadline:
+                time.sleep(0.02)
             f = ClaudeFind(c.t.client(), state, TmuxOperation(), c.host(), ClaudePane(other, 'sid-2', 1, c.dir))
             f.guarded(lambda pane: f.hold(pane.pane_id))
             self.ae(c.view(), Prompt(), 'the first pane was brought back')
-            self.ae(state.held.pane, other)  # type: ignore[union-attr]
+            self.ae(state.held.at.pane, other)  # type: ignore[union-attr]
 
     def test_every_cause_is_logged_once_and_sets_unavailable(self):
         with fake_claude(*CONVERSATION) as c:
