@@ -22,7 +22,7 @@ from contextlib import suppress
 from enum import Enum
 from functools import lru_cache, partial
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple, Union, cast
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, NamedTuple, Optional, Sequence, Tuple, Union, cast
 
 src_base = os.path.dirname(os.path.abspath(__file__))
 glfw_base = os.path.join(src_base, 'glfw')
@@ -272,7 +272,6 @@ class CompilationDatabase:
         return database.get(command.key) != command.cmd
 
     def __enter__(self) -> 'CompilationDatabase':
-        self.all_keys: Set[CompileKey] = set()
         self.dbpath = os.path.abspath(os.path.join(build_dir, 'compile_commands.json'))
         self.linkdbpath = os.path.join(os.path.dirname(self.dbpath), 'link_commands.json')
         try:
@@ -291,22 +290,19 @@ class CompilationDatabase:
         return self
 
     def __exit__(self, exc_type: Optional[type], *a: object) -> None:
-        if exc_type is not None:
-            # The queues hold only the commands added before the failure; saving them would forget the rest
-            return
-        cdb = self.db
-        for key in set(cdb) - self.all_keys:
-            del cdb[key]
-        compilation_database = [
-            {'file': c.key.src, 'arguments': c.cmd, 'directory': src_base, 'output': c.key.dest}
-            for c in self.built_now + self.compile_commands
-            if c.key is not None
-        ]
+        # A build that raised may not have registered every command, so each key it never reached keeps the last
+        # build's record; a finished build records exactly its own commands, so a deleted source's record goes with it
+        compile_records = dict(self.db) if exc_type is not None else {}
+        compile_records.update((c.key, c.cmd) for c in self.built_now + self.compile_commands if c.key is not None)
+        link_records = dict(self.linkdb) if exc_type is not None else {}
+        link_records.update((c.key, c.cmd) for c in self.link_commands if c.key is not None)
         with suppress(FileNotFoundError):
             with open(self.dbpath, 'w') as f:
-                json.dump(compilation_database, f, indent=2, sort_keys=True)
+                json.dump([
+                    {'file': k.src, 'arguments': cmd, 'directory': src_base, 'output': k.dest} for k, cmd in compile_records.items()
+                ], f, indent=2, sort_keys=True)
             with open(self.linkdbpath, 'w') as f:
-                json.dump([{'output': c.key, 'arguments': c.cmd, 'directory': src_base} for c in self.link_commands], f, indent=2, sort_keys=True)
+                json.dump([{'output': k, 'arguments': cmd, 'directory': src_base} for k, cmd in link_records.items()], f, indent=2, sort_keys=True)
 
 
 class Options:
@@ -1245,8 +1241,8 @@ def build_swift_module(args: Options, kenv: Env) -> SwiftModule:
     os.makedirs(out_dir, exist_ok=True)
     obj = os.path.join(out_dir, 'KittySwift.o')
     header = os.path.join(out_dir, 'KittySwift-Swift.h')
-    # Every file in the directory is an input: the .swift sources, module.modulemap and the C header it maps
-    inputs = sorted(os.path.join(swift_src_dir, x) for x in os.listdir(swift_src_dir))
+    # The inputs are the .swift sources, module.modulemap and the C header it maps; editor and Finder files are not
+    inputs = sorted(os.path.join(swift_src_dir, x) for x in os.listdir(swift_src_dir) if x.endswith(('.swift', '.h', '.modulemap')))
     triple = cc_target_triple(kenv)
     unoptimized = args.debug or args.sanitize
     cmd = swiftc + ['-parse-as-library', '-wmo', '-emit-object', '-module-name', 'KittySwift', '-swift-version', '6', '-target', triple]
