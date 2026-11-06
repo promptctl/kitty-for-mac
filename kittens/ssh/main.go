@@ -658,14 +658,16 @@ func load_color_schemes(names ...string) (ans map[string]map[string]string, err 
 // schemes for all system color schemes are sent to kitty, which switches
 // between them when the system color scheme changes. This requires kitty to
 // receive the push colors escape code, which does not happen with tmux.
-func change_colors(host_opts *Config) (ans string, err error) {
+// change_colors is the escape code that sets the colors for host_opts. Behind
+// tmux, which cannot carry the color scheme DCS, only color_scheme applies.
+func change_colors(host_opts *Config, in_tmux bool) (ans string, err error) {
 	variants := map[string]string{
 		"dark": host_opts.Color_scheme_dark, "light": host_opts.Color_scheme_light, "no_preference": host_opts.Color_scheme_no_preference}
 	has_variants := false
 	for _, name := range variants {
 		has_variants = has_variants || name != ""
 	}
-	if !has_variants || tui.TmuxSocketAddress() != "" {
+	if !has_variants || in_tmux {
 		if host_opts.Color_scheme == "" {
 			return
 		}
@@ -694,11 +696,7 @@ func change_colors(host_opts *Config) (ans string, err error) {
 	if err != nil {
 		return "", err
 	}
-	dcs, err := tui.DCSToKitty("color-scheme", utils.UnsafeBytesToString(data))
-	if err != nil {
-		return "", err
-	}
-	return "\033[#P" + dcs, nil
+	return "\033[#P" + tui.KittyDCS("color-scheme", utils.UnsafeBytesToString(data)), nil
 }
 
 func run_ssh(ssh_args, server_args, found_extra_args []string, ssh_config_channel <-chan *SSHConfig) (rc int, err error) {
@@ -886,7 +884,7 @@ func run_ssh(ssh_args, server_args, found_extra_args []string, ssh_config_channe
 	cd.host_opts, cd.literal_env = host_opts, literal_env
 	cd.request_data = need_to_request_data
 	cd.hostname_for_match, cd.username = hostname_for_match, uname
-	escape_codes_to_set_colors, err := change_colors(cd.host_opts)
+	escape_codes_to_set_colors, err := change_colors(cd.host_opts, tui.TmuxSocketAddress() != "")
 	if err == nil {
 		err = term.WriteAllString(escape_codes_to_set_colors + loop.SAVE_PRIVATE_MODE_VALUES + loop.PUSH_KEY_FLAGS + loop.HANDLE_TERMIOS_SIGNALS.EscapeCodeToSet())
 	}

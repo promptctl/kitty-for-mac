@@ -12,18 +12,22 @@ import (
 
 var _ = fmt.Print
 
+// KittyDCS is the DCS sequence for a kitty message, as sent to a terminal that
+// is not behind tmux.
+func KittyDCS(msgtype, payload string) string {
+	return kitty_dcs_body(msgtype, payload) + "\033\\"
+}
+
+func kitty_dcs_body(msgtype, payload string) string {
+	return "\x1bP@kitty-" + msgtype + "|" + base64.StdEncoding.EncodeToString(utils.UnsafeStringToBytes(payload))
+}
+
 func DCSToKitty(msgtype, payload string) (string, error) {
-	data := base64.StdEncoding.EncodeToString(utils.UnsafeStringToBytes(payload))
-	ans := "\x1bP@kitty-" + msgtype + "|" + data
-	tmux := TmuxSocketAddress()
-	if tmux != "" {
-		err := TmuxAllowPassthrough()
-		if err != nil {
-			return "", err
-		}
-		ans = "\033Ptmux;\033" + ans + "\033\033\\\033\\"
-	} else {
-		ans += "\033\\"
+	if TmuxSocketAddress() == "" {
+		return KittyDCS(msgtype, payload), nil
 	}
-	return ans, nil
+	if err := TmuxAllowPassthrough(); err != nil {
+		return "", err
+	}
+	return "\033Ptmux;\033" + kitty_dcs_body(msgtype, payload) + "\033\033\\\033\\", nil
 }

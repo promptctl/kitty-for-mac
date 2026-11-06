@@ -176,7 +176,7 @@ func TestSSHChangeColors(t *testing.T) {
 		return s[p]
 	}
 	change := func(c Config) string {
-		ans, err := change_colors(&c)
+		ans, err := change_colors(&c, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,7 +189,7 @@ func TestSSHChangeColors(t *testing.T) {
 	if ans := change(Config{Color_scheme: a}); ans != "\x1b[#P"+themes.ColorSettingsAsEscapeCodes(settings(a)) {
 		t.Fatalf("Incorrect escape codes for color_scheme: %#v", ans)
 	}
-	if _, err := change_colors(&Config{Color_scheme_dark: filepath.Join(tdir, "missing.conf")}); err == nil {
+	if _, err := change_colors(&Config{Color_scheme_dark: filepath.Join(tdir, "missing.conf")}, false); err == nil {
 		t.Fatal("No error for missing color scheme file")
 	}
 
@@ -227,5 +227,19 @@ func TestSSHChangeColors(t *testing.T) {
 	// modes without any color scheme use the colors from kitty
 	if diff := cmp.Diff(map[string]any{"light": spec(b)}, variants(Config{Color_scheme_light: b})); diff != "" {
 		t.Fatalf("Incorrect color scheme variants:\n%s", diff)
+	}
+	// tmux cannot carry the color scheme DCS, so only color_scheme applies
+	in_tmux := func(c Config) string {
+		ans, err := change_colors(&c, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ans
+	}
+	if ans := in_tmux(Config{Color_scheme_dark: b}); ans != "" {
+		t.Fatalf("Colors changed in tmux with only a variant color scheme: %#v", ans)
+	}
+	if ans := in_tmux(Config{Color_scheme: a, Color_scheme_dark: b}); ans != "\x1b[#P"+themes.ColorSettingsAsEscapeCodes(settings(a)) {
+		t.Fatalf("Incorrect escape codes for color_scheme in tmux: %#v", ans)
 	}
 }
