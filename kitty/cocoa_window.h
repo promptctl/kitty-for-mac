@@ -62,6 +62,7 @@ void cocoa_minimize(void *w);
 void cocoa_show_find_bar(void *w);
 void cocoa_update_find_bar(void *w, const char *query, long current, long total);
 long cocoa_find_bar_covered_pixels(void *w);
+const char* cocoa_find_bar_query(void *w, bool *shown);
 id_type cocoa_os_window_id_for_window(void *w);
 void cocoa_set_uncaught_exception_handler(void);
 void cocoa_update_menu_bar_title(PyObject *);

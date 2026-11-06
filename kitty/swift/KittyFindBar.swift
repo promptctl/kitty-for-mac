@@ -28,8 +28,7 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
     // a repeated Cmd+F lands in the field with all of its text selected. Showing a hidden bar also
     // searches its text again, since hiding the bar cleared the highlights; an open bar's match stays.
     @objc public static func show(in window: NSWindow) {
-        // Every GLFW window has a content view: the terminal
-        let bar = bar(in: window.contentView!)
+        let bar = bar(in: window)
         let wasHidden = bar.isHidden
         bar.isHidden = false
         window.makeFirstResponder(bar.field)
@@ -40,7 +39,7 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
     // Python owns the query and reports it with where the search stands: the current match's place
     // among the matches, 0 when none is current. A window without a bar has nothing to show it in.
     @objc public static func update(in window: NSWindow, query: String, current: Int, total: Int) {
-        guard let bar = window.contentView?.subviews.lazy.compactMap({ $0 as? KittyFindBar }).first else { return }
+        guard let bar = existingBar(in: window) else { return }
         // typing in the field is what usually changed the query, and rewriting the text would reset its cursor
         if bar.field.stringValue != query { bar.field.stringValue = query }
         bar.status.stringValue = switch (current, total) {
@@ -50,12 +49,20 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         }
     }
 
+    // The text in the window's field, which a hidden bar keeps for the next Cmd+F; nil for a window
+    // that has never had a bar.
+    @objc public static func query(in window: NSWindow) -> String? {
+        existingBar(in: window)?.field.stringValue
+    }
+
+    @objc public static func isShown(in window: NSWindow) -> Bool {
+        existingBar(in: window).map { !$0.isHidden } ?? false
+    }
+
     // How far down from the top of the terminal the bar covers it, in pixels: 0 while it is hidden,
     // so a match is never revealed under it.
     @objc public static func coveredPixels(in window: NSWindow) -> Int {
-        guard let terminal = window.contentView,
-              let bar = terminal.subviews.lazy.compactMap({ $0 as? KittyFindBar }).first, !bar.isHidden
-        else { return 0 }
+        guard let terminal = window.contentView, let bar = existingBar(in: window), !bar.isHidden else { return 0 }
         // a bar just shown has not been laid out yet, and its frame says nothing until it has
         terminal.layoutSubtreeIfNeeded()
         return Int(((terminal.bounds.maxY - bar.frame.minY) * window.backingScaleFactor).rounded(.up))
@@ -63,8 +70,14 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
 
     // [LAW:one-source-of-truth] The view hierarchy is the only record of a window's bar,
     // so the window owns it and closing the window frees it.
-    private static func bar(in terminal: NSView) -> KittyFindBar {
-        if let bar = terminal.subviews.lazy.compactMap({ $0 as? KittyFindBar }).first { return bar }
+    private static func existingBar(in window: NSWindow) -> KittyFindBar? {
+        window.contentView?.subviews.lazy.compactMap { $0 as? KittyFindBar }.first
+    }
+
+    private static func bar(in window: NSWindow) -> KittyFindBar {
+        if let bar = existingBar(in: window) { return bar }
+        // Every GLFW window has a content view: the terminal
+        let terminal = window.contentView!
         let bar = KittyFindBar()
         terminal.addSubview(bar)
         NSLayoutConstraint.activate([

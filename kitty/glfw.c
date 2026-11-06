@@ -3286,7 +3286,23 @@ cocoa_find_bar_covered_pixels_py(PyObject UNUSED *self, PyObject *args) {
     void *window = chrome_window(os_window_for_id(os_window_id));
     return PyLong_FromLong(window ? cocoa_find_bar_covered_pixels(window) : 0);
 }
+
+static PyObject *
+cocoa_find_bar_state_py(PyObject UNUSED *self, PyObject *args) {
+    id_type os_window_id;
+    if (!PyArg_ParseTuple(args, "K", &os_window_id)) return NULL;
+    void *window = chrome_window(os_window_for_id(os_window_id));
+    bool shown = false;
+    const char *query = window ? cocoa_find_bar_query(window, &shown) : NULL;
+    if (!query) Py_RETURN_NONE;
+    return Py_BuildValue("Os", shown ? Py_True : Py_False, query);
+}
 #else
+static PyObject *
+cocoa_find_bar_state_py(PyObject UNUSED *self, PyObject *args UNUSED) {
+    PyErr_SetString(PyExc_RuntimeError, "cocoa_find_bar_state() is only supported on macOS");
+    return NULL;
+}
 static PyObject *
 cocoa_update_find_bar_py(PyObject UNUSED *self, PyObject *args UNUSED) {
     PyErr_SetString(PyExc_RuntimeError, "cocoa_update_find_bar() is only supported on macOS");
@@ -4248,6 +4264,7 @@ static PyMethodDef module_methods[] = {
     METHODB(cocoa_show_find_bar_for_os_window, METH_VARARGS),
     {"cocoa_update_find_bar", cocoa_update_find_bar_py, METH_VARARGS, ""},
     {"cocoa_find_bar_covered_pixels", cocoa_find_bar_covered_pixels_py, METH_VARARGS, ""},
+    {"cocoa_find_bar_state", cocoa_find_bar_state_py, METH_VARARGS, ""},
     {"glfw_wayland_inject_init", (PyCFunction)glfw_wayland_inject_init, METH_VARARGS, ""},
     {"glfw_wayland_inject_terminate", (PyCFunction)glfw_wayland_inject_terminate, METH_NOARGS, ""},
     {"glfw_wayland_inject_mouse_motion_absolute", (PyCFunction)glfw_wayland_inject_mouse_motion_absolute, METH_VARARGS, ""},

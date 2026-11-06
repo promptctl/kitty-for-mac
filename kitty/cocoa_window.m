@@ -1914,6 +1914,13 @@ long
 cocoa_find_bar_covered_pixels(void *w) {
     return [KittyFindBar coveredPixelsIn:(NSWindow *)w];
 }
+
+// NULL when the window has no bar; otherwise the text in its field, valid until control returns to the run loop
+const char*
+cocoa_find_bar_query(void *w, bool *shown) {
+    *shown = [KittyFindBar isShownIn:(NSWindow *)w];
+    return [[KittyFindBar queryIn:(NSWindow *)w] UTF8String];
+}
 // }}}
 
 static PyMethodDef module_methods[] = {
