@@ -3051,10 +3051,18 @@ class Window:
 
     # [LAW:single-enforcer] the one place the find bar is told what the search is. The bar belongs
     # to its OS window and shows the search of that window's active kitty window.
+    # The status is read for the bar even when another window's search is the one it shows, so a
+    # frame stops reporting a change this window has handled.
     def push_find_bar(self) -> None:
-        if is_macos and (tm := get_boss().os_window_map.get(self.os_window_id)) and tm.active_window is self:
-            current, total, _ = self.screen.find_status()
+        if not is_macos:
+            return
+        current, total, _ = self.screen.find_status_for_bar()
+        if (tm := get_boss().os_window_map.get(self.os_window_id)) and tm.active_window is self:
             cocoa_update_find_bar(self.os_window_id, self.find_query, current, total)
+
+    def find_status_changed(self) -> None:
+        "The screen's callback for the find status changing as the buffer it searches changes"
+        self.push_find_bar()
 
     # [LAW:one-source-of-truth] The bar's field is the query of its OS window, whichever kitty window is
     # active. A window that becomes active takes the query over and the windows it replaces drop

@@ -149,6 +149,7 @@ class Callbacks:
         self.open_urls = []
         self.cc_buf = []
         self.bell_count = 0
+        self.find_status_changes = 0
         self.clone_cmds = []
         self.current_clone_data = ''
         self.last_cmd_exit_status = sys.maxsize
@@ -159,6 +160,9 @@ class Callbacks:
 
     def on_bell(self) -> None:
         self.bell_count += 1
+
+    def find_status_changed(self) -> None:
+        self.find_status_changes += 1
 
     def on_da1(self) -> None:
         opts = None

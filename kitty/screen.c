@@ -7286,9 +7286,51 @@ find_disown_selection(Screen *self, PyObject *o UNUSED) {
 }
 
 static PyObject *
-find_status(Screen *self, PyObject *o UNUSED) {
-    const FindStatus st = kitty_rs_find_status(screen_find_engine(self));
+find_status_tuple(FindStatus st) {
     return Py_BuildValue("nnO", (Py_ssize_t)st.current, (Py_ssize_t)st.total, st.wrapped ? Py_True : Py_False);
+}
+
+static PyObject *
+find_status(Screen *self, PyObject *o UNUSED) {
+    return find_status_tuple(kitty_rs_find_status(screen_find_engine(self)));
+}
+
+// [LAW:one-source-of-truth] find_reported has this one writer, the read the window tells the
+// bar from, so it holds what the window last told its bar. The bar shows it while the window
+// is active, and a window that becomes active tells the bar again. Reads that tell no bar, such
+// as follow_find_bar's, use find_status() and leave it alone.
+static PyObject *
+find_status_for_bar(Screen *self, PyObject *o UNUSED) {
+    const FindStatus st = kitty_rs_find_status(screen_find_engine(self));
+    self->find_reported.current = st.current;
+    self->find_reported.total = st.total;
+    return find_status_tuple(st);
+}
+
+// The engine changes the status on its own as the buffer it searches changes: output, eviction,
+// a resize or clear, or a current match whose cells changed. Each frame asks whether the bar
+// was told something else, and reports it once no walk over the windows is in progress, since
+// the report runs Python. Until a report reaches the bar it is asked again every frame.
+bool
+screen_find_status_changed(Screen *self) {
+    // a paused screen's buffer is the program's update half drawn, and the engine read would
+    // release a find selection over cells the update has not yet written back: its status is
+    // reported once the pause ends
+    if (self->paused_rendering.expires_at) return false;
+    const FindStatus st = kitty_rs_find_status(screen_find_engine(self));
+    return st.current != self->find_reported.current || st.total != self->find_reported.total;
+}
+
+void
+screen_report_find_status_change(Screen *self) {
+    CALLBACK("find_status_changed", NULL);
+}
+
+// what a frame does for one window, for tests to run without a render loop
+static PyObject *
+find_report_status_change(Screen *self, PyObject *o UNUSED) {
+    if (screen_find_status_changed(self)) screen_report_find_status_change(self);
+    Py_RETURN_NONE;
 }
 
 static PyObject *
@@ -7834,7 +7876,7 @@ static PyMethodDef methods[] = {
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
     MND(find_logical_lines, METH_NOARGS)
 #ifdef __APPLE__
-    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_disown_selection, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
+    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_disown_selection, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_status_for_bar, METH_NOARGS) MND(find_report_status_change, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
 #endif
     MND(abs_line_at_viewport_top, METH_NOARGS)
 

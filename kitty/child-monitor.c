@@ -1214,6 +1214,28 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     return needs_render;
 }
 
+#ifdef __APPLE__
+// [LAW:no-ambient-temporal-coupling] asked during the walk, reported after it: a report runs
+// Python, which can close windows and move OS windows and tabs in memory under the walk's
+// pointers. The list holds the Screens themselves, which outlive any of that.
+static void
+report_find_status_changes(void) {
+    RAII_PyObject(changed, PyList_New(0));
+    if (!changed) { PyErr_Print(); return; }
+    for (size_t o = 0; o < global_state.num_os_windows; o++) {
+        OSWindow *os_window = global_state.os_windows + o;
+        for (unsigned t = 0; t < os_window->num_tabs; t++) {
+            Tab *tab = os_window->tabs + t;
+            for (unsigned i = 0; i < tab->num_windows; i++) {
+                Screen *screen = tab->windows[i].render_data.screen;
+                if (screen && screen_find_status_changed(screen) && PyList_Append(changed, (PyObject*)screen) != 0) PyErr_Print();
+            }
+        }
+    }
+    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(changed); i++) screen_report_find_status_change((Screen*)PyList_GET_ITEM(changed, i));
+}
+#endif
+
 static void
 render(monotonic_t now, bool input_read) {
     EVDBG("input_read: %d, check_for_active_animated_images: %d\n", input_read, global_state.check_for_active_animated_images);
@@ -1257,6 +1279,9 @@ render(monotonic_t now, bool input_read) {
         }
     }
     if (!waiting_for_frame) last_render_at = now;
+#ifdef __APPLE__
+    report_find_status_changes();
+#endif
     call_boss(cache_process_data, "O", Py_False);
 #undef TD
 }
