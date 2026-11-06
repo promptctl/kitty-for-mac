@@ -88,6 +88,7 @@ def generate_wrappers(glfw_header: str) -> None:
     uint32_t glfwGetCocoaKeyEquivalent(uint32_t glfw_key, int glfw_mods, int* cocoa_mods)
     void glfwCocoaRequestRenderFrame(GLFWwindow *w, GLFWcocoarenderframefun callback)
     bool glfwCocoaRecreateGLDrawable(GLFWwindow *w)
+    bool glfwCocoaNativeViewHasFocus(void)
     GLFWcocoarenderframefun glfwCocoaSetWindowResizeCallback(GLFWwindow *w, GLFWcocoarenderframefun callback)
     void* glfwGetX11Display(void)
     unsigned long glfwGetX11Window(GLFWwindow* window)

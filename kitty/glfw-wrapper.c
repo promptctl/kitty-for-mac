@@ -494,6 +494,9 @@ load_glfw(const char* path) {
     *(void **) (&glfwCocoaRecreateGLDrawable_impl) = dlsym(handle, "glfwCocoaRecreateGLDrawable");
     if (glfwCocoaRecreateGLDrawable_impl == NULL) dlerror(); // clear error indicator
 
+    *(void **) (&glfwCocoaNativeViewHasFocus_impl) = dlsym(handle, "glfwCocoaNativeViewHasFocus");
+    if (glfwCocoaNativeViewHasFocus_impl == NULL) dlerror(); // clear error indicator
+
     *(void **) (&glfwCocoaSetWindowResizeCallback_impl) = dlsym(handle, "glfwCocoaSetWindowResizeCallback");
     if (glfwCocoaSetWindowResizeCallback_impl == NULL) dlerror(); // clear error indicator
 

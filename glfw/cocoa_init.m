@@ -801,8 +801,8 @@ is_apple_fn_global_shortcut(NSEvent *event) {
 // editor, a button) rather than to the terminal. The terminal is the window's
 // content view; the window itself as first responder also counts as the
 // terminal, as it always has. A keyboard grab sends every key to the terminal.
-static bool
-native_view_has_focus(void) {
+GLFWAPI bool
+glfwCocoaNativeViewHasFocus(void) {
     if (_glfw.keyboard_grabbed) return false;
     NSWindow *kw = [NSApp keyWindow];
     if (!kw) return false;
@@ -810,18 +810,23 @@ native_view_has_focus(void) {
     return [fr isKindOfClass:[NSView class]] && fr != kw.contentView;
 }
 
-// The standard text editing action for a shortcut, or NULL. Pass [event
-// characters]: with Command held it comes from the layout macOS uses for
-// Command shortcuts, so Cyrillic or Dvorak-QWERTY-Command layouts match the
-// way the menu does.
+// The key a Command shortcut is matched on: the typed character when it is
+// ASCII, otherwise the key at that position on a US layout, as AppKit's menu
+// matching does on Cyrillic, Greek and other non-Latin layouts.
+static unichar
+command_shortcut_key(NSEvent *event) {
+    NSString *chars = [event characters];
+    if ([chars length] == 1 && [chars characterAtIndex:0] < 0x80) return [[chars lowercaseString] characterAtIndex:0];
+    return vk_code_to_unicode([event keyCode]);
+}
+
+// The standard text editing action kitty has no menu item for, or NULL. Copy
+// and Paste are menu items; their actions follow focus (kitty/cocoa_window.m).
 static SEL
-standard_edit_action(NSString *chars, NSEventModifierFlags mods) {
-    if ([chars length] != 1) return NULL;
+standard_edit_action(unichar key, NSEventModifierFlags mods) {
     const bool cmd = mods == NSEventModifierFlagCommand;
     const bool cmd_shift = mods == (NSEventModifierFlagCommand | NSEventModifierFlagShift);
-    switch ([[chars lowercaseString] characterAtIndex:0]) {
-        case 'c': return cmd ? @selector(copy:) : NULL;
-        case 'v': return cmd ? @selector(paste:) : NULL;
+    switch (key) {
         case 'x': return cmd ? @selector(cut:) : NULL;
         case 'a': return cmd ? @selector(selectAll:) : NULL;
         case 'z': return cmd ? @selector(undo:) : cmd_shift ? @selector(redo:) : NULL;
@@ -882,25 +887,18 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
         NSEvent * (^keydown_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("---------------- key down -------------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
-          const bool native_focus = native_view_has_focus();
-          // kitty's Edit menu Copy and Paste act on the terminal and it has no
-          // Cut, Select All or Undo, so these go to the focused native view
-          // before the menu sees them. If no responder takes the action, AppKit
-          // gets the event; the terminal's menu items never do.
-          SEL edit_action = native_focus ? standard_edit_action([event characters], USEFUL_MODS([event modifierFlags])) : NULL;
-          if (edit_action) {
-              if ([NSApp sendAction:edit_action to:nil from:nil]) {
-                  debug_input("keyDown sent a standard edit action to the focused native view\n");
-                  record_shortcut_keydown(event, 0);
-                  return nil;
-              }
-              debug_input("keyDown left to AppKit as no responder took the standard edit action\n");
-              return event;
-          }
+          const bool native_focus = glfwCocoaNativeViewHasFocus();
           if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed) {
               // first check if there is a global menu bar shortcut
               if ([[NSApp mainMenu] performKeyEquivalent:event]) {
                   debug_input("keyDown triggered global menu bar action ignoring\n");
+                  record_shortcut_keydown(event, 0);
+                  return nil;
+              }
+              // the edit shortcuts kitty's menu lacks, for a focused native view
+              SEL edit_action = native_focus ? standard_edit_action(command_shortcut_key(event), USEFUL_MODS([event modifierFlags])) : NULL;
+              if (edit_action && [NSApp sendAction:edit_action to:nil from:nil]) {
+                  debug_input("keyDown sent a standard edit action to the focused native view\n");
                   record_shortcut_keydown(event, 0);
                   return nil;
               }
@@ -939,8 +937,9 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               debug_input("keyUp ignored as corresponds to previous keyDown that triggered a shortcut\n");
               return nil;
           }
-          if (native_view_has_focus()) return event;
           NSWindow *kw = [NSApp keyWindow];
+          // a release goes where its press went, so focus moving mid-press leaves no key held in the terminal
+          if (glfwCocoaNativeViewHasFocus() && !_glfwCocoaWindowHoldsKey(kw, [event keyCode])) return event;
           if (kw && kw.contentView) [kw.contentView keyUp:event];
           else debug_input("keyUp ignored as no keyWindow present\n");
           return nil;
@@ -960,8 +959,8 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                   last_keydown_shortcut_event.input_source_switch_modifiers = 0;
               return event;
           }
-          if (native_view_has_focus()) return event;
           NSWindow *kw = [NSApp keyWindow];
+          if (glfwCocoaNativeViewHasFocus() && !_glfwCocoaWindowHoldsKey(kw, [event keyCode])) return event;
           if (kw && kw.contentView) [kw.contentView flagsChanged:event];
           else debug_input("flagsChanged ignored as no keyWindow present\n");
           return nil;

@@ -40,20 +40,6 @@
 //////                         GLFW event API                       //////
 //////////////////////////////////////////////////////////////////////////
 
-// Sends a release for every key the window holds as pressed, for when key
-// events stop reaching it before the keys come up
-//
-void
-_glfwInputReleaseHeldKeys(_GLFWwindow *window) {
-    for (unsigned i = 0; i < arraysz(window->activated_keys); i++) {
-        if (window->activated_keys[i].key > 0 && window->activated_keys[i].action == GLFW_PRESS) {
-            const int native_key = _glfwPlatformGetNativeKeyForKey(window->activated_keys[i].key);
-            GLFWkeyevent ev = {.key = window->activated_keys[i].key, .native_key = native_key, .action = GLFW_RELEASE, .fake_event_on_focus_change = true};
-            _glfwInputKeyboard(window, &ev);
-        }
-    }
-}
-
 // Notifies shared code that a window has lost or received input focus
 //
 void
@@ -63,7 +49,13 @@ _glfwInputWindowFocus(_GLFWwindow *window, bool focused) {
     if (!focused) {
         _glfw.focusedWindowId = 0;
 
-        _glfwInputReleaseHeldKeys(window);
+        for (unsigned i = 0; i < arraysz(window->activated_keys); i++) {
+            if (window->activated_keys[i].key > 0 && window->activated_keys[i].action == GLFW_PRESS) {
+                const int native_key = _glfwPlatformGetNativeKeyForKey(window->activated_keys[i].key);
+                GLFWkeyevent ev = {.key = window->activated_keys[i].key, .native_key = native_key, .action = GLFW_RELEASE, .fake_event_on_focus_change = true};
+                _glfwInputKeyboard(window, &ev);
+            }
+        }
 
         for (int button = 0; button <= GLFW_MOUSE_BUTTON_LAST; button++) {
             if (window->mouseButtons[button] == GLFW_PRESS) {

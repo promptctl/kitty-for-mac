@@ -791,7 +791,6 @@ void _glfwPlatformUnlockMutex(_GLFWmutex *mutex);
 //////////////////////////////////////////////////////////////////////////
 
 void _glfwInputWindowFocus(_GLFWwindow *window, bool focused);
-void _glfwInputReleaseHeldKeys(_GLFWwindow *window);
 void _glfwInputWindowOcclusion(_GLFWwindow *window, bool occluded);
 void _glfwInputWindowPos(_GLFWwindow *window, int xpos, int ypos);
 void _glfwInputWindowSize(_GLFWwindow *window, int width, int height);

@@ -286,10 +286,24 @@ PENDING(hide_macos_app, HIDE)
 PENDING(hide_macos_other_apps, HIDE_OTHERS)
 PENDING(minimize_macos_window, MINIMIZE)
 PENDING(quit, QUIT)
-PENDING(paste_from_clipboard, PASTE_FROM_CLIPBOARD)
-PENDING(copy_or_noop, COPY_OR_NOOP)
+
+// Edit > Copy and Paste act on whichever view has keyboard focus: the terminal,
+// or a native view through the standard copy: and paste: actions. AppKit's
+// menu matching picks the item, so layouts and remapped shortcuts just work.
+- (void)paste_from_clipboard:(id)sender {
+    if (glfwCocoaNativeViewHasFocus()) [NSApp sendAction:@selector(paste:) to:nil from:sender];
+    else set_cocoa_pending_action(PASTE_FROM_CLIPBOARD, NULL);
+}
+
+- (void)copy_or_noop:(id)sender {
+    if (glfwCocoaNativeViewHasFocus()) [NSApp sendAction:@selector(copy:) to:nil from:sender];
+    else set_cocoa_pending_action(COPY_OR_NOOP, NULL);
+}
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if ((item.action == @selector(paste_from_clipboard:) || item.action == @selector(copy_or_noop:)) && glfwCocoaNativeViewHasFocus()) {
+        return [NSApp targetForAction:(item.action == @selector(paste_from_clipboard:) ? @selector(paste:) : @selector(copy:)) to:nil from:item] != nil;
+    }
     if (item.action == @selector(toggle_macos_secure_keyboard_entry:)) {
         item.state = [SecureKeyboardEntryController sharedInstance].isDesired ? NSControlStateValueOn : NSControlStateValueOff;
     } else if (item.action == @selector(toggle_fullscreen:)) {
