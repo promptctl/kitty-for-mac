@@ -1567,6 +1567,59 @@ class TestScreen(BaseTest):
         w('e')
         self.ae(contents(), 'abcde')
 
+    def test_find_logical_lines(self):
+
+        def row(y, *xs):
+            return [(y, x, x) for x in xs]
+
+        def written(s):
+            return [(n, text) for n, text, cells in s.find_logical_lines() if text]
+
+        # one physical line; trailing never-written cells are not text; blank rows are lines too
+        s = self.create_screen(cols=10, lines=3)
+        s.draw('hello')
+        self.ae(s.find_logical_lines(), [(0, 'hello', row(0, 0, 1, 2, 3, 4)), (1, '', []), (2, '', [])])
+
+        # a line wrapped across rows
+        s = self.create_screen(cols=5, lines=3)
+        s.draw('abcdefg')
+        self.ae(s.find_logical_lines(), [(0, 'abcdefg', row(0, 0, 1, 2, 3, 4) + row(1, 0, 1)), (2, '', [])])
+
+        # a logical line spanning the history-to-screen boundary
+        s = self.create_screen(cols=5, lines=2)
+        s.draw('abcdefgh')
+        s.carriage_return(), s.linefeed()
+        self.ae(s.historybuf.count, 1)
+        self.ae(s.find_logical_lines(), [(0, 'abcdefgh', row(0, 0, 1, 2, 3, 4) + row(1, 0, 1, 2)), (2, '', [])])
+
+        # wide cells cover both their cells; combining marks map to their base cell
+        s = self.create_screen(cols=10, lines=1)
+        s.draw('a中🐈béz')
+        self.ae(s.find_logical_lines(), [(0, 'a中🐈béz', [(0, 0, 0), (0, 1, 2), (0, 3, 4), (0, 5, 5), (0, 6, 6), (0, 6, 6), (0, 7, 7)])])
+
+        # a tab is one character covering its padding, before and inside text
+        s = self.create_screen(cols=20, lines=1)
+        s.draw('\tab\tc')
+        self.ae(s.find_logical_lines(), [(0, '\tab\tc', [(0, 0, 7), (0, 8, 8), (0, 9, 9), (0, 10, 15), (0, 16, 16)])])
+
+        # a never-written gap between words is a space
+        s = self.create_screen(cols=10, lines=1)
+        s.draw('x'), s.cursor_forward(1), s.draw('y')
+        self.ae(s.find_logical_lines(), [(0, 'x y', row(0, 0, 1, 2))])
+
+        # history ring full: surviving lines keep their absolute numbers, evicted ones are gone
+        s = self.create_screen(cols=5, lines=2, scrollback=3)
+        for i in range(10):
+            s.draw(str(i))
+            if i != 9:
+                s.carriage_return(), s.linefeed()
+        self.ae(written(s), [(i, str(i)) for i in range(5, 10)])
+        # numbering survives a resize, which rebuilds the ring, and clearing the scrollback
+        s.resize(2, 10)
+        self.ae(written(s), [(i, str(i)) for i in range(5, 10)])
+        s.clear_scrollback()
+        self.ae(written(s), [(8, '8'), (9, '9')])
+
     def test_user_marking(self):
 
         def cells(*a, y=0, mark=3):

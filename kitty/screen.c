@@ -44,6 +44,7 @@
 #include "keys.h"
 #include "vt-parser.h"
 #include "resize.h"
+#include "find.h"
 
 static const ScreenModes empty_modes = {0, .mDECAWM = true, .mDECTCEM = true, .mDECARM = true};
 
@@ -6923,6 +6924,28 @@ scroll_to_next_mark(Screen *self, PyObject *args) {
     Py_RETURN_FALSE;
 }
 
+static bool
+append_logical_line_tuple(void *ans, const FindLogicalLine *l) {
+    RAII_PyObject(text, PyUnicode_DecodeUTF8(l->text, l->text_len, "strict"));
+    RAII_PyObject(cells, PyList_New(0));
+    if (!text || !cells) return false;
+    for (size_t i = 0; i < l->text_len; i++) {
+        // one entry per codepoint: the span of its lead byte
+        if ((l->text[i] & 0xC0) == 0x80) continue;
+        RAII_PyObject(t, Py_BuildValue("III", l->cells[i].row, l->cells[i].x, l->cells[i].x_last));
+        if (!t || PyList_Append(cells, t) != 0) return false;
+    }
+    RAII_PyObject(item, Py_BuildValue("KOO", (unsigned long long)l->abs_first_line, text, cells));
+    return item && PyList_Append(ans, item) == 0;
+}
+
+static PyObject *
+find_logical_lines(Screen *self, PyObject *o UNUSED) {
+    RAII_PyObject(ans, PyList_New(0));
+    if (!ans || !find_walk_main_buffer(self, append_logical_line_tuple, ans)) return NULL;
+    return Py_NewRef(ans);
+}
+
 static PyObject *
 marked_cells(Screen *self, PyObject *o UNUSED) {
     RAII_PyObject(ans, PyList_New(0));
@@ -7414,9 +7437,10 @@ static PyMethodDef methods[] = {
                         MND(pause_rendering, METH_VARARGS) MND(hyperlink_at, METH_VARARGS) MND(toggle_alt_screen, METH_NOARGS) MND(reset_callbacks, METH_NOARGS)
                             MND(paste, METH_O) MND(paste_bytes, METH_O) MND(focus_changed, METH_O) MND(has_focus, METH_NOARGS)
                                 MND(has_activity_since_last_focus, METH_NOARGS) MND(copy_colors_from, METH_O) MND(set_marker, METH_VARARGS)
-                                    MND(marked_cells, METH_NOARGS) MND(scroll_to_next_mark, METH_VARARGS) MND(update_only_line_graphics_data, METH_NOARGS)
-                                        MND(bell, METH_NOARGS) MND(current_selections, METH_NOARGS) MND(is_selection_dirty, METH_NOARGS){
-                                            "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
+                                    MND(marked_cells, METH_NOARGS) MND(find_logical_lines, METH_NOARGS) MND(scroll_to_next_mark, METH_VARARGS)
+                                        MND(update_only_line_graphics_data, METH_NOARGS) MND(bell, METH_NOARGS) MND(current_selections, METH_NOARGS)
+                                            MND(is_selection_dirty,
+                                                METH_NOARGS){"select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
 
     {NULL} /* Sentinel */
 };

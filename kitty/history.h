@@ -34,8 +34,19 @@ typedef struct {
     Line *line;
     TextCache *text_cache;
     index_type start_of_data, count;
+    // Absolute line number of the oldest line held: the number of lines that have left the
+    // top of the ring (evicted or cleared). Line i from the oldest is abs_oldest_line + i, and
+    // the screen continues the numbering, so a line keeps its number whatever the ring does.
+    uint64_t abs_oldest_line;
 } HistoryBuf;
 
+
+// Absolute line number of the physical line at index i, counting from the oldest held line
+// down through the screen rows below the ring: screen row y is i = count + y.
+static inline uint64_t
+historybuf_abs_line(const HistoryBuf *self, index_type i) {
+    return self->abs_oldest_line + i;
+}
 
 HistoryBuf *alloc_historybuf(unsigned int, unsigned int, unsigned int, TextCache *tc);
 HistoryBuf *historybuf_alloc_for_rewrap(unsigned int columns, HistoryBuf *self);

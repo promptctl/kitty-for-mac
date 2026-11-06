@@ -1252,6 +1252,11 @@ class Screen:
     def scroll_to_next_mark(self, mark: int = 0, backwards: bool = True) -> bool:
         pass
 
+    def find_logical_lines(self) -> list[tuple[int, str, list[tuple[int, int, int]]]]:
+        """Test only: every logical line of the main buffer as (abs_first_line, text, cells),
+        one (row, x, x_last) per codepoint, row relative to abs_first_line."""
+        pass
+
     def scroll_to_prompt(self, num_of_prompts: int = -1, scroll_offset: int = 0) -> bool:
         pass
 
