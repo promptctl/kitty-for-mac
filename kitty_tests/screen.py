@@ -27,7 +27,9 @@ def cells_with(s, bits, all_bits=False):
 def find_step(s, backwards, top_inset=0):
     "One step from where the user is now, on a buffer searched whole: the match it landed on, None when there is none"
     r = s.find_step(backwards, s.find_origin(top_inset), top_inset)
-    assert r[0] != 'waiting', r
+    # the launcher runs with -OO, which strips assert statements
+    if r[0] == 'waiting':
+        raise AssertionError(f'the step waited on a buffer searched whole: {r}')
     return r[1] if r[0] == 'landed' else None
 
 

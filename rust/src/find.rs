@@ -435,16 +435,15 @@ impl FindEngine {
     /// else the unsearched lines nearest the buffer's end, backward. None once all are searched,
     /// and for the empty query, which has nothing to search.
     pub fn next_fill(&self, b: FindBufferBounds, want: Option<FindWant>) -> Option<FindFill> {
-        self.regex.as_ref()?;
-        let wanted =
-            want.filter(|w| b.lines().contains(&w.line) && !self.searched.contains(w.line));
+        let searched = self.searchable()?;
+        let wanted = want.filter(|w| b.lines().contains(&w.line) && !searched.contains(w.line));
         let at = wanted.or_else(|| {
-            self.searched.last_gap(b.lines()).map(|line| FindWant {
+            searched.last_gap(b.lines()).map(|line| FindWant {
                 line,
                 forward: false,
             })
         })?;
-        let gap = self.searched.gap_around(at.line, b);
+        let gap = searched.gap_around(at.line, b);
         Some(if at.forward {
             FindFill {
                 from: at.line,
@@ -458,6 +457,12 @@ impl FindEngine {
                 forward: false,
             }
         })
+    }
+
+    /// The searched lines under a query that can match; None for the empty query.
+    // [LAW:single-enforcer] the empty query has nothing to search, so nothing waits on it
+    fn searchable(&self) -> Option<&Searched> {
+        self.regex.as_ref().map(|_| &self.searched)
     }
 
     pub fn matches(&self) -> &[FindMatch] {
@@ -511,7 +516,10 @@ impl FindEngine {
         let line = match (origin, direction) {
             (FindOrigin::After(m), _) => m.abs_start_line,
             (FindOrigin::Within(r), Direction::Next) => r.start.line,
-            (FindOrigin::Within(r), Direction::Previous) => r.end.line,
+            // the last line holding a cell before the range's end
+            (FindOrigin::Within(r), Direction::Previous) => {
+                r.end.line - u64::from(r.end.x == 0 && r.end.line > r.start.line)
+            }
         }
         .clamp(b.oldest, b.end.saturating_sub(1).max(b.oldest));
         // the lines the step passes over, in the order it passes them
@@ -524,13 +532,15 @@ impl FindEngine {
             (Direction::Previous, None) => [b.oldest..line + 1, b.lines()],
         };
         let forward = direction == Direction::Next;
-        let gap = passed.into_iter().find_map(|lines| {
-            let lines = lines.start.max(b.oldest)..lines.end.min(b.end);
-            if forward {
-                self.searched.first_gap(lines)
-            } else {
-                self.searched.last_gap(lines)
-            }
+        let gap = self.searchable().and_then(|searched| {
+            passed.into_iter().find_map(|lines| {
+                let lines = lines.start.max(b.oldest)..lines.end.min(b.end);
+                if forward {
+                    searched.first_gap(lines)
+                } else {
+                    searched.last_gap(lines)
+                }
+            })
         });
         if let Some(line) = gap {
             return StepOutcome::Waiting(FindWant { line, forward });
@@ -574,11 +584,7 @@ impl FindEngine {
             current,
             total: all.len(),
             wrapped: self.current.is_some_and(|c| c.wrapped),
-            // the empty query has nothing to search
-            unsearched: self
-                .regex
-                .as_ref()
-                .map_or(0, |_| self.searched.unsearched(b)),
+            unsearched: self.searchable().map_or(0, |s| s.unsearched(b)),
         }
     }
 }
@@ -820,9 +826,13 @@ mod tests {
     #[test]
     fn the_empty_query_finds_nothing_and_has_nothing_to_search() {
         assert_eq!(search("", false, &[(0, &["abc"])]), []);
-        let e = FindEngine::default();
+        let mut e = FindEngine::default();
         assert_eq!(e.next_fill(bounds(0, 10), None), None);
         assert_eq!(e.status(bounds(0, 10)).unsearched, 0);
+        // so a step has no line to wait on: there is no match
+        for d in [Direction::Next, Direction::Previous] {
+            assert_eq!(press(&mut e, d, bounds(0, 10)), StepOutcome::NoMatch);
+        }
     }
 
     #[test]
@@ -1223,6 +1233,24 @@ mod tests {
         assert_eq!(
             e.step(Direction::Previous, &after15, b),
             StepOutcome::Landed(m(2, 0, 2, 0))
+        );
+    }
+
+    #[test]
+    fn previous_from_rows_ending_at_a_line_start_needs_nothing_from_that_line() {
+        // the view is lines 10..15, all searched; line 15 below it is not
+        let buf = Buffer::of(20, |i| i == 12);
+        let mut e = FindEngine::default();
+        e.set_query("x", false).unwrap();
+        let want = FindWant {
+            line: 10,
+            forward: true,
+        };
+        buf.fill(&mut e, 0, 5, Some(want));
+        let view = FindOrigin::Within(pos(10, 0)..pos(15, 0));
+        assert_eq!(
+            e.step(Direction::Previous, &view, bounds(0, 20)),
+            StepOutcome::Landed(m(12, 0, 12, 0))
         );
     }
 

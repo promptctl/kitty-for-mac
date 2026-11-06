@@ -4530,20 +4530,28 @@ screen_is_cell_selected(Screen *self, index_type x, index_type y) {
 #define FIND_MATCH_MASK 32
 
 #ifdef __APPLE__
+typedef struct {
+    FindRefeed *refeed;
+    // the walk stops after the logical line that reaches this line
+    uint64_t stop_at;
+} BudgetedFeed;
+
 static bool
-feed_find_refeed(void *refeed, const FindLogicalLine *l) {
-    kitty_rs_find_refeed_line(refeed, l);
-    return true;
+feed_find_refeed(void *ctx, const FindLogicalLine *l) {
+    BudgetedFeed *f = ctx;
+    kitty_rs_find_refeed_line(f->refeed, l);
+    const uint64_t last = l->abs_first_line + (l->text_len ? l->cells[l->text_len - 1].row : 0);
+    return last + 1 < f->stop_at;
 }
 
-// Walks lines, which start a logical line and end one or run onward, into a new refeed; NULL
-// when out of memory. The sink never stops the walk, so running out of memory is its only
-// failure.
+// [LAW:single-enforcer] the one walker into a refeed. Walks lines, which start a logical line and
+// end one or run onward, into a new refeed, stopping after the logical line that reaches stop_at
+// (UINT64_MAX walks them all); NULL when out of memory.
 static FindRefeed*
-walk_find_refeed(Screen *self, FindRefeedRange lines) {
-    FindRefeed *refeed = kitty_rs_find_refeed_new(self->find_engine, lines);
-    if (find_walk_main_buffer(self, lines, feed_find_refeed, refeed) != FIND_WALK_OUT_OF_MEMORY) return refeed;
-    kitty_rs_find_refeed_free(refeed);
+walk_find_refeed(Screen *self, FindRefeedRange lines, uint64_t stop_at) {
+    BudgetedFeed feed = {.refeed = kitty_rs_find_refeed_new(self->find_engine, lines), .stop_at = stop_at};
+    if (find_walk_main_buffer(self, lines, feed_find_refeed, &feed) != FIND_WALK_OUT_OF_MEMORY) return feed.refeed;
+    kitty_rs_find_refeed_free(feed.refeed);
     return NULL;
 }
 
@@ -4551,7 +4559,7 @@ walk_find_refeed(Screen *self, FindRefeedRange lines) {
 // the engine as it was.
 static bool
 refeed_find_engine(Screen *self, FindRefeedRange lines) {
-    FindRefeed *refeed = walk_find_refeed(self, lines);
+    FindRefeed *refeed = walk_find_refeed(self, lines, UINT64_MAX);
     if (refeed) kitty_rs_find_splice(self->find_engine, refeed);
     return refeed;
 }
@@ -4563,21 +4571,7 @@ find_chunk_lines(const Screen *self) {
     return MAX(1u, self->find_chunk_cells / MAX(1u, self->columns));
 }
 
-typedef struct {
-    FindRefeed *refeed;
-    // the walk stops after the logical line that reaches this line
-    uint64_t stop_at;
-} BudgetedFeed;
-
-static bool
-feed_find_refeed_within_budget(void *ctx, const FindLogicalLine *l) {
-    BudgetedFeed *f = ctx;
-    kitty_rs_find_refeed_line(f->refeed, l);
-    const uint64_t last = l->abs_first_line + (l->text_len ? l->cells[l->text_len - 1].row : 0);
-    return last + 1 < f->stop_at;
-}
-
-// [LAW:single-enforcer] the one walker of unsearched lines. One chunk of at most the budget, of
+// [LAW:single-enforcer] the one chooser of unsearched lines to walk. One chunk of at most the budget, of
 // whole logical lines, where the engine says: toward want when it is not NULL, else back from the
 // buffer's end. The engine is the caller's, already synced; nothing here reads it through the
 // sync, so nothing below the sync calls back into it. False when out of memory, the engine as it
@@ -4588,23 +4582,19 @@ search_find_chunk(Screen *self, FindEngine *synced, const FindWant *want) {
     if (!kitty_rs_find_next_fill(synced, find_buffer_bounds(self), want, &fill)) return true;
     const uint64_t budget = find_chunk_lines(self);
     FindRefeedRange lines;
-    BudgetedFeed feed = {.stop_at = UINT64_MAX};
+    uint64_t stop_at = UINT64_MAX;
     if (fill.forward) {
         // the wanted line may sit inside a logical line, which starts in the same unsearched stretch
         lines = (FindRefeedRange){.from = find_onward_range(self, fill.from).from, .limit = fill.limit};
-        feed.stop_at = lines.from + budget;
+        stop_at = lines.from + budget;
     } else {
         // the walk feeds only whole logical lines, so it runs to the end of the one fill.limit ends in
         const uint64_t limit = find_logical_line_range(self, fill.limit - 1).limit;
         lines = (FindRefeedRange){.from = find_onward_range(self, limit - MIN(budget, limit - fill.from)).from, .limit = limit};
     }
-    feed.refeed = kitty_rs_find_refeed_new(synced, lines);
-    if (find_walk_main_buffer(self, lines, feed_find_refeed_within_budget, &feed) == FIND_WALK_OUT_OF_MEMORY) {
-        kitty_rs_find_refeed_free(feed.refeed);
-        return false;
-    }
-    kitty_rs_find_add_searched(synced, feed.refeed);
-    return true;
+    FindRefeed *refeed = walk_find_refeed(self, lines, stop_at);
+    if (refeed) kitty_rs_find_add_searched(synced, refeed);
+    return refeed;
 }
 
 // A change at line changed makes everything from its logical line on unsearched, and one chunk
@@ -4617,7 +4607,7 @@ refresh_find_engine(Screen *self, uint64_t changed) {
     const uint64_t from = find_onward_range(self, changed).from, end = find_buffer_bounds(self).end;
     const uint64_t budget = find_chunk_lines(self);
     const uint64_t chunk_from = find_onward_range(self, MAX(from, end - MIN(budget, end))).from;
-    FindRefeed *refeed = walk_find_refeed(self, (FindRefeedRange){.from = chunk_from, .limit = UINT64_MAX});
+    FindRefeed *refeed = walk_find_refeed(self, (FindRefeedRange){.from = chunk_from, .limit = UINT64_MAX}, UINT64_MAX);
     if (refeed) kitty_rs_find_refresh(self->find_engine, from, refeed);
     return refeed;
 }
