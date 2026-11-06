@@ -76,14 +76,15 @@ impl MatchList {
         assert!(range.start <= range.end, "a replaced range is in order");
         let ((first, at), (last, to)) = (self.locate(range.start), self.locate(range.end));
         let n = self.blocks.len();
-        // the kept matches around the range: the head is copied out, and the tail is the end
-        // block itself, trimmed in place, so a cut at the list's front (eviction, a backward
-        // fill's insert) allocates nothing
-        let head = self.blocks.get(first).map_or_else(Vec::new, |b| b[..at].to_vec());
-        let tail = self.blocks.get_mut(last).map_or_else(Vec::new, |b| {
-            b.drain(..to);
-            std::mem::take(b)
-        });
+        // the kept matches around the range, cut from the blocks at its ends
+        let mut take = |b: usize| self.blocks.get_mut(b).map(std::mem::take).unwrap_or_default();
+        let (head, tail) = if first == last {
+            cut(take(first), at, to)
+        } else {
+            let block = take(first);
+            let end = block.len();
+            (cut(block, at, end).0, cut(take(last), 0, to).1)
+        };
         // a few matches, as streaming output finds, become a block as they are, uncopied
         let found = if found.len() <= BLOCK_CAP {
             vec![found]
@@ -121,6 +122,21 @@ impl MatchList {
             i -= block.len();
         }
         (self.blocks.len(), 0)
+    }
+}
+
+/// `block[..at]` and `block[to..]`. The shorter is copied out and the other keeps the block's
+/// buffer, so a cut near either end of a block, as eviction at the front and streaming at the
+/// back make, copies little.
+fn cut(mut block: Vec<FindMatch>, at: usize, to: usize) -> (Vec<FindMatch>, Vec<FindMatch>) {
+    if at <= block.len() - to {
+        let head = block[..at].to_vec();
+        block.drain(..to);
+        (head, block)
+    } else {
+        let tail = block.split_off(to);
+        block.truncate(at);
+        (block, tail)
     }
 }
 
