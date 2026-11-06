@@ -2529,7 +2529,7 @@ focus_owner_of(NSResponder *responder) {
 // terminal, so a deliberate blur records the terminal; during a style change it
 // is AppKit clearing focus, the loss restoreFocusOwner repairs.
 - (BOOL)makeFirstResponder:(nullable NSResponder *)responder {
-    NSView *terminal = glfw_window ? glfw_window->ns.view : nil;
+    GLFWContentView *terminal = glfw_window ? (GLFWContentView *)glfw_window->ns.view : nil;
     // Focus leaves the terminal for a native view: commit its IME composition, as
     // native text views do, while its input context is still the active one.
     if (!make_first_responder_depth && terminal && focus_owner == terminal && [terminal hasMarkedText]) {
