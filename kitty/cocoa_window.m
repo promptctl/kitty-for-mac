@@ -274,18 +274,24 @@ key_window_screen(void) {
 
 // The find bar's events, run on the main thread as plain calls into Boss: they must not
 // reorder behind keystrokes typed after them, which a pending action would.
+// [LAW:single-enforcer] They reach kitty through AppKit, not GLFW's input callbacks, which
+// request the tick a frame is drawn on, so the bridge requests it: each event changes the
+// matches, the current match or the selection, and the next tick's frame shows the change.
 @interface FindBarBridge : NSObject <KittyFindBarDelegate>
 @end
 
 @implementation FindBarBridge
 - (void)findBar:(NSWindow *)window queryChanged:(NSString *)text {
     call_boss(find_bar_query_changed, "Ks", cocoa_os_window_id_for_window(window), [text UTF8String]);
+    request_tick_callback();
 }
 - (void)findBar:(NSWindow *)window step:(BOOL)forward {
     call_boss(find_bar_step, "KO", cocoa_os_window_id_for_window(window), forward ? Py_True : Py_False);
+    request_tick_callback();
 }
 - (void)findBarClosed:(NSWindow *)window {
     call_boss(find_bar_closed, "K", cocoa_os_window_id_for_window(window));
+    request_tick_callback();
 }
 @end
 
