@@ -1340,6 +1340,10 @@ class Screen:
         """How many times the user started, changed or cleared the selection. macOS only."""
         pass
 
+    def selection_in_progress(self) -> bool:
+        """Whether the user is dragging out a selection."""
+        pass
+
     def find_status(self) -> tuple[int, int, bool, int]:
         """(current, total, wrapped, unsearched): the current match's 1-based place among the
         matches, 0 when there is none; how many have been found; whether the step that reached

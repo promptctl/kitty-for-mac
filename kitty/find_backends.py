@@ -114,16 +114,12 @@ class EngineFind:
         "Land the waiting steps, in press order, as far as the search has answered them"
         w = self.window
         s = w.screen
-        # a landing scrolls the view, so it waits for the user's scroll to end, and for the main
-        # screen, the only one it can show a match on
-        if not self.waiting or not s.is_main_linebuf() or w.scroll_animation.timer:
+        # a landing scrolls the view and replaces the selection, so it waits for the user's drag or
+        # scroll to end, and for the main screen, the only one it can show a match on
+        if not self.waiting or not s.is_main_linebuf() or s.selection_in_progress() or w.scroll_animation.timer:
             return
         while self.waiting:
             head = self.waiting[0]
-            if head.user_selection_changes != s.user_selection_changes():
-                # the user selected since pressing it: a landing would replace their selection
-                del self.waiting[0]
-                continue
             result = s.find_step(head.backwards, head.origin, w.find_bar_top_inset())
             if result[0] == 'waiting':
                 s.find_set_want(result[1])
@@ -132,9 +128,8 @@ class EngineFind:
             if result[0] == 'landed':
                 # a new match to show, so a paused frame shows it, as the key would
                 s.pause_rendering(False)
-                # "next" pressed after a "next" is the one after it; a step pressed after the user
-                # moved is dropped above, since the landing left their move behind
-                if self.waiting:
+                # "next" pressed after a "next" is the one after it, unless the user moved in between
+                if self.waiting and self.waiting[0].user_selection_changes == head.user_selection_changes:
                     self.waiting[0] = self.waiting[0]._replace(origin=(True, result[1], (0, 0), (0, 0)))
         s.find_set_want(None)
 

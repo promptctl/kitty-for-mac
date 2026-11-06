@@ -3074,7 +3074,8 @@ class Window:
         if (backend := self.find_backend_to_search()) is None:
             return
         backend.restore(text)
-        # the backend took it: a query it rejects never becomes the one the bar shows and stepping repeats
+        # the backend took it: a query it rejects never becomes the one stepping repeats from here.
+        # find_typed is the exception: an edit is the bar's text before any search runs
         self.find_query = text
 
     def find(self, text: str) -> None:
@@ -3090,6 +3091,8 @@ class Window:
     def find_typed(self, text: str) -> None:
         "The find bar's text changed to text"
         self.cancel_pending_find()
+        # an edit changes the query, so what waits for the previous one ends, searched yet or not
+        self.engine_find.drop_waiting()
         self.find_query = text
         if 1 <= len(text) <= 2:
             self.pending_find_timer = add_timer(lambda timer_id: self.settle_find(), 0.5, False)

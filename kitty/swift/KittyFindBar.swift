@@ -55,8 +55,10 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         // a search that could not be made is not a search that found nothing
         case (.unavailable, _, _): "Search unavailable"
         case (.pending, _, _): ""
+        // a search still counting has found at least total: none yet is not none
+        case (.partial, 0, _): "\(total)+ matches"
+        case (.partial, _, _): "\(current) of \(total)+"
         case (_, _, 0): bar.field.stringValue.isEmpty ? "" : "0 of 0"
-        case (.partial, _, _): "\(total)+ matches"
         case (_, 0, _): "\(total) matches"
         default: "\(current) of \(total)"
         }

@@ -7456,15 +7456,22 @@ find_status(Screen *self, PyObject *o UNUSED) {
 }
 
 // The count of the user's own changes to the selection, which a waiting find step compares to
-// tell whether the user acted since it was pressed.
+// tell whether the user acted between two presses.
 static PyObject *
 user_selection_changes(Screen *self, PyObject *o UNUSED) {
     return PyLong_FromUnsignedLongLong(self->user_selection_changes);
 }
 
+// A drag the user is making, which a waiting find step does not land over: the landing would
+// replace the selection under the pointer
+static PyObject *
+selection_in_progress(Screen *self, PyObject *o UNUSED) {
+    return Py_NewRef(self->selections.in_progress ? Py_True : Py_False);
+}
+
 // [LAW:one-source-of-truth] find_reported has this one writer, the read the window tells the
 // bar from, so it holds what the window last told its bar, with what a waiting step needs to
-// land (the main screen showing). The bar shows it while the window
+// land (the main screen showing, no drag in progress). The bar shows it while the window
 // is active, and a window that becomes active tells the bar again. Reads that tell no bar, such
 // as follow_find_bar's, use find_status() and leave it alone.
 static PyObject *
@@ -7474,12 +7481,14 @@ find_status_for_bar(Screen *self, PyObject *o UNUSED) {
     self->find_reported.total = st.total;
     self->find_reported.unsearched = st.unsearched;
     self->find_reported.main_screen = self->linebuf == self->main_linebuf;
+    self->find_reported.selecting = self->selections.in_progress;
     return find_status_tuple(st);
 }
 
 // The engine changes the status on its own as the buffer it searches changes: output, eviction,
 // a resize or clear, a current match whose cells changed, and each chunk of search. Each frame
-// asks whether the window was told something else, the screen a waiting step lands on included, and reports it once no walk over the windows is in progress, since the report runs
+// asks whether the window was told something else, the screen and drag a waiting step lands on
+// included, and reports it once no walk over the windows is in progress, since the report runs
 // Python. Until a report reaches the window it is asked again every frame.
 bool
 screen_find_status_changed(Screen *self) {
@@ -7490,7 +7499,7 @@ screen_find_status_changed(Screen *self) {
     const FindStatus st = kitty_rs_find_status(screen_find_engine(self), find_buffer_bounds(self));
     return st.current != self->find_reported.current || st.total != self->find_reported.total ||
         st.unsearched != self->find_reported.unsearched ||
-        (self->linebuf == self->main_linebuf) != self->find_reported.main_screen;
+        (self->linebuf == self->main_linebuf) != self->find_reported.main_screen || self->selections.in_progress != self->find_reported.selecting;
 }
 
 void
@@ -8054,7 +8063,7 @@ static PyMethodDef methods[] = {
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
     MND(find_logical_lines, METH_NOARGS)
 #ifdef __APPLE__
-    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_origin, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_set_want, METH_O) MND(find_set_chunk_cells, METH_O) MND(find_advance, METH_NOARGS) MND(user_selection_changes, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_status_for_bar, METH_NOARGS) MND(find_report_status_change, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
+    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_origin, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_set_want, METH_O) MND(find_set_chunk_cells, METH_O) MND(find_advance, METH_NOARGS) MND(user_selection_changes, METH_NOARGS) MND(selection_in_progress, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_status_for_bar, METH_NOARGS) MND(find_report_status_change, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
 #endif
     MND(abs_line_at_viewport_top, METH_NOARGS)
 

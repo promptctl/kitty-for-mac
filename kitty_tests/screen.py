@@ -2110,7 +2110,7 @@ class TestScreen(BaseTest):
         walks = []
         find_set_query = s.find_set_query
         w.screen = SimpleNamespace(**{n: getattr(s, n) for n in (
-            'find_status', 'find_status_for_bar', 'find_origin', 'find_step', 'find_set_want', 'user_selection_changes',
+            'find_status', 'find_status_for_bar', 'find_origin', 'find_step', 'find_set_want', 'user_selection_changes', 'selection_in_progress',
             'is_main_linebuf', 'pause_rendering')},
                                    find_set_query=lambda *a: walks.append(a) or find_set_query(*a))
         Window.find(w, 'nomatch')
@@ -2686,17 +2686,17 @@ class TestScreen(BaseTest):
         wraps(s, w), frames(w)
         self.assertGreater(s.find_status()[3], 0)
 
-        # a selection the user makes while a step waits stands: the step does not land over it,
-        # and a step pressed after it starts from it
+        # a drag in progress holds the landing until it ends
         s = screen(1)
         w = window(s)
         Window.find(w, 'x')
-        s.start_selection(0, 0), s.update_selection(2, 0, False, False)
-        frames(w)
-        self.ae(s.text_for_selection(), ('x77',))
-        Window.find_step(w, False)
-        frames(w)
-        self.ae(current(s), (77, 0, 77, 0), 'the first match in the selection')
+        s.start_selection(0, 0)
+        while s.find_advance():
+            w.find_status_changed()
+        self.ae(len(w.engine_find.waiting), 1)
+        s.update_selection(1, 0, False, True)
+        w.find_status_changed()
+        self.ae(len(w.engine_find.waiting), 0)
 
         # a scroll animation holds the landing, and ending it early, as a key release does, lands it
         from types import SimpleNamespace
@@ -2758,6 +2758,14 @@ class TestScreen(BaseTest):
             self.ae(w.find_bar_status().count, FindCount.pending)
             timers[-1](w.pending_find_timer)
             self.ae(w.find_bar_status().total, 10)
+
+            # an edit ends what waits for the previous query, even one whose search is pending
+            s = screen(1)
+            w = window(s)
+            w.find_typed('x79')
+            self.ae(len(w.engine_find.waiting), 1)
+            w.find_typed('x7')
+            self.ae(w.engine_find.waiting, [])
             s = screen()
             w = window(s)
             w.find_typed('x0')
