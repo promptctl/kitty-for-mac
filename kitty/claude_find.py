@@ -296,10 +296,11 @@ class RanSearch(NamedTuple):
 
 
 class ClaudeFindState:
-    "What a window owns of its Claude search: the pane it put into the transcript view, the search it ran there, and what the bar was last told"
+    "What a window owns of its Claude search: the pane it put into the transcript view, the view the pane was in before, the search it ran there, and what the bar was last told"
 
     def __init__(self) -> None:
         self.held: Held | None = None
+        self.began_in_transcript = False  # the person's own view, read once when the hold began: clear gives it back
         self.search: RanSearch | None = None
         self.status = IDLE
 
@@ -310,6 +311,7 @@ class ClaudeFindState:
     def rest(self) -> None:
         "Hold nothing and report nothing"
         self.held = None
+        self.began_in_transcript = False
         self.search = None
         self.status = IDLE
 
@@ -436,7 +438,9 @@ class ClaudeFind:
             self.clear()
             if self.state.held is not None:  # the previous pane could not be left; the next clear retries it
                 raise TmuxError('the previous pane could not be taken out of the transcript view')
-        self.state.held = here
+        if self.state.held is None:  # the start of a hold: later searches in it find the pane in our own views
+            self.state.began_in_transcript = isinstance(self.view(here), (Transcript, SearchInput, Searching))
+            self.state.held = here
         return here
 
     def search(self, pane: ClaudePane, text: str) -> None:
@@ -470,15 +474,21 @@ class ClaudeFind:
         self.state.status = status_of(view)
 
     def end(self, held: Held) -> None:
-        "Bring the held pane back to the prompt, unless it no longer is Claude Code's to bring"
+        "Bring the held pane back to the view it was in when the hold began, unless it no longer is Claude Code's to bring"
         ref = parse_displayed_pane(self.op.tmux(held.client, 'display-message', '-p', '-t', held.pane, PANE_FORMAT))
         if isinstance(recognise(ref, self.host, self.op), NotClaude):
             return  # Claude quit, or the person took the pane over: no key of ours belongs in it
+        rest = Transcript if self.state.began_in_transcript else Prompt
         view = self.view(held)
-        while not isinstance(view, Prompt):
-            if isinstance(view, Unrecognised):
-                raise ClaudeFindFailure(Cause.unrecognised, f'cannot leave the transcript view from {view.footer!r}')
-            view = self.press(held, ESCAPE, changed_from(view), 'the view to change')
+        while not isinstance(view, rest):
+            match view:
+                case Unrecognised(footer):
+                    raise ClaudeFindFailure(Cause.unrecognised, f'cannot leave the search from {footer!r}')
+                case Prompt():  # Esc from a search lands here; the person's transcript view comes back with Ctrl+o
+                    key = CTRL_O
+                case _:
+                    key = ESCAPE
+            view = self.press(held, key, changed_from(view), 'the view to change')
 
 
 def changed_from(before: View) -> Callable[[View], bool]:
