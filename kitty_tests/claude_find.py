@@ -628,30 +628,28 @@ class SelectionTest(BaseTest):
                 "When tmux says its newest buffer was made: the release is placed against tmux's own clock, not the test's"
                 return float(max(int(c) for c in t.tmux('list-buffers', '-F', '#{buffer_created}').split()))
 
-            class f:  # a find is built for one operation, on the budget of it: each read gets its own
-                @staticmethod
-                def program_selection_text() -> str | None:
-                    return self.claude(t, state).program_selection_text()
+            def selection() -> str | None:  # a find is built for one operation, on the budget of it: each read gets its own
+                return self.claude(t, state).program_selection_text()
 
             t.tmux('set-buffer', 'an old copy')
-            self.assertIsNone(f.program_selection_text(), 'no drag has been made in this window')
+            self.assertIsNone(selection(), 'no drag has been made in this window')
             state.released_at = newest_copy_made_at() + 1
-            self.assertIsNone(f.program_selection_text(), 'the newest buffer was made before the release')
+            self.assertIsNone(selection(), 'the newest buffer was made before the release')
             t.tmux('set-buffer', 'needle')  # Claude copies at the release
             state.released_at = newest_copy_made_at()
-            self.ae(f.program_selection_text(), 'needle')
+            self.ae(selection(), 'needle')
             t.tmux('set-buffer', '-b', 'mine', 'a named buffer')
-            self.ae(f.program_selection_text(), 'needle', 'a named buffer is not a copy')
+            self.ae(selection(), 'needle', 'a named buffer is not a copy')
             t.tmux('set-buffer', 'two\nlines')
-            self.assertIsNone(f.program_selection_text(), 'a query is one line')
+            self.assertIsNone(selection(), 'a query is one line')
             t.tmux('set-buffer', 'late')
             state.released_at = newest_copy_made_at() - COPY_LATENCY - 1
-            self.assertIsNone(f.program_selection_text(), 'a copy long after the release is some other copy')
+            self.assertIsNone(selection(), 'a copy long after the release is some other copy')
             state.released_at = newest_copy_made_at()
             t.tmux('delete-buffer', '-b', 'mine')
             while t.tmux('list-buffers'):
                 t.tmux('delete-buffer')
-            self.assertIsNone(f.program_selection_text(), 'nothing copied')
+            self.assertIsNone(selection(), 'nothing copied')
 
     def test_a_pane_that_cannot_be_told_has_no_selection_to_read(self):
         state = ClaudeFindState()
