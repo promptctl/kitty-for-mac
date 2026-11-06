@@ -837,7 +837,7 @@ collect_cursor_info(CursorRenderInfo *ans, Window *w, monotonic_t now, OSWindow 
     monotonic_t time_since_start_blink = now - os_window->cursor_blink_zero_time;
     const bool allow_blinking = OPT(cursor_blink_interval) > 0;
     const bool blink_has_ceased = OPT(cursor_stop_blinking_after) != 0 && time_since_start_blink > OPT(cursor_stop_blinking_after);
-    const bool cursor_blinking = !cursor->non_blinking && os_window->is_focused;
+    const bool cursor_blinking = !cursor->non_blinking && terminal_has_focus(os_window);
     float blink_opacity = 1.f;
     if (allow_blinking && !blink_has_ceased && (cursor_blinking || rd->screen->sgr_blink_was_used)) {
         if (animation_is_valid(OPT(animation.cursor))) {
@@ -855,7 +855,7 @@ collect_cursor_info(CursorRenderInfo *ans, Window *w, monotonic_t now, OSWindow 
     ans->text_blink_opacity = blink_opacity;
     ans->cursor_opacity = cursor_blinking ? blink_opacity : 1.0f;
     ans->shape = cursor->shape ? cursor->shape : OPT(cursor_shape);
-    ans->is_focused = os_window->is_focused;
+    ans->is_focused = terminal_has_focus(os_window);
     return cursor_needs_render(w);
 }
 
@@ -958,7 +958,7 @@ prepare_to_render_os_window(
             if (is_active_window) {
                 *active_window_id = w->id;
                 if (collect_cursor_info(&WD.screen->cursor_render_info, w, now, os_window)) needs_render = true;
-                WD.screen->cursor_render_info.is_focused = os_window->is_focused;
+                WD.screen->cursor_render_info.is_focused = terminal_has_focus(os_window);
                 if (global_state.ime_used && os_window->is_focused) sync_ime_position_with_cursor(os_window, w);
                 set_os_window_title_from_window(w, os_window);
                 *active_window_bg = window_bg;
@@ -1154,7 +1154,7 @@ render_prepared_os_window(
     os_window->last_active_tab = os_window->active_tab;
     os_window->last_num_tabs = os_window->num_tabs;
     os_window->last_active_window_id = active_window_id;
-    os_window->focused_at_last_render = os_window->is_focused;
+    os_window->focused_at_last_render = terminal_has_focus(os_window);
     if (os_window->redraw_count) os_window->redraw_count--;
     if (USE_RENDER_FRAMES) request_frame_render(os_window);
 #undef WD
@@ -1207,7 +1207,7 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     }
     if (prepare_to_render_os_window(w, now, &active_window_id, &active_window_bg, &num_visible_windows, &all_windows_have_same_bg, scan_for_animated_images))
         needs_render = true;
-    if (w->last_active_window_id != active_window_id || w->last_active_tab != w->active_tab || w->focused_at_last_render != w->is_focused) needs_render = true;
+    if (w->last_active_window_id != active_window_id || w->last_active_tab != w->active_tab || w->focused_at_last_render != terminal_has_focus(w)) needs_render = true;
     if (w->render_calls < 3 && background_image_for_os_window(w) != NULL) needs_render = true;
     if (needs_render) render_prepared_os_window(w, active_window_id, active_window_bg, num_visible_windows, all_windows_have_same_bg, now);
     if (w->is_focused) change_menubar_title(w->window_title);

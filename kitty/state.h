@@ -609,6 +609,8 @@ typedef struct OSWindow {
     } tab_bar_edge_color;
     bool tab_bar_data_updated;
     bool is_focused;
+    // keyboard focus is on a native view of the window (macOS find bar), not the terminal
+    bool native_view_focused;
     monotonic_t cursor_blink_zero_time, last_mouse_activity_at, mouse_activate_deadline;
     bool user_is_idle;
     int mouse_show_threshold;
@@ -671,6 +673,14 @@ typedef struct OSWindow {
         uint32_t groups;
     } pointer_map;
 } OSWindow;
+
+// [LAW:one-source-of-truth] Whether the terminal itself has the keyboard: the window is key and no native view
+// (the find bar's field) took the keys from it. is_focused alone says the window is key, which the
+// window-level consumers (quick access hiding, which window is current) rely on.
+static inline bool
+terminal_has_focus(const OSWindow *w) {
+    return w->is_focused && !w->native_view_focused;
+}
 
 static inline float
 effective_os_window_alpha(OSWindow *w) {

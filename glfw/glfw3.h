@@ -1975,6 +1975,9 @@ typedef int (*GLFWdragfun)(GLFWwindow *, GLFWDragEventType event, double xpos, d
 
 typedef void (*GLFWliveresizefun)(GLFWwindow *, bool);
 
+/*! Keyboard focus moved between the terminal and a native view of the window (macOS). */
+typedef void (*GLFWnativeviewfocusfun)(GLFWwindow *, bool);
+
 /*! @brief The function pointer type for monitor configuration callbacks.
  *
  *  This is the function pointer type for monitor configuration callbacks.
@@ -5124,6 +5127,8 @@ GLFWAPI GLFWscrollfun glfwSetScrollCallback(GLFWwindow *window, GLFWscrollfun ca
 GLFWAPI GLFWtouchfun glfwSetTouchCallback(GLFWwindow *window, GLFWtouchfun callback);
 
 GLFWAPI GLFWliveresizefun glfwSetLiveResizeCallback(GLFWwindow *window, GLFWliveresizefun callback);
+
+GLFWAPI GLFWnativeviewfocusfun glfwSetNativeViewFocusCallback(GLFWwindow *window, GLFWnativeviewfocusfun callback);
 
 GLFWAPI GLFWdropeventfun glfwSetDropEventCallback(GLFWwindow *window, GLFWdropeventfun callback);
 // ask for update before GLFW_DROP_DROP happens

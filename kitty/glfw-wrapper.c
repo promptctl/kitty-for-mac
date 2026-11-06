@@ -371,6 +371,9 @@ load_glfw(const char* path) {
     *(void **) (&glfwSetLiveResizeCallback_impl) = dlsym(handle, "glfwSetLiveResizeCallback");
     if (glfwSetLiveResizeCallback_impl == NULL) fail("Failed to load glfw function glfwSetLiveResizeCallback with error: %s", dlerror());
 
+    *(void **) (&glfwSetNativeViewFocusCallback_impl) = dlsym(handle, "glfwSetNativeViewFocusCallback");
+    if (glfwSetNativeViewFocusCallback_impl == NULL) fail("Failed to load glfw function glfwSetNativeViewFocusCallback with error: %s", dlerror());
+
     *(void **) (&glfwSetDropEventCallback_impl) = dlsym(handle, "glfwSetDropEventCallback");
     if (glfwSetDropEventCallback_impl == NULL) fail("Failed to load glfw function glfwSetDropEventCallback with error: %s", dlerror());
 
