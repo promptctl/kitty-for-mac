@@ -7,7 +7,8 @@ description: Build this checkout's kitty on a test Mac (studious, else inferno),
 
 kitty runs on a test Mac, never on this one: it takes focus when it starts, and the keys are
 real input that would land in whatever Brandon is typing into. `bin/run-kitty` picks
-studious.local, else inferno.local, and exits if neither answers. Running kitty on this Mac
+studious.local, else inferno.local, whichever first answers with cargo and go installed
+(inferno has neither today), and exits if neither does. Running kitty on this Mac
 then needs Brandon's go first, since he may be at the keyboard. `up` and `sync` record the
 host they picked, and every later command goes to that host.
 
@@ -37,5 +38,6 @@ anything with it.
 - **Per checkout:** each checkout gets its own copy on the test Mac (`~/code/kitty-run/<key>`,
   a git checkout that `sync` overwrites; never edit it there), its own kitty and its own
   shots, so sessions in sibling worktrees don't drive each other's kitty. A checkout's
-  first `build` is a full one.
+  first `build` is a full one. `$R drop` stops kitty and deletes the copy; run it when the
+  checkout's work is done.
 - **Build failure:** a failed `build` prints the tail of its `build.log` on the test Mac.
