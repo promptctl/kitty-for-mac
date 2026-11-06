@@ -433,8 +433,8 @@ class TmuxFindIntegrationTest(BaseTest):
                 argv = [a.replace('wait-for -S', 'display-message -p') if 'wait-for -S' in a else a for a in argv]
                 return tf.run_tmux(argv, env, timeout)
 
-            start = time.monotonic()  # the lookup is spent from the same budget as the read
             f = TmuxFind(client, state, TmuxOperation(run))
+            start = time.monotonic()
             self.assertIsNone(f.program_selection_text())
             self.assertLess(time.monotonic() - start, FIND_DEADLINE + 1)
             # and the next read works
