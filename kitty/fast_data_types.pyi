@@ -868,7 +868,7 @@ def cocoa_hide_other_apps() -> None:
 def cocoa_minimize_os_window(os_window_id: Optional[int] = None) -> None:
     pass
 
-def cocoa_show_find_bar(os_window_id: int = 0) -> None:
+def cocoa_show_find_bar_for_os_window(os_window_id: int = 0) -> None:
     pass
 
 def locale_is_valid(name: str) -> bool:

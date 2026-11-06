@@ -86,8 +86,8 @@ from .fast_data_types import (
     cocoa_hide_app,
     cocoa_hide_other_apps,
     cocoa_minimize_os_window,
-    cocoa_show_find_bar,
     cocoa_set_menubar_title,
+    cocoa_show_find_bar_for_os_window,
     create_os_window,
     current_application_quit_request,
     current_focused_os_window_id,
@@ -1521,16 +1521,15 @@ class Boss:
     def hide_macos_other_apps(self) -> None:
         cocoa_hide_other_apps()
 
-    @ac('misc', 'Minimize macOS window')
-    def minimize_macos_window(self) -> None:
-        osw_id = None
+    def os_window_id_for_dispatch(self) -> int | None:
         if self.window_for_dispatch:
             tm = self.active_tab_manager_with_dispatch
-            if tm:
-                osw_id = tm.os_window_id
-        else:
-            osw_id = current_os_window()
-        if osw_id is not None:
+            return tm.os_window_id if tm else None
+        return current_os_window()
+
+    @ac('misc', 'Minimize macOS window')
+    def minimize_macos_window(self) -> None:
+        if (osw_id := self.os_window_id_for_dispatch()) is not None:
             cocoa_minimize_os_window(osw_id)
 
     def start(self, first_os_window_id: int, startup_sessions: Iterable[Session]) -> None:
@@ -4290,7 +4289,8 @@ class Boss:
 
     @ac('sc', 'Show the find bar of the active OS window and focus its search field, on macOS')
     def show_find_bar(self) -> None:
-        cocoa_show_find_bar()
+        if (osw_id := self.os_window_id_for_dispatch()) is not None:
+            cocoa_show_find_bar_for_os_window(osw_id)
 
     def copy_or_noop(self) -> bool | None:
         if w := self.active_window:

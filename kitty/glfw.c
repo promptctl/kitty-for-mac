@@ -3210,20 +3210,34 @@ toggle_maximized(PyObject UNUSED *self, PyObject *args) {
 }
 
 #ifdef __APPLE__
-// [LAW:single-enforcer] The one resolution of an optional os_window_id argument to its NSWindow,
-// the active OS window when it is 0. False with a Python error set; true with *ans NULL when the window is gone.
+// [LAW:single-enforcer] Which NSWindows take native chrome, such as the find bar: an OS window's,
+// never a layer-shell panel's. NULL when the OS window has none.
+static void*
+chrome_window(OSWindow *w) {
+    return w && w->handle && !w->is_layer_shell ? glfwGetCocoaWindow(w->handle) : NULL;
+}
+
+// key_window when it is an OS window that takes native chrome, NULL for an About panel, an alert or a layer-shell panel
+void*
+cocoa_chrome_window_for_key_window(void *key_window) {
+    for (size_t i = 0; key_window && i < global_state.num_os_windows; i++) {
+        if (chrome_window(global_state.os_windows + i) == key_window) return key_window;
+    }
+    return NULL;
+}
+
+// The NSWindow of the OS window an optional os_window_id argument names, the active OS window when it is 0.
+// False with a Python error set; true with *ans NULL when the window is gone or takes no chrome.
 static bool
 cocoa_window_from_args(PyObject *args, void **ans) {
     id_type os_window_id = 0;
     *ans = NULL;
     if (!PyArg_ParseTuple(args, "|K", &os_window_id)) return false;
-    OSWindow *w = os_window_id ? os_window_for_id(os_window_id) : current_os_window();
-    if (!w || !w->handle || w->is_layer_shell) return true;
     if (!glfwGetCocoaWindow) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to load glfwGetCocoaWindow");
         return false;
     }
-    *ans = glfwGetCocoaWindow(w->handle);
+    *ans = chrome_window(os_window_id ? os_window_for_id(os_window_id) : current_os_window());
     return true;
 }
 #define COCOA_OS_WINDOW_FUNC(name, call) \
@@ -4192,7 +4206,7 @@ static PyMethodDef module_methods[] = {
     METHODB(cocoa_hide_app, METH_NOARGS),
     METHODB(cocoa_hide_other_apps, METH_NOARGS),
     METHODB(cocoa_minimize_os_window, METH_VARARGS),
-    {"cocoa_show_find_bar", (PyCFunction)cocoa_show_find_bar_for_os_window, METH_VARARGS, ""},
+    METHODB(cocoa_show_find_bar_for_os_window, METH_VARARGS),
     {"glfw_wayland_inject_init", (PyCFunction)glfw_wayland_inject_init, METH_VARARGS, ""},
     {"glfw_wayland_inject_terminate", (PyCFunction)glfw_wayland_inject_terminate, METH_NOARGS, ""},
     {"glfw_wayland_inject_mouse_motion_absolute", (PyCFunction)glfw_wayland_inject_mouse_motion_absolute, METH_VARARGS, ""},

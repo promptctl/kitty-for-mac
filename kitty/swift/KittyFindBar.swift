@@ -38,7 +38,6 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         layer?.cornerRadius = 6
 
         field.controlSize = .small
@@ -64,6 +63,22 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
     }
 
     required init?(coder: NSCoder) { fatalError("KittyFindBar is created in code") }
+
+    // AppKit calls this with the window's effective appearance current, which GLFW derives from
+    // the terminal's background colour, and again whenever that appearance changes.
+    public override var wantsUpdateLayer: Bool { true }
+    public override func updateLayer() {
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    }
+
+    // The bar's own background and padding take the clicks over them; NSView would pass them up
+    // the responder chain to the terminal, which reports them to the program running in it.
+    public override func mouseDown(with event: NSEvent) {}
+    public override func mouseUp(with event: NSEvent) {}
+    public override func rightMouseDown(with event: NSEvent) {}
+    public override func rightMouseUp(with event: NSEvent) {}
+    public override func otherMouseDown(with event: NSEvent) {}
+    public override func otherMouseUp(with event: NSEvent) {}
 
     // Esc in the field. Handling it here also stops NSSearchField's default of clearing the text,
     // which the next Cmd+F shows again.

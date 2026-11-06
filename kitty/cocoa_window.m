@@ -302,9 +302,10 @@ PENDING(macos_cycle_through_os_windows, MACOS_CYCLE_THROUGH_OS_WINDOWS)
 PENDING(macos_cycle_through_os_windows_backwards, MACOS_CYCLE_THROUGH_OS_WINDOWS_BACKWARDS)
 // Not a pending action: those run on a later loop tick, after the keys typed right after
 // Cmd+F, which would land in the shell or in the field before its text is selected.
+// validateMenuItem: has already refused the item unless the key window takes chrome.
 - (void)show_find_bar:(id)sender {
     (void)sender;
-    [KittyFindBar showIn:[NSApp keyWindow]];
+    [KittyFindBar showIn:cocoa_chrome_window_for_key_window([NSApp keyWindow])];
 }
 PENDING(toggle_fullscreen, TOGGLE_FULLSCREEN)
 PENDING(open_kitty_website, OPEN_KITTY_WEBSITE)
@@ -337,9 +338,10 @@ ACTION(use_selection_for_find)
         item.action == @selector(close_os_window:) || item.action == @selector(close_tab:) || item.action == @selector(close_window:) ||
         item.action == @selector(reset_terminal:) || item.action == @selector(clear_terminal_and_scrollback:) ||
         item.action == @selector(clear_last_command:) || item.action == @selector(clear_scrollback:) || item.action == @selector(clear_screen:) ||
-        item.action == @selector(previous_tab:) || item.action == @selector(next_tab:) || item.action == @selector(detach_tab:) ||
-        item.action == @selector(show_find_bar:)) {
+        item.action == @selector(previous_tab:) || item.action == @selector(next_tab:) || item.action == @selector(detach_tab:)) {
         if (![NSApp keyWindow]) return NO;
+    } else if (item.action == @selector(show_find_bar:)) {
+        if (!cocoa_chrome_window_for_key_window([NSApp keyWindow])) return NO;
     } else if (item.action == @selector(paste_from_clipboard:)) {
         if (![NSApp keyWindow]) return NO;
         NSPasteboard *pb = [NSPasteboard generalPasteboard];
