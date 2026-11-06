@@ -725,7 +725,8 @@ class TestKeys(BaseTest):
         self.ae(tm.press(('cmd+k', tm.dispatch_native_view_key), ('x', tm.dispatch_possible_special_key)), [True, False])
         af(tm.active_window.key_seqs)
         self.ae(tm.press(('cmd+k', tm.dispatch_possible_special_key), ('x', tm.dispatch_native_view_key)), [True, False])
-        self.ae(len(tm.active_window.key_seqs), 1)
+        cmd_k = parse_shortcut('cmd+k')
+        self.ae([(k.key, k.mods) for k in tm.active_window.key_seqs], [(cmd_k.key, cmd_k.mods)])
 
         # a mode entered from a native view: passthrough_and_end gives the key back once and ends
         tm = TM('map --new-mode mw --on-unknown passthrough_and_end cmd+j', 'map --mode mw left neighboring_window left')
