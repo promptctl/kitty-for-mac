@@ -272,10 +272,11 @@ key_window_screen(void) {
     return tab->num_windows > tab->active_window ? tab->windows[tab->active_window].render_data.screen : NULL;
 }
 
-// [LAW:single-enforcer] A call into Boss made straight from AppKit runs outside GLFW's input
+// [LAW:single-enforcer] A call into Boss made from AppKit can run outside GLFW's input
 // callbacks and pending actions, both of which request the tick a frame is drawn on, so this
 // requests it: whatever the call changed on screen is drawn now, not on the next unrelated
-// wakeup. A tick with nothing to draw costs nothing, so it is requested unconditionally.
+// wakeup. A tick is cheap, so it is requested unconditionally. Boss calls from AppKit use
+// this; notification events get the same from do_notification_callback.
 #define call_boss_from_appkit(name, ...) do { call_boss(name, __VA_ARGS__); request_tick_callback(); } while (0)
 
 // The find bar's events, run on the main thread as plain calls into Boss: they must not
@@ -484,6 +485,8 @@ do_notification_callback(const char *identifier, const char *event, const char *
             PyObject_CallFunction(notification_activated_callback, "sss", event, identifier ? identifier : "", action_identifer ? action_identifer : "");
         if (ret) Py_DECREF(ret);
         else PyErr_Print();
+        // Notification events arrive on the main queue, outside the tick: see call_boss_from_appkit
+        request_tick_callback();
     }
 }
 
