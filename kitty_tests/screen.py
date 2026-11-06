@@ -1876,6 +1876,13 @@ class TestScreen(BaseTest):
         self.assertRaises(LookupError, s.find_set_current, first)
         s.find_set_current(kept)
         self.ae(text(s), 'ab')
+        # a find action is the user's, so like a selection it ends paused rendering
+        for action in (lambda: s.find_set_current(kept), lambda: s.find_set_query('ab', False), s.find_clear):
+            self.assertTrue(s.pause_rendering(True, 5000))
+            action()
+            self.assertFalse(s.pause_rendering(False))
+        s.find_set_query('ab', False)
+        s.find_set_current(kept)
         # the alternate screen shows none of the main buffer, so nothing there can be selected
         s.toggle_alt_screen()
         self.assertRaises(RuntimeError, s.find_set_current, kept)

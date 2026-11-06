@@ -7069,8 +7069,11 @@ same_extent(const Selection *a, const Selection *b) {
 }
 
 // Every change of query ends the current match, so it ends the selection that showed it.
+// Like starting a selection, a find action is the user's and ends paused rendering, so the
+// frame shows what it did.
 static void
 release_find_selection(Screen *self) {
+    screen_pause_rendering(self, false, 0);
     FindMatch current;
     if (kitty_rs_find_current(screen_find_engine(self), &current) && self->selections.count == 1) {
         // a selection's extent counts from screen row 0, so it stays comparable as output
@@ -7103,6 +7106,7 @@ find_set_current(Screen *self, PyObject *args) {
         PyErr_Format(PyExc_LookupError, "There is no find match %R", PyTuple_GET_ITEM(args, 0));
         return NULL;
     }
+    screen_pause_rendering(self, false, 0);
     ensure_space_for(&self->selections, items, Selection, 1, capacity, 1, false);
     clear_selection(&self->selections);
     self->selections.items[0] = match_as_selection(m, view.abs_row0);

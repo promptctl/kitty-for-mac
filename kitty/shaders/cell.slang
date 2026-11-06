@@ -171,15 +171,16 @@ vertex_main(
         float undim = cell_data.has_block_cursor * cell_data.reverse_video_cursor * crd.cursor_opacity;
         vo.effective_text_alpha =
             crd.inactive_text_alpha * if_one_then(has_dim, lerp(crd.dim_opacity, 1.0, undim), 1.0) * if_one_then(has_blink, crd.blink_opacity, 1.0);
+        // a find match takes its own colors, a hovered URL's underline wins over them, and the
+        // selection, set last, wins over both
+        float in_find_match = float((is_selected >> FIND_MATCH_SHIFT) & BIT_MASK);
         float in_url = float((is_selected >> 1) & BIT_MASK);
-        vo.decoration_fg = if_one_then(in_url, crd.url_color_lin.rgb, to_color(colors[2], fg_as_uint));
+        vo.decoration_fg = if_one_then(in_find_match, crd.find_match_fg_lin.rgb, to_color(colors[2], fg_as_uint));
+        vo.decoration_fg = if_one_then(in_url, crd.url_color_lin.rgb, vo.decoration_fg);
         // Selection
         float3 selection_color = if_one_then(crd.use_cell_bg_for_selection_fg, bo.bg, crd.highlight_fg_lin.rgb);
         selection_color = if_one_then(crd.use_cell_fg_for_selection_fg, foreground, selection_color);
-        // a find match takes its own colors and the selection, set next, wins over them
-        float in_find_match = float((is_selected >> FIND_MATCH_SHIFT) & BIT_MASK);
         foreground = if_one_then(in_find_match, crd.find_match_fg_lin.rgb, foreground);
-        vo.decoration_fg = if_one_then(in_find_match, crd.find_match_fg_lin.rgb, vo.decoration_fg);
         foreground = if_one_then(float(is_selected & BIT_MASK), selection_color, foreground);
         vo.decoration_fg = if_one_then(float(is_selected & BIT_MASK), selection_color, vo.decoration_fg);
         // Underline and strike through (rendered via sprites)
