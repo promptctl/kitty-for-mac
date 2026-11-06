@@ -263,6 +263,16 @@ update_secure_input_menu_bar_indicator(BOOL enabled) {
         set_cocoa_pending_action(USER_MENU_ACTION, #selector);   \
     }
 
+// The screen of the active window in the key window, NULL when no window has keyboard focus
+static Screen*
+key_window_screen(void) {
+    if (![NSApp keyWindow]) return NULL;
+    OSWindow *osw = current_os_window();
+    if (!osw || osw->num_tabs <= osw->active_tab) return NULL;
+    Tab *tab = osw->tabs + osw->active_tab;
+    return tab->num_windows > tab->active_window ? tab->windows[tab->active_window].render_data.screen : NULL;
+}
+
 @implementation GlobalMenuTarget
 
 - (void)user_menu_action:(id)sender {
@@ -323,24 +333,20 @@ ACTION(use_selection_for_find)
         item.action == @selector(close_os_window:) || item.action == @selector(close_tab:) || item.action == @selector(close_window:) ||
         item.action == @selector(reset_terminal:) || item.action == @selector(clear_terminal_and_scrollback:) ||
         item.action == @selector(clear_last_command:) || item.action == @selector(clear_scrollback:) || item.action == @selector(clear_screen:) ||
-        item.action == @selector(previous_tab:) || item.action == @selector(next_tab:) || item.action == @selector(detach_tab:) ||
-        item.action == @selector(find_next:) || item.action == @selector(find_previous:) || item.action == @selector(use_selection_for_find:)) {
+        item.action == @selector(previous_tab:) || item.action == @selector(next_tab:) || item.action == @selector(detach_tab:)) {
         if (![NSApp keyWindow]) return NO;
     } else if (item.action == @selector(paste_from_clipboard:)) {
         if (![NSApp keyWindow]) return NO;
         NSPasteboard *pb = [NSPasteboard generalPasteboard];
         if (![pb stringForType:NSPasteboardTypeString]) return NO;
     } else if (item.action == @selector(copy_or_noop:)) {
-        if (![NSApp keyWindow]) return NO;
-        OSWindow *osw = current_os_window();
-        if (osw && osw->num_tabs > osw->active_tab) {
-            Tab *tab = osw->tabs + osw->active_tab;
-            if (tab->num_windows > tab->active_window) {
-                Screen *screen = tab->windows[tab->active_window].render_data.screen;
-                if (screen && screen_has_selection(screen)) return YES;
-            }
-        }
-        return NO;
+        Screen *screen = key_window_screen();
+        return screen && screen_has_selection(screen);
+    } else if (item.action == @selector(find_next:) || item.action == @selector(find_previous:) || item.action == @selector(use_selection_for_find:)) {
+        // A disabled item leaves its key to the keymap, and there the find actions pass it on
+        // to the program while the alternate screen shows: an enabled one would swallow it.
+        Screen *screen = key_window_screen();
+        return screen && screen_shows_main_buffer(screen) && (item.action != @selector(use_selection_for_find:) || screen_has_selection(screen));
     }
     return YES;
 }

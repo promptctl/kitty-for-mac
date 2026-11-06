@@ -1975,6 +1975,22 @@ class TestScreen(BaseTest):
         s.find_step(False)
         s.clear_selection()
         self.ae(s.find_status(), (0, 20, False))
+        # a click leaves an empty selection, and the step starts from the point it marks
+        top = s.abs_line_at_viewport_top()
+        s.start_selection(0, 2)
+        self.ae(s.find_step(False), matches[top + 2])
+        s.start_selection(0, 2)
+        self.ae(s.find_step(True), matches[top + 1])
+        s.start_selection(0, 2, False, 0, False)
+        self.ae(s.find_step(False), matches[top + 3], 'a click in the right half of a cell points past it')
+
+        # disowned, find's current match is the user's: a new query leaves it and the step
+        # lands on it, not past it, as Use Selection for Find needs
+        current = s.find_step(False)
+        s.find_disown_selection()
+        s.find_set_query('x', False)
+        self.ae(text(s), 'x')
+        self.ae(s.find_step(False), current)
 
         # matches are stepped in buffer order across wrapped rows and wide chars
         s = self.create_screen(cols=4, lines=3, scrollback=10)

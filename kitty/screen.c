@@ -3891,6 +3891,9 @@ main_buffer_view(const Screen *self) {
 }
 
 bool
+screen_shows_main_buffer(const Screen *self) { return main_buffer_view(self).shows_main_buffer; }
+
+bool
 screen_pause_rendering(Screen *self, bool pause, int for_in_ms) {
     if (!pause) {
         if (!self->paused_rendering.expires_at) return false;
@@ -7120,16 +7123,23 @@ find_set_current(Screen *self, PyObject *args) {
 }
 
 // Where the user is looking, from the first cell to just past the last in buffer order: the
-// selection, or with none the rows on screen.
+// selection; the point between cells a click left as an empty one; or with neither the rows
+// on screen.
 static void
 find_step_origin(Screen *self, MainBufferView view, FindPos *start, FindPos *end) {
     const uint64_t top = view.abs_row0 - self->scrolled_by;
     *start = (FindPos){.line = top};
     *end = (FindPos){.line = top + self->lines};
+    if (!self->selections.count) return;
+    const Selection *s = self->selections.items;
     IterationData idata;
-    if (self->selections.count) iteration_data(self->selections.items, &idata, self->columns, -(int)self->historybuf->count, 0);
-    if (!self->selections.count || iteration_data_is_empty(self, &idata)) return;
-    // iteration rows count from screen row 0 with history negative, as match_as_selection's do
+    iteration_data(s, &idata, self->columns, -(int)self->historybuf->count, 0);
+    // selection rows count from screen row 0 with history negative, as match_as_selection's do
+    if (iteration_data_is_empty(self, &idata)) {
+        const SelectionBoundary *b = &s->start;
+        *start = *end = (FindPos){.line = view.abs_row0 + (int)b->y - s->start_scrolled_by, .x = b->x + !b->in_left_half_of_cell};
+        return;
+    }
     const index_type last_x_limit = idata.y_limit - 1 == idata.y ? idata.first.x_limit : idata.last.x_limit;
     *start = (FindPos){.line = view.abs_row0 + idata.y, .x = idata.first.x};
     *end = (FindPos){.line = view.abs_row0 + idata.y_limit - 1, .x = last_x_limit};
@@ -7160,6 +7170,14 @@ find_step(Screen *self, PyObject *args) {
     reveal_find_match(self, m, view);
     select_find_match(self, m, view);
     return find_match_as_tuple(m);
+}
+
+// The user points at the selection, so it is theirs, not find's: a new query leaves it in
+// place, and the next step starts from it rather than past it.
+static PyObject *
+find_disown_selection(Screen *self, PyObject *o UNUSED) {
+    if (self->selections.count) self->selections.items->is_find_match = false;
+    Py_RETURN_NONE;
 }
 
 static PyObject *
@@ -7708,7 +7726,7 @@ static PyMethodDef methods[] = {
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
     MND(find_logical_lines, METH_NOARGS)
 #ifdef __APPLE__
-    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_status, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
+    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_disown_selection, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
 #endif
     MND(abs_line_at_viewport_top, METH_NOARGS)
 
