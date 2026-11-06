@@ -2132,6 +2132,16 @@ class TestScreen(BaseTest):
             a.set_find_query('b')
             follow(b)
             self.ae((a.screen.find_status()[1], b.find_query), (0, 'zz'))
+            # a window that is not the active one is not followed
+            a.set_find_query('b')
+            a.follow_find_bar()
+            self.ae(a.screen.find_status()[1], 10)
+            # a full-screen program takes no search, and the bar still reports it for the bar's query
+            bar[0] = (True, 'b')
+            b.screen.toggle_alt_screen()
+            follow(b)
+            self.ae((a.screen.find_status()[1], b.find_query, pushes[-1]), (0, 'b', ('b', (0, 0, False))))
+            b.screen.toggle_alt_screen()
             # closing the bar ends the search in every window of its OS window, whichever tab it is in
             for w in (a, other_tab):
                 w.set_find_query('b')

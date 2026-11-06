@@ -3053,21 +3053,21 @@ class Window:
     def follow_find_bar(self) -> None:
         if not is_macos or not (tm := get_boss().os_window_map.get(self.os_window_id)) or tm.active_window is not self:
             return
+        # the Screen primitive, not the find_clear action: this is no user ending a paused render
         for tab in tm:
             for w in tab:
                 if w is not self and w.screen.find_status()[1]:
-                    w.find_clear()
+                    w.screen.find_clear()
         if (bar := cocoa_find_bar_state(self.os_window_id)) is None:
             return
         shown, query = bar
-        if not shown:
-            # hidden, the bar searches nothing; Cmd+G searches this window for the query the bar kept
-            self.find_query = query
-        elif not (self.screen.find_status()[1] and self.find_query == query):
+        searching = self.screen.find_status()[1] and self.find_query == query
+        # a hidden bar searches nothing, but Cmd+G in this window uses the query the bar kept. A
+        # full-screen program takes no search, so the bar reports its 0 matches for the query
+        self.find_query = query
+        if shown and not searching:
             self.set_find_query(query)
-        # a full-screen program takes no query, and its stale one would overwrite what the field holds
-        if self.find_query == query:
-            self.push_find_bar()
+        self.push_find_bar()
 
     @ac('sc', 'Make the next match of the find query, later in the buffer, the current match and the selection, scrolling it into view and wrapping at the end, on macOS')
     def find_next(self) -> bool | None:
