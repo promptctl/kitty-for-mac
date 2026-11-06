@@ -1,0 +1,4 @@
+[toolchain]
+channel = "1.97.1"
+# Both macOS arches: the universal bypy freeze builds the crate once per arch.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]

@@ -1,0 +1,19 @@
+[package]
+name = "kitty_rs"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[lib]
+# Linked into kitty/fast_data_types.so by setup.py; the only Rust staticlib in that
+# binary, so later Rust code lands as modules of this crate rather than new crates.
+crate-type = ["staticlib"]
+
+# A panic must never unwind across the C ABI into kitty's C code. cargo test ignores
+# this setting and unwinds inside the test harness, which is what tests want.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

@@ -1284,6 +1284,37 @@ def build_swift_module(args: Options, kenv: Env) -> SwiftModule:
     return SwiftModule(obj, out_dir, tuple(target_info['paths']['runtimeLibraryPaths']))
 
 
+rust_manifest = 'rust/Cargo.toml'
+
+
+def rust_target(cc_triple: str) -> Tuple[str, str]:
+    """The Rust target and MACOSX_DEPLOYMENT_TARGET for a clang triple such as arm64-apple-macosx12.0.0."""
+    m = re.fullmatch(r'(arm64|x86_64)-apple-macosx(\d+(?:\.\d+)*)', cc_triple)
+    if m is None:
+        raise SystemExit(f'No Rust target for the C target {cc_triple!r}: the Rust crate builds for arm64 and x86_64 macOS')
+    arch, deployment_target = m.group(1, 2)
+    return f'{"aarch64" if arch == "arm64" else arch}-apple-darwin', deployment_target
+
+
+def build_rust_crate(args: Options, kenv: Env) -> str:
+    """Build the crate in rust/ as a static library for the kitty extension, returning the library's path."""
+    cargo = shutil.which('cargo')
+    if cargo is None:
+        raise SystemExit('cargo not found: building kitty on macOS needs Rust, install it with rustup (https://rustup.rs)')
+    target, deployment_target = rust_target(cc_target_triple(kenv))
+    profile = 'debug' if args.debug else 'release'
+    target_dir = os.path.join(build_dir, 'rust')
+    # [LAW:one-source-of-truth] the deployment target rides in the command, so it is recorded with it
+    cmd = ['env', f'MACOSX_DEPLOYMENT_TARGET={deployment_target}', cargo, 'build', '--locked', '--manifest-path', rust_manifest]
+    cmd += ['--target-dir', target_dir, '--target', target] + ([] if args.debug else ['--release'])
+    lib = os.path.join(target_dir, target, profile, 'libkitty_rs.a')
+    # cargo is its own incremental build (a no-op run takes a fraction of a second), so it always runs
+    args.compilation_database.build_now(
+        f'Compiling {emphasis("Rust crate kitty_rs")} ...', cmd, lambda: True, CompileKey(rust_manifest, os.path.relpath(lib, build_dir))
+    )
+    return lib
+
+
 def wayland_protocol_file_name(base: str, ext: str = 'c') -> str:
     base = os.path.basename(base).rpartition('.')[0]
     return f'wayland-{base}-client-protocol.{ext}'
@@ -1560,6 +1591,7 @@ def build(args: Options, native_optimizations: bool = True, call_init: bool = Tr
         kenv.cppflags.append(f'-I{swift.include_dir}')
         kenv.ldpaths.extend(f'-L{x}' for x in swift.library_dirs)
         link_inputs.append(swift.obj)
+        link_inputs.append(build_rust_crate(args, kenv))
     compile_c_extension(
         kenv,
         'kitty/fast_data_types',

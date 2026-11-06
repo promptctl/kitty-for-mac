@@ -4,7 +4,6 @@
 import importlib
 import json
 import os
-import re
 import select
 import shutil
 import subprocess
@@ -13,8 +12,7 @@ import time
 import unittest
 from collections.abc import Callable, Generator, Iterator, Sequence
 from contextlib import contextmanager, suppress
-from functools import lru_cache
-from tempfile import TemporaryDirectory, mkdtemp
+from tempfile import TemporaryDirectory
 from typing import (
     Any,
     NoReturn,
@@ -22,6 +20,7 @@ from typing import (
 )
 
 from . import is_ci
+from .external import RUST_MODULE, ExternalTestProc, go_exe, reduce_go_pkgs, resolve_rust_tests, run_cargo, run_go, rust_tests_selected
 
 PARALLEL_THRESHOLD = 20
 
@@ -114,101 +113,6 @@ def run_cli(suite: unittest.TestSuite, verbosity: int = 4) -> bool:
     sys.stdout.flush()
     sys.stderr.flush()
     return result.wasSuccessful()
-
-
-def find_testable_go_packages() -> tuple[set[str], dict[str, list[str]]]:
-    test_functions: dict[str, list[str]] = {}
-    ans = set()
-    base = os.getcwd()
-    pat = re.compile(r'^func Test([A-Z]\w+)', re.MULTILINE)
-    for dirpath, dirnames, filenames in os.walk(base):
-        if 'b' in dirnames and os.path.basename(dirpath) == 'bypy':
-            dirnames.remove('b')
-        for f in filenames:
-            if f.endswith('_test.go'):
-                q = os.path.relpath(dirpath, base)
-                ans.add(q)
-                with open(os.path.join(dirpath, f)) as s:
-                    raw = s.read()
-                for m in pat.finditer(raw):
-                    test_functions.setdefault(m.group(1), []).append(q)
-    return ans, test_functions
-
-
-@lru_cache
-def go_exe() -> str:
-    return shutil.which('go') or ''
-
-
-class GoProc:
-    def __init__(self, cmd: list[str]):
-        from kitty.constants import kitty_exe
-
-        env = os.environ.copy()
-        env['KITTY_PATH_TO_KITTY_EXE'] = kitty_exe()
-        self.start_time = time.monotonic()
-        self.end_time: float = 0.0
-        self.tdir = mkdtemp(prefix='kitty-go-tests-')
-        env['HOME'] = self.tdir
-        if not env.get('GOCACHE') or not env.get('GOMODCACHE'):
-            try:
-                r = subprocess.run([cmd[0], 'env', 'GOCACHE', 'GOMODCACHE'], capture_output=True, text=True, timeout=10)
-                if r.returncode == 0:
-                    gop, gomodp = r.stdout.strip().splitlines()
-                    if gop and not env.get('GOCACHE') and os.path.isdir(gop):
-                        env['GOCACHE'] = gop
-                    if gomodp and not env.get('GOMODCACHE') and os.path.isdir(gomodp):
-                        env['GOMODCACHE'] = gomodp
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-        env['XDG_CONFIG_HOME'] = self.tdir + '/conf'
-        os.mkdir(env['XDG_CONFIG_HOME'])
-        env['XDG_CACHE_HOME'] = self.tdir + '/cache'
-        os.mkdir(env['XDG_CACHE_HOME'])
-        # start_new_session so that go tests cannot touch the terminal the
-        # test suite is being run from, see detach_from_controlling_terminal()
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, stdin=subprocess.DEVNULL, start_new_session=True)
-        self.stdout_fd = self.proc.stdout.fileno()
-
-    @property
-    def runtime(self) -> float:
-        return self.end_time - self.start_time
-
-    @property
-    def returncode(self) -> int:
-        return self.proc.returncode
-
-    def finish(self) -> None:
-        """Reap the process after its stdout has been fully drained."""
-        assert self.proc.stdout is not None
-        self.proc.stdout.close()
-        self.proc.wait()
-        self.end_time = time.monotonic()
-        shutil.rmtree(self.tdir, ignore_errors=True)
-
-
-def run_go(packages: set[str], names: Sequence[str]) -> GoProc:
-    go = go_exe()
-    go_pkg_args = [f'github.com/kovidgoyal/kitty/{x}' for x in packages]
-    cmd = [go, 'test', '--tags', 'testing', '-v', '-json']
-    if names:
-        cmd.extend(('-run', '^Test(?:' + '|'.join(re.escape(name) for name in names) + ')$'))
-    cmd += go_pkg_args
-    return GoProc(cmd)
-
-
-def reduce_go_pkgs(module: str, names: Sequence[str]) -> set[str]:
-    if not go_exe():
-        raise SystemExit('go executable not found, current path: ' + repr(os.environ.get('PATH', '')))
-    go_packages, go_functions = find_testable_go_packages()
-    if module:
-        go_packages &= {module}
-    if names:
-        pkgs = set()
-        for name in names:
-            pkgs |= set(go_functions.get(name, []))
-        go_packages &= pkgs
-    return go_packages
 
 
 @contextmanager
@@ -536,9 +440,9 @@ def collect_worker_results(
     procs: list[subprocess.Popen[bytes]],
     read_fds: list[int],
     total_py_tests: int,
-    go_proc: Optional[GoProc] = None,
+    externals: Sequence[ExternalTestProc] = (),
 ) -> tuple[bool, bool]:
-    """Read JSON from worker pipes and go proc stdout, show live progress, print failures."""
+    """Read JSON from worker pipes and the external test processes' stdout, show live progress, print failures."""
     use_tty = sys.stdout.isatty()
     py_buffers: dict[int, bytes] = {fd: b'' for fd in read_fds}
     # read_fds are in the same order as the pids or procs they belong to
@@ -546,8 +450,7 @@ def collect_worker_results(
     py_completed: set[int] = set()
     py_last_started: dict[int, str] = {}
     active_py = list(read_fds)
-    go_buffer = b''
-    go_active = go_proc is not None
+    external_for_fd = {p.stdout_fd: p for p in externals}
     start = time.monotonic()
 
     py_run = 0
@@ -556,12 +459,6 @@ def collect_worker_results(
     py_skipped = 0
     py_unexpected_successes: list[str] = []
     py_worker_errors: list[str] = []
-
-    go_run = 0
-    go_failures: list[tuple[str, str]] = []
-    go_test_output: dict[str, list[str]] = {}
-    go_pkg_output: dict[str, list[str]] = {}
-    go_other_output: list[str] = []
 
     # (elapsed_seconds, label) for every completed test in both suites
     all_timings: list[tuple[float, str]] = []
@@ -575,12 +472,12 @@ def collect_worker_results(
         if total_py_tests > 0 or active_py:
             py_mark = c(_GREEN, ' ✓') if not active_py else ''
             parts.append(c(_CYAN + _BOLD, 'Py') + f' {py_run}/{total_py_tests}' + py_mark)
-        if go_proc is not None:
-            # Go total is omitted: t.Run() sub-tests inflate the count beyond
-            # what static analysis of Test* functions can predict.
-            go_mark = c(_GREEN, ' ✓') if not go_active else ''
-            parts.append(c(_YELLOW + _BOLD, 'Go') + f' {go_run}' + go_mark)
-        fail_count = len(py_failures) + len(py_errors) + len(go_failures)
+        for ext in externals:
+            # External totals are omitted: go's t.Run() sub-tests inflate the count
+            # beyond what static analysis of Test* functions can predict.
+            ext_mark = c(_GREEN, ' ✓') if not ext.active else ''
+            parts.append(c(_YELLOW + _BOLD, ext.label) + f' {ext.run}' + ext_mark)
+        fail_count = len(py_failures) + len(py_errors) + sum(len(ext.failures) for ext in externals)
         if fail_count:
             parts.append(c(_RED, f'{fail_count} failed'))
         return '  ' + '  '.join(parts) + '  ' + c(_DIM, f'[{elapsed:.1f}s]')
@@ -592,69 +489,15 @@ def collect_worker_results(
         elif force or (total_py_tests > 0 and py_run % max(1, total_py_tests // 10) == 0):
             print(line, flush=True)
 
-    while active_py or go_active:
-        watch = list(active_py)
-        if go_active and go_proc is not None:
-            watch.append(go_proc.stdout_fd)
+    while active_py or any(ext.active for ext in externals):
+        watch = list(active_py) + [ext.stdout_fd for ext in externals if ext.active]
         readable, _, _ = select.select(watch, [], [])
 
         for fd in readable:
-            if go_proc is not None and fd == go_proc.stdout_fd:
-                try:
-                    chunk = os.read(fd, 65536)
-                except OSError:
-                    chunk = b''
-                if not chunk:
-                    if go_buffer:
-                        go_other_output.append(go_buffer.decode('utf-8', errors='replace'))
-                    go_active = False
-                    go_proc.finish()
-                    show_progress(force=True)
-                    continue
-                go_buffer += chunk
-                while b'\n' in go_buffer:
-                    raw, go_buffer = go_buffer.split(b'\n', 1)
-                    if not raw:
-                        continue
-                    try:
-                        evt: dict[str, Any] = json.loads(raw)
-                    except json.JSONDecodeError:
-                        go_other_output.append(raw.decode('utf-8', errors='replace') + '\n')
-                        continue
-                    action = evt.get('Action', '')
-                    test_name = evt.get('Test', '')
-                    pkg = evt.get('Package', '')
-                    if test_name:
-                        full = f'{pkg}.{test_name}' if pkg else test_name
-                        if action == 'run':
-                            go_test_output[full] = []
-                        elif action == 'output':
-                            go_test_output.setdefault(full, []).append(evt.get('Output', ''))
-                        elif action in ('pass', 'fail', 'skip'):
-                            go_run += 1
-                            elapsed_test = float(evt.get('Elapsed') or 0.0)
-                            if action == 'fail':
-                                output = ''.join(go_test_output.pop(full, []))
-                                go_failures.append((full, output))
-                            else:
-                                go_test_output.pop(full, None)
-                            all_timings.append((elapsed_test, f'[Go] {full}'))
-                            show_progress()
-                    else:
-                        if action == 'output':
-                            go_pkg_output.setdefault(pkg, []).append(evt.get('Output', ''))
-                        elif action == 'fail':
-                            # Package-level failure (e.g. build error): show if no test-level failures from it
-                            pkg_had_test_failure = any(f.startswith(pkg + '.') for f, _ in go_failures)
-                            if not pkg_had_test_failure:
-                                output = ''.join(go_pkg_output.pop(pkg, []))
-                                if output:
-                                    go_failures.append((pkg, output))
-                                    show_progress()
-                            else:
-                                go_pkg_output.pop(pkg, None)
-                        else:
-                            go_pkg_output.pop(pkg, None)
+            if (ext := external_for_fd.get(fd)) is not None:
+                failures_before = len(ext.failures)
+                ext.read_available()
+                show_progress(force=not ext.active or len(ext.failures) != failures_before)
             else:
                 try:
                     chunk = os.read(fd, 65536)
@@ -740,19 +583,18 @@ def collect_worker_results(
             print(sep2)
             print(msg)
 
-    for go_tid, go_output in go_failures:
-        print(sep1)
-        print(f'{c(_RED + _BOLD, "FAIL")}: {go_tid}')
-        print(sep2)
-        if go_output:
-            print(go_output, end='' if go_output.endswith('\n') else '\n')
-
-    if go_proc is not None and go_proc.returncode != 0 and go_other_output:
-        print(sep1)
-        print(c(_RED + _BOLD, 'GO ERROR'))
-        print(sep2)
-        output = ''.join(go_other_output)
-        print(output, end='' if output.endswith('\n') else '\n')
+    for ext in externals:
+        for ext_tid, ext_output in ext.failures:
+            print(sep1)
+            print(f'{c(_RED + _BOLD, "FAIL")}: {ext_tid}')
+            print(sep2)
+            if ext_output:
+                print(ext_output, end='' if ext_output.endswith('\n') else '\n')
+        if ext.returncode != 0 and ext.unplaced:
+            print(sep1)
+            print(c(_RED + _BOLD, f'{ext.label.upper()} ERROR'))
+            print(sep2)
+            print(ext.unplaced, end='' if ext.unplaced.endswith('\n') else '\n')
 
     if py_unexpected_successes:
         print(sep1)
@@ -761,10 +603,11 @@ def collect_worker_results(
             print(f'  {tid}')
 
     print(sep2)
-    total_ran = py_run + go_run
+    total_ran = py_run + sum(ext.run for ext in externals)
     count_word = 'test' if total_ran == 1 else 'tests'
     print(f'Ran {total_ran} {count_word} in {elapsed:.3f}s')
 
+    all_timings.extend(t for ext in externals for t in ext.timings)
     all_timings.sort(reverse=True)
     slowest = all_timings[:5]
     if slowest:
@@ -776,9 +619,9 @@ def collect_worker_results(
     print()
 
     python_ok = not (py_failures or py_errors or py_unexpected_successes or py_worker_errors)
-    go_ok = go_proc is None or (go_proc.returncode == 0 and not go_failures)
+    externals_ok = all(ext.ok for ext in externals)
 
-    if not python_ok or not go_ok:
+    if not python_ok or not externals_ok:
         fail_parts: list[str] = []
         if py_failures:
             fail_parts.append(f'failures={len(py_failures)}')
@@ -788,13 +631,14 @@ def collect_worker_results(
             fail_parts.append(f'unexpected successes={len(py_unexpected_successes)}')
         if py_worker_errors:
             fail_parts.append(f'worker errors={len(py_worker_errors)}')
-        if go_failures:
-            fail_parts.append(f'go failures={len(go_failures)}')
-        elif go_proc is not None and go_proc.returncode != 0:
-            fail_parts.append('go failed')
+        for ext in externals:
+            if ext.failures:
+                fail_parts.append(f'{ext.label.lower()} failures={len(ext.failures)}')
+            elif ext.returncode != 0:
+                fail_parts.append(f'{ext.label.lower()} failed')
         result = f'FAILED ({", ".join(fail_parts)})'
         print(c(_RED + _BOLD, result))
-        return False, go_ok
+        return python_ok, externals_ok
 
     ok_msg = 'OK'
     if py_skipped:
@@ -803,7 +647,7 @@ def collect_worker_results(
     return True, True
 
 
-def terminate_workers(pids: list[int], procs: list['subprocess.Popen[bytes]'], go_proc: Optional[GoProc]) -> None:
+def terminate_workers(pids: list[int], procs: list['subprocess.Popen[bytes]'], externals: Sequence[ExternalTestProc]) -> None:
     """Kill any still running workers.
 
     Workers run in their own sessions, so they do not get the SIGINT/SIGQUIT
@@ -823,9 +667,8 @@ def terminate_workers(pids: list[int], procs: list['subprocess.Popen[bytes]'], g
     for proc in procs:
         proc.kill()
         proc.wait()
-    if go_proc is not None:
-        go_proc.proc.kill()
-        go_proc.proc.wait()
+    for ext in externals:
+        ext.kill()
 
 
 def run_tests(report_env: bool = False) -> None:
@@ -838,13 +681,15 @@ def run_tests(report_env: bool = False) -> None:
         nargs='*',
         default=[],
         help='The name of the test to run, for e.g. linebuf corresponds to test_linebuf. Can be specified multiple times.'
-        ' For go tests Something corresponds to TestSometing.',
+        ' For go tests Something corresponds to TestSometing. For Rust tests something corresponds to the test'
+        ' function whose last path segment it is, for example tests::something.',
     )
     parser.add_argument('--verbosity', default=4, type=int, help='Test verbosity')
     parser.add_argument(
         '--module',
         default='',
-        help='Name of a test module to restrict to. For example: ssh. For Go tests this is the name of a package, for example: tools/cli',
+        help='Name of a test module to restrict to. For example: ssh. For Go tests this is the name of a package, for example: tools/cli.'
+        f' {RUST_MODULE} selects the Rust tests.',
     )
     args = parser.parse_args()
     if args.name and args.name[0] in ('type-check', 'type_check', 'mypy'):
@@ -860,12 +705,15 @@ def run_tests(report_env: bool = False) -> None:
 
     go_pkgs = reduce_go_pkgs(args.module, args.name)
     has_go = bool(go_pkgs)
+    has_rust = rust_tests_selected(args.module)
+    rust_paths = resolve_rust_tests(args.name) if has_rust and args.name else []
+    has_rust = has_rust and (bool(rust_paths) or not args.name)
     os.environ['ASAN_OPTIONS'] = 'detect_leaks=0'
 
     # Validate filters before doing any work
-    if args.module and not tests_list and not has_go:
+    if args.module and not tests_list and not has_go and not has_rust:
         raise SystemExit('No test module named %s found' % args.module)
-    if args.name and not tests_list and not has_go:
+    if args.name and not tests_list and not has_go and not has_rust:
         raise SystemExit('No test named %s found' % ' '.join(args.name))
 
     if report_env:
@@ -889,23 +737,25 @@ def run_tests(report_env: bool = False) -> None:
             all_fonts_map(True)
             worker_pids, read_fds = fork_test_workers(tests_list)
 
-    # Launch Go immediately so it runs in parallel with Python env setup and tests.
+    # Launch the external suites immediately so they run in parallel with Python env setup and tests.
+    externals: list[ExternalTestProc] = []
     if has_go:
         if report_env:
             print('Go executable:', go_exe())
             print('Go packages being tested:', ' '.join(go_pkgs))
-        go_proc: Optional[GoProc] = run_go(go_pkgs, args.name)
-    else:
-        go_proc = None
+        externals.append(run_go(go_pkgs, args.name))
+    if has_rust:
+        externals.append(run_cargo(rust_paths))
     sys.stdout.flush()
+    externals_ok = True
     try:
-        # Module filter with no python tests but go tests present: run go only
+        # Module filter with no python tests but external tests present: run those only
         if args.module and not tests_list:
-            _, go_ok = collect_worker_results([], [], [], 0, go_proc=go_proc)
-            raise SystemExit(0 if go_ok else 1)
+            _, externals_ok = collect_worker_results([], [], [], 0, externals=externals)
+            raise SystemExit(0 if externals_ok else 1)
 
         if use_parallel:
-            python_ok, go_ok = collect_worker_results(worker_pids, worker_procs, read_fds, len(tests_list), go_proc=go_proc)
+            python_ok, externals_ok = collect_worker_results(worker_pids, worker_procs, read_fds, len(tests_list), externals=externals)
         elif tests_list:
             # we need fonts installed in the user home directory as well, so initialize
             # fontconfig before nuking $HOME and friends
@@ -916,21 +766,17 @@ def run_tests(report_env: bool = False) -> None:
             # they must never run against the real $HOME, some of them delete
             # files/directories in it.
             python_ok = run_serial_tests(tests_list, args.verbosity)
-            if go_proc is not None:
-                _, go_ok = collect_worker_results([], [], [], 0, go_proc=go_proc)
-            else:
-                go_ok = True
+            if externals:
+                _, externals_ok = collect_worker_results([], [], [], 0, externals=externals)
         else:
             python_ok = True
-            if go_proc is not None:
-                _, go_ok = collect_worker_results([], [], [], 0, go_proc=go_proc)
-            else:
-                go_ok = True
+            if externals:
+                _, externals_ok = collect_worker_results([], [], [], 0, externals=externals)
     except BaseException:
-        terminate_workers(worker_pids, worker_procs, go_proc)
+        terminate_workers(worker_pids, worker_procs, externals)
         raise
 
-    exit_code = 0 if (python_ok and go_ok) else 1
+    exit_code = 0 if (python_ok and externals_ok) else 1
 
     if exit_code != 0:
         print('\x1b[31mError\x1b[39m: Some tests failed!')

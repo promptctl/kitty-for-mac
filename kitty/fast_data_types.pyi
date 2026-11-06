@@ -403,6 +403,9 @@ def user_cache_dir() -> str:
 def process_group_map() -> Tuple[Tuple[int, int], ...]:
     pass
 
+def rust_count_codepoints(text: str) -> int:
+    pass
+
 def environ_of_process(pid: int) -> str:
     pass
 
