@@ -488,7 +488,8 @@ pyis_modifier_key(PyObject *self UNUSED, PyObject *a) {
 
 // Replays (event, vk, extra, current_kind, current_id) steps through a fresh
 // table and returns the (kind, id) each one is delivered to. event is 'down',
-// 'up' or 'flags'; extra is is_repeat for 'down' and the event's modifierFlags
+// 'up', 'flags' or 'consume' (a shortcut took the keyDown); extra is
+// is_repeat for 'down' and 'consume' and the event's modifierFlags
 // for 'flags'.
 static PyObject *
 test_key_destination(PyObject *self UNUSED, PyObject *steps) {
@@ -500,14 +501,15 @@ test_key_destination(PyObject *self UNUSED, PyObject *steps) {
     while ((step = PyIter_Next(it))) {
         const char *event; unsigned short vk; unsigned long long extra, id; int kind;
         const int ok = PyArg_ParseTuple(step, "sHKiK", &event, &vk, &extra, &kind, &id);
-        Py_DECREF(step);
-        if (!ok) return NULL;
+        if (!ok) { Py_DECREF(step); return NULL; }
         const KeyDestination current = {(KeyDestinationKind)kind, (uintptr_t)id};
         KeyDestination dest;
         if (strcmp(event, "down") == 0) dest = key_destination_for_key_down(&t, vk, extra != 0, current);
         else if (strcmp(event, "up") == 0) dest = key_destination_for_key_up(&t, vk, current);
         else if (strcmp(event, "flags") == 0) dest = key_destination_for_flags_changed(&t, vk, extra, current);
-        else { PyErr_Format(PyExc_ValueError, "unknown key event: %s", event); return NULL; }
+        else if (strcmp(event, "consume") == 0) { key_destination_consume(&t, vk, extra != 0); dest = (KeyDestination){KEY_DEST_CONSUMED, 0}; }
+        else { PyErr_Format(PyExc_ValueError, "unknown key event: %s", event); Py_DECREF(step); return NULL; }
+        Py_DECREF(step);
         RAII_PyObject(r, Py_BuildValue("iK", (int)dest.kind, (unsigned long long)dest.id));
         if (!r || PyList_Append(ans, r) != 0) return NULL;
     }

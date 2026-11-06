@@ -14,16 +14,18 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef enum { KEY_DEST_NONE, KEY_DEST_TERMINAL, KEY_DEST_APPKIT } KeyDestinationKind;
+typedef enum { KEY_DEST_NONE, KEY_DEST_TERMINAL, KEY_DEST_APPKIT, KEY_DEST_CONSUMED } KeyDestinationKind;
 
 // TERMINAL: id is the windowNumber of the terminal's window. APPKIT: id is 0;
 // every native responder is one destination, so a key whose press AppKit took
 // keeps going to AppKit, which routes it as it does in any Cocoa app (a held Tab
-// keeps moving focus). NONE: nowhere to send it (no key window), or, in the
+// keeps moving focus). CONSUMED: a shortcut took the press, so its repeats and
+// its release go nowhere. NONE: nowhere to send it (no key window), or, in the
 // table, not held.
 typedef struct { KeyDestinationKind kind; uintptr_t id; } KeyDestination;
 
-typedef struct { KeyDestination held[128]; } KeyDestinationTable;
+#define KEY_DESTINATION_TABLE_SIZE 128
+typedef struct { KeyDestination held[KEY_DESTINATION_TABLE_SIZE]; } KeyDestinationTable;
 
 static const KeyDestination KEY_DEST_NOT_HELD = {KEY_DEST_NONE, 0};
 
@@ -46,7 +48,7 @@ static const struct { unsigned short vk; uint64_t down_flag, other_flag, either_
 #define KEY_DESTINATION_HELD_MODIFIER_COUNT (sizeof(key_destination_held_modifiers) / sizeof(key_destination_held_modifiers[0]))
 
 static inline bool
-key_destination_in_table(unsigned short vk) { return vk < sizeof(((KeyDestinationTable*)0)->held) / sizeof(KeyDestination); }
+key_destination_in_table(unsigned short vk) { return vk < KEY_DESTINATION_TABLE_SIZE; }
 
 // A press is always a new hold: it replaces any record whose release was never
 // seen (it went to another app after Cmd+Tab, or was handed to AppKit early).
@@ -56,6 +58,13 @@ key_destination_for_key_down(KeyDestinationTable *t, unsigned short vk, bool is_
     if (!key_destination_in_table(vk)) return current;
     if (!is_repeat || t->held[vk].kind == KEY_DEST_NONE) t->held[vk] = current;
     return t->held[vk];
+}
+
+// A shortcut that took a press ends the key's hold, and its repeats and release
+// are dropped. A repeat that a shortcut took leaves the hold to the release.
+static inline void
+key_destination_consume(KeyDestinationTable *t, unsigned short vk, bool is_repeat) {
+    if (!is_repeat && key_destination_in_table(vk)) t->held[vk] = (KeyDestination){KEY_DEST_CONSUMED, 0};
 }
 
 // A release goes where its press went and ends the hold; an unseen press's
@@ -68,8 +77,9 @@ key_destination_for_key_up(KeyDestinationTable *t, unsigned short vk, KeyDestina
     return dest;
 }
 
-// Reads flags as the terminal's flagsChanged does (glfw/cocoa_window.m): when
-// the device-dependent flags disagree with the device-independent one, as in
+// Whether modifier i of the table is down in flags; the terminal's
+// flagsChanged (glfw/cocoa_window.m) reads modifiers with it too. When the
+// device-dependent flags disagree with the device-independent one, as in
 // events posted by remapping tools, the device-independent one wins.
 static inline bool
 key_destination_modifier_down(uint64_t flags, unsigned i) {
@@ -77,6 +87,13 @@ key_destination_modifier_down(uint64_t flags, unsigned i) {
     const bool other = (flags & key_destination_held_modifiers[i].other_flag) != 0;
     const bool either = (flags & key_destination_held_modifiers[i].either_flag) != 0;
     return either != (target || other) ? either : target;
+}
+
+// The index of a held modifier's key code in the table, or -1.
+static inline int
+key_destination_modifier_index(unsigned short vk) {
+    for (unsigned i = 0; i < KEY_DESTINATION_HELD_MODIFIER_COUNT; i++) if (key_destination_held_modifiers[i].vk == vk) return (int)i;
+    return -1;
 }
 
 // flags is the event's modifierFlags, device-dependent bits included. Every

@@ -947,8 +947,8 @@ class TestKeys(BaseTest):
 
     def test_key_destination(self):
         from kitty.fast_data_types import test_key_destination
-        # destinations as (kind, id): kind 1 is a terminal window, 2 AppKit
-        term, other, field = (1, 7), (1, 9), (2, 0)
+        # destinations as (kind, id): kind 1 is a terminal window, 2 AppKit, 3 consumed by a shortcut
+        term, other, field, gone = (1, 7), (1, 9), (2, 0), (3, 0)
         a, ret, lshift, rshift, cmd, caps = 0x00, 0x24, 0x38, 0x3C, 0x37, 0x39
         LSHIFT, RSHIFT, SHIFT, CMD, LCMD, CAPS = 0x2, 0x4, 0x20000, 0x100000, 0x8, 0x10000
 
@@ -973,3 +973,7 @@ class TestKeys(BaseTest):
         t([('down', 200, 0, term), ('up', 200, 0, field)], [term, field])
         # flags with no device-dependent bits, as remapping tools post them: the device-independent flag decides
         t([('flags', lshift, SHIFT, term), ('flags', lshift, 0, field)], [term, term])
+        # a shortcut took the press: its repeats and release are dropped, whatever focus does
+        t([('consume', a, 0, term), ('down', a, 1, field), ('flags', cmd, 0, field), ('up', a, 0, term)], [gone, gone, field, gone])
+        # a shortcut took only a repeat: the release still goes where the press went
+        t([('down', a, 0, term), ('consume', a, 1, term), ('up', a, 0, field)], [term, gone, term])
