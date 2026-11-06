@@ -86,6 +86,7 @@ from .fast_data_types import (
     cocoa_hide_app,
     cocoa_hide_other_apps,
     cocoa_minimize_os_window,
+    cocoa_show_find_bar,
     cocoa_set_menubar_title,
     create_os_window,
     current_application_quit_request,
@@ -4287,9 +4288,9 @@ class Boss:
     def ungrab_keyboard(self) -> None:
         grab_keyboard(False)
 
-    def search_scrollback_in_active(self) -> None:
-        if w := self.active_window:
-            w.search_scrollback()
+    @ac('sc', 'Show the find bar of the active OS window and focus its search field, on macOS')
+    def show_find_bar(self) -> None:
+        cocoa_show_find_bar()
 
     def copy_or_noop(self) -> bool | None:
         if w := self.active_window:

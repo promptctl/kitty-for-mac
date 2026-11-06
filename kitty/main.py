@@ -218,7 +218,7 @@ def set_cocoa_global_shortcuts(opts: Options) -> dict[str, SingleKey]:
             'hide_macos_other_apps',
             'minimize_macos_window',
             'quit',
-            'search_scrollback',
+            'show_find_bar',
             'find_next',
             'find_previous',
             'use_selection_for_find',

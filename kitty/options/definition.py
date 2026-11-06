@@ -4134,7 +4134,7 @@ For more sophisticated control, such as using the current selection, use :ac:`re
 """,
 )
 
-map('Search the scrollback within a pager', 'search_scrollback --allow-fallback=shifted,ascii cmd+f search_scrollback', only='macos')
+map('Show the find bar', 'show_find_bar --allow-fallback=shifted,ascii cmd+f show_find_bar', only='macos')
 
 map('Find the next match', 'find_next --allow-fallback=shifted,ascii cmd+g find_next', only='macos')
 map('Find the previous match', 'find_previous --allow-fallback=shifted,ascii shift+cmd+g find_previous', only='macos')

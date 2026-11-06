@@ -3209,26 +3209,42 @@ toggle_maximized(PyObject UNUSED *self, PyObject *args) {
     Py_RETURN_FALSE;
 }
 
-static PyObject *
-cocoa_minimize_os_window(PyObject UNUSED *self, PyObject *args) {
-    id_type os_window_id = 0;
-    if (!PyArg_ParseTuple(args, "|K", &os_window_id)) return NULL;
 #ifdef __APPLE__
+// [LAW:single-enforcer] The one resolution of an optional os_window_id argument to its NSWindow,
+// the active OS window when it is 0. False with a Python error set; true with *ans NULL when the window is gone.
+static bool
+cocoa_window_from_args(PyObject *args, void **ans) {
+    id_type os_window_id = 0;
+    *ans = NULL;
+    if (!PyArg_ParseTuple(args, "|K", &os_window_id)) return false;
     OSWindow *w = os_window_id ? os_window_for_id(os_window_id) : current_os_window();
-    if (!w || !w->handle || w->is_layer_shell) Py_RETURN_NONE;
+    if (!w || !w->handle || w->is_layer_shell) return true;
     if (!glfwGetCocoaWindow) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to load glfwGetCocoaWindow");
-        return NULL;
+        return false;
     }
-    void *window = glfwGetCocoaWindow(w->handle);
-    if (!window) Py_RETURN_NONE;
-    cocoa_minimize(window);
-#else
-    PyErr_SetString(PyExc_RuntimeError, "cocoa_minimize_os_window() is only supported on macOS");
-    return NULL;
-#endif
-    Py_RETURN_NONE;
+    *ans = glfwGetCocoaWindow(w->handle);
+    return true;
 }
+#define COCOA_OS_WINDOW_FUNC(name, call) \
+static PyObject * \
+name(PyObject UNUSED *self, PyObject *args) { \
+    void *window; \
+    if (!cocoa_window_from_args(args, &window)) return NULL; \
+    if (window) call(window); \
+    Py_RETURN_NONE; \
+}
+#else
+#define COCOA_OS_WINDOW_FUNC(name, call) \
+static PyObject * \
+name(PyObject UNUSED *self, PyObject *args UNUSED) { \
+    PyErr_SetString(PyExc_RuntimeError, #name "() is only supported on macOS"); \
+    return NULL; \
+}
+#endif
+COCOA_OS_WINDOW_FUNC(cocoa_minimize_os_window, cocoa_minimize)
+COCOA_OS_WINDOW_FUNC(cocoa_show_find_bar_for_os_window, cocoa_show_find_bar)
+#undef COCOA_OS_WINDOW_FUNC
 
 static PyObject *
 change_os_window_state(PyObject *self UNUSED, PyObject *args) {
@@ -4176,6 +4192,7 @@ static PyMethodDef module_methods[] = {
     METHODB(cocoa_hide_app, METH_NOARGS),
     METHODB(cocoa_hide_other_apps, METH_NOARGS),
     METHODB(cocoa_minimize_os_window, METH_VARARGS),
+    {"cocoa_show_find_bar", (PyCFunction)cocoa_show_find_bar_for_os_window, METH_VARARGS, ""},
     {"glfw_wayland_inject_init", (PyCFunction)glfw_wayland_inject_init, METH_VARARGS, ""},
     {"glfw_wayland_inject_terminate", (PyCFunction)glfw_wayland_inject_terminate, METH_NOARGS, ""},
     {"glfw_wayland_inject_mouse_motion_absolute", (PyCFunction)glfw_wayland_inject_mouse_motion_absolute, METH_VARARGS, ""},
