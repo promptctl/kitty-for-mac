@@ -54,11 +54,11 @@ void kitty_rs_find_refeed_free(FindRefeed *refeed);
 // Drops the matches and searched lines before oldest. True when line oldest is searched, so a
 // logical line the eviction cut holds matches that must be re-fed (kitty_rs_find_splice).
 bool kitty_rs_find_evict_before(FindEngine *engine, uint64_t oldest);
-// The matches in buffer order, *count of them, valid until the engine next changes.
-const FindMatch* kitty_rs_find_matches(const FindEngine *engine, size_t *count);
-// The matches covering any of the lines [first, limit), *count of them, valid until the
-// engine next changes.
-const FindMatch* kitty_rs_find_matches_in_lines(const FindEngine *engine, uint64_t first, uint64_t limit, size_t *count);
+// Handed n matches in buffer order, valid only during the call.
+typedef void (*FindMatchVisitor)(void *ctx, const FindMatch *run, size_t n);
+// Calls visit with the matches covering any of the lines [first, limit), in buffer order, a
+// run at a time, before it returns. visit must not use the engine.
+void kitty_rs_find_each_match_in_lines(const FindEngine *engine, uint64_t first, uint64_t limit, FindMatchVisitor visit, void *ctx);
 // Counts the changes to the match list: equal generations mean the same matches.
 uint64_t kitty_rs_find_generation(const FindEngine *engine);
 // The current match, always one of the matches: set_query and the cuts that drop it end it.

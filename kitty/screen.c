@@ -4684,8 +4684,7 @@ selection_extent(Screen *self, uint64_t abs_row0, FindPos *start, FindPos *end) 
 }
 
 // [LAW:single-enforcer] every read of the engine goes through here, so every reader sees the
-// matches of the buffer as it is now. The sync can move the match list, so a pointer into it
-// is good only until the next call.
+// matches of the buffer as it is now.
 // [LAW:one-source-of-truth] the current match is the match find's selection shows. It
 // follows that selection when the text moves (index_selection moves it in a margin scroll and
 // the re-fed match is adopted), and ends with it when the user changes it or anything clears
@@ -4720,13 +4719,40 @@ match_as_selection(FindMatch m, uint64_t abs_row0) {
     };
 }
 
-// The matches on the rows from the pixel scroll row through the last screen row: none while
-// the alternate screen shows, since the engine searches the main buffer.
-static const FindMatch*
-visible_find_matches(Screen *self, MainBufferView view, int extra_leading_rows, int scrolled_by, size_t *count) {
+// Visits the matches on the rows from the pixel scroll row through the last screen row: none
+// while the alternate screen shows, since the engine searches the main buffer.
+static void
+visit_visible_find_matches(Screen *self, MainBufferView view, int extra_leading_rows, int scrolled_by, FindMatchVisitor visit, void *ctx) {
     const int64_t top = (int64_t)view.abs_row0 - scrolled_by;
     const uint64_t first = MAX(top - extra_leading_rows, 0), limit = view.shows_main_buffer ? (uint64_t)top + self->lines : first;
-    return kitty_rs_find_matches_in_lines(screen_find_engine(self), first, limit, count);
+    kitty_rs_find_each_match_in_lines(screen_find_engine(self), first, limit, visit, ctx);
+}
+
+static void
+count_find_match_run(void *count, const FindMatch *run UNUSED, size_t n) {
+    *(size_t*)count += n;
+}
+
+struct PauseFindMatches { struct PausedFindMatches *p; bool out_of_memory; };
+
+static void
+pause_find_match_run(void *ctx_, const FindMatch *run, size_t n) {
+    struct PauseFindMatches *ctx = ctx_;
+    struct PausedFindMatches *p = ctx->p;
+    if (ctx->out_of_memory) return;
+    if (p->capacity < p->count + n) {
+        const size_t capacity = MAX(p->count + n, 2 * p->capacity);
+        FindMatch *items = realloc(p->items, capacity * sizeof(FindMatch));
+        if (!items) {
+            ctx->out_of_memory = true;
+            p->count = 0;
+            return;
+        }
+        p->items = items;
+        p->capacity = capacity;
+    }
+    memcpy(p->items + p->count, run, n * sizeof(FindMatch));
+    p->count += n;
 }
 
 // A paused frame shows the rows as the pause found them, while the engine follows the live
@@ -4734,21 +4760,22 @@ visible_find_matches(Screen *self, MainBufferView view, int extra_leading_rows, 
 // selections.
 static void
 pause_find_matches(Screen *self) {
-    size_t count;
-    const FindMatch *m = visible_find_matches(self, self->paused_rendering.main_buffer_view, self->paused_rendering.pixel_scroll, self->paused_rendering.scrolled_by, &count);
-    struct PausedFindMatches *p = &self->paused_rendering.find_matches;
-    p->count = 0;
-    if (p->capacity < count) {
-        FindMatch *items = realloc(p->items, count * sizeof(FindMatch));
-        if (!items) {
-            log_error("Out of memory while pausing rendering, the paused frame shows no find matches");
-            return;
-        }
-        p->items = items;
-        p->capacity = count;
+    struct PauseFindMatches ctx = {.p = &self->paused_rendering.find_matches};
+    ctx.p->count = 0;
+    visit_visible_find_matches(self, self->paused_rendering.main_buffer_view, self->paused_rendering.pixel_scroll, self->paused_rendering.scrolled_by, pause_find_match_run, &ctx);
+    if (ctx.out_of_memory) log_error("Out of memory while pausing rendering, the paused frame shows no find matches");
+}
+
+struct PaintFindMatches { Screen *self; uint8_t *data; uint64_t abs_row0; int extra_leading_rows, scrolled_by; size_t painted; };
+
+static void
+paint_find_match_run(void *ctx_, const FindMatch *run, size_t n) {
+    struct PaintFindMatches *ctx = ctx_;
+    for (size_t i = 0; i < n; i++) {
+        Selection s = match_as_selection(run[i], ctx->abs_row0);
+        apply_selection(ctx->self, ctx->data, &s, FIND_MATCH_MASK, ctx->extra_leading_rows, ctx->scrolled_by);
     }
-    if (count) memcpy(p->items, m, count * sizeof(FindMatch));
-    p->count = count;
+    ctx->painted += n;
 }
 
 // [LAW:one-source-of-truth] the highlights are drawn from the engine's match list on every
@@ -4758,15 +4785,13 @@ static void
 apply_find_matches(Screen *self, uint8_t *data, int extra_leading_rows, int scrolled_by) {
     const bool paused = self->paused_rendering.expires_at;
     const MainBufferView view = paused ? self->paused_rendering.main_buffer_view : main_buffer_view(self);
-    size_t count = self->paused_rendering.find_matches.count;
-    const FindMatch *m = paused ? self->paused_rendering.find_matches.items : visible_find_matches(self, view, extra_leading_rows, scrolled_by, &count);
-    for (size_t i = 0; i < count; i++) {
-        Selection s = match_as_selection(m[i], view.abs_row0);
-        apply_selection(self, data, &s, FIND_MATCH_MASK, extra_leading_rows, scrolled_by);
-    }
+    struct PaintFindMatches ctx = {.self = self, .data = data, .abs_row0 = view.abs_row0, .extra_leading_rows = extra_leading_rows, .scrolled_by = scrolled_by};
+    const struct PausedFindMatches *p = &self->paused_rendering.find_matches;
+    if (paused) paint_find_match_run(&ctx, p->items, p->count);
+    else visit_visible_find_matches(self, view, extra_leading_rows, scrolled_by, paint_find_match_run, &ctx);
     self->find_last_rendered.generation = kitty_rs_find_generation(self->find_engine);
     self->find_last_rendered.view = view;
-    self->find_last_rendered.painted = count;
+    self->find_last_rendered.painted = ctx.painted;
 }
 #endif
 
@@ -6568,8 +6593,8 @@ screen_is_selection_dirty(Screen *self) {
 #ifdef __APPLE__
     // a moved view repaints only when it moves highlights: some were drawn or some are due
     const MainBufferView view = main_buffer_view(self);
-    size_t visible;
-    visible_find_matches(self, view, pixel_scroll_enabled(self), self->scrolled_by, &visible);
+    size_t visible = 0;
+    visit_visible_find_matches(self, view, pixel_scroll_enabled(self), self->scrolled_by, count_find_match_run, &visible);
     const bool view_moved = view.abs_row0 != self->find_last_rendered.view.abs_row0 || view.shows_main_buffer != self->find_last_rendered.view.shows_main_buffer;
     if (kitty_rs_find_generation(self->find_engine) != self->find_last_rendered.generation ||
         (view_moved && (visible || self->find_last_rendered.painted)))
@@ -7263,9 +7288,7 @@ find_logical_lines(Screen *self, PyObject *o UNUSED) {
 #ifdef __APPLE__
 static PyObject *
 find_count(Screen *self, PyObject *o UNUSED) {
-    size_t count;
-    kitty_rs_find_matches(screen_find_engine(self), &count);
-    return PyLong_FromSize_t(count);
+    return PyLong_FromSize_t(kitty_rs_find_status(screen_find_engine(self), find_buffer_bounds(self)).total);
 }
 
 static PyObject *
@@ -7546,18 +7569,22 @@ find_set_query(Screen *self, PyObject *args) {
     Py_RETURN_TRUE;
 }
 
+// a Python error raised by one run leaves list NULL and ends the collection
+static void
+collect_find_match_run(void *list, const FindMatch *run, size_t n) {
+    PyObject **ans = list;
+    for (size_t i = 0; *ans && i < n; i++) {
+        RAII_PyObject(t, find_match_as_tuple(run[i]));
+        if (!t || PyList_Append(*ans, t) != 0) Py_CLEAR(*ans);
+    }
+}
+
 static PyObject *
 find_matches(Screen *self, PyObject *o UNUSED) {
-    size_t count;
-    const FindMatch *m = kitty_rs_find_matches(screen_find_engine(self), &count);
-    RAII_PyObject(ans, PyTuple_New(count));
+    RAII_PyObject(ans, PyList_New(0));
     if (!ans) return NULL;
-    for (size_t i = 0; i < count; i++) {
-        PyObject *t = find_match_as_tuple(m[i]);
-        if (!t) return NULL;
-        PyTuple_SET_ITEM(ans, i, t);
-    }
-    return Py_NewRef(ans);
+    kitty_rs_find_each_match_in_lines(screen_find_engine(self), 0, UINT64_MAX, collect_find_match_run, &ans);
+    return ans ? PyList_AsTuple(ans) : NULL;
 }
 #endif
 

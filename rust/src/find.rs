@@ -1,6 +1,9 @@
 //! The find engine: matches a query against the logical lines kitty's cell walker
 //! (kitty/find.c) feeds it, keeping every match in absolute buffer coordinates.
 
+mod match_list;
+
+use match_list::MatchList;
 use regex::bytes::{Regex, RegexBuilder};
 use std::ops::Range;
 use std::sync::Arc;
@@ -312,16 +315,12 @@ pub struct FindEngine {
     /// None is the empty query: there is nothing to find, so every line yields no match.
     regex: Option<Arc<Regex>>,
     /// Sorted in buffer order, and every one in a searched range: a refeed is fed in order and
-    /// spliced in at its range, which starts a logical line, so no match crosses the cut. The
-    /// first `evicted` entries have left the history ring and are no longer matches.
-    matches: Vec<FindMatch>,
-    /// Evicted entries still at the front of `matches`, removed in one drain once they are
-    /// as many as the live ones, so eviction costs amortized O(evicted), not O(live).
-    evicted: usize,
+    /// spliced in at its range, which starts a logical line, so no match crosses the cut.
+    matches: MatchList,
     searched: Searched,
-    /// Counts the changes to `matches()`, so a renderer can tell that what it drew is stale.
+    /// Counts the changes to `matches`, so a renderer can tell that what it drew is stale.
     generation: u64,
-    /// The match the user is on: always one of `matches()`.
+    /// The match the user is on: always one of `matches`.
     current: Option<Current>,
 }
 
@@ -339,9 +338,8 @@ impl FindEngine {
         if key == self.query {
             return Ok(FindQueryChange::Unchanged);
         }
-        let cleared = self.matches().len();
+        let cleared = self.matches.len();
         self.matches.clear();
-        self.evicted = 0;
         self.searched = Searched::default();
         self.changed(cleared);
         // a query that fails to build leaves the empty query, never the previous one
@@ -404,15 +402,15 @@ impl FindEngine {
     // [LAW:single-enforcer] every splice of the list ends here: the matches starting in lines
     // go, the found ones arrive, and the generation moves only when they differ.
     fn replace(&mut self, lines: Range<u64>, found: Vec<FindMatch>) {
-        let all = self.matches();
-        let (cut, to) = (
-            all.partition_point(|m| m.abs_start_line < lines.start),
-            all.partition_point(|m| m.abs_start_line < lines.end),
-        );
-        let differs = all[cut..to] != found[..];
+        let cut = self
+            .matches
+            .partition_point(|m| m.abs_start_line < lines.start)
+            ..self
+                .matches
+                .partition_point(|m| m.abs_start_line < lines.end);
+        let differs = !self.matches.runs(cut.clone()).flatten().eq(&found);
         if differs {
-            self.matches
-                .splice(self.evicted + cut..self.evicted + to, found);
+            self.matches.replace(cut, found);
         }
         self.changed(usize::from(differs));
     }
@@ -421,14 +419,8 @@ impl FindEngine {
     /// True when the buffer's first line is searched, so a logical line the eviction cut holds
     /// matches the caller must re-feed.
     pub fn evict_before(&mut self, oldest: u64) -> bool {
-        let gone = self
-            .matches()
-            .partition_point(|m| m.abs_start_line < oldest);
-        self.evicted += gone;
-        if self.evicted >= self.matches.len() - self.evicted {
-            self.matches.drain(..self.evicted);
-            self.evicted = 0;
-        }
+        let gone = self.matches.partition_point(|m| m.abs_start_line < oldest);
+        self.matches.replace(0..gone, Vec::new());
         self.searched.evict_before(oldest);
         self.changed(gone);
         self.searched.contains(oldest)
@@ -440,7 +432,7 @@ impl FindEngine {
         self.generation += u64::from(entries > 0);
         self.current = self
             .current
-            .filter(|c| self.matches().binary_search(&c.m).is_ok());
+            .filter(|c| self.matches.position(&c.m).is_some());
     }
 
     /// Where the fill searches next: toward a waiting step's want while that line is unsearched,
@@ -477,28 +469,27 @@ impl FindEngine {
         self.regex.as_ref().map(|_| &self.searched)
     }
 
-    pub fn matches(&self) -> &[FindMatch] {
-        &self.matches[self.evicted..]
-    }
-
-    /// The matches covering any of the lines `first..limit`.
-    pub fn matches_in_lines(&self, first: u64, limit: u64) -> &[FindMatch] {
-        let all = self.matches();
+    /// The matches covering any of the lines `first..limit`, in buffer order, as the
+    /// contiguous runs they are stored in.
+    pub fn matches_in_lines(&self, first: u64, limit: u64) -> impl Iterator<Item = &[FindMatch]> {
         // matches never overlap, so their ends are in buffer order as well as their starts
-        let from = all.partition_point(|m| m.abs_end_line < first);
-        let to = all.partition_point(|m| m.abs_start_line < limit).max(from);
-        &all[from..to]
+        let from = self.matches.partition_point(|m| m.abs_end_line < first);
+        let to = self
+            .matches
+            .partition_point(|m| m.abs_start_line < limit)
+            .max(from);
+        self.matches.runs(from..to)
     }
 
     pub const fn generation(&self) -> u64 {
         self.generation
     }
 
-    /// Makes `m` the current match; false, changing nothing, when it is not one of `matches()`.
+    /// Makes `m` the current match; false, changing nothing, when it is not one of `matches`.
     /// A match names itself by its absolute coordinates, which eviction does not move. Setting
     /// the match that is already current keeps whether the step to it wrapped.
     pub fn set_current(&mut self, m: FindMatch) -> bool {
-        let found = self.matches().binary_search(&m).is_ok();
+        let found = self.matches.position(&m).is_some();
         let wrapped = self.current.is_some_and(|c| c.m == m && c.wrapped);
         self.current = found.then_some(Current { m, wrapped }).or(self.current);
         found
@@ -562,7 +553,7 @@ impl FindEngine {
     }
 
     fn step_target(&self, direction: Direction, origin: &FindOrigin) -> Option<Current> {
-        let all = self.matches();
+        let all = &self.matches;
         // the count of matches before the step's start, whichever way it goes
         let before = match (origin, direction) {
             (FindOrigin::After(c), Direction::Next) => all.partition_point(|m| m <= c),
@@ -586,15 +577,15 @@ impl FindEngine {
     }
 
     pub fn status(&self, b: FindBufferBounds) -> FindStatus {
-        let all = self.matches();
         let current = self.current.map_or(0, |c| {
-            all.binary_search(&c.m)
+            self.matches
+                .position(&c.m)
                 .expect("the current match is one of the matches")
                 + 1
         });
         FindStatus {
             current,
-            total: all.len(),
+            total: self.matches.len(),
             wrapped: self.current.is_some_and(|c| c.wrapped),
             unsearched: self.searchable().map_or(0, |s| s.unsearched(b)),
         }
@@ -604,6 +595,19 @@ impl FindEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl FindEngine {
+        fn matches(&self) -> Vec<FindMatch> {
+            self.in_lines(0, u64::MAX)
+        }
+
+        fn in_lines(&self, first: u64, limit: u64) -> Vec<FindMatch> {
+            self.matches_in_lines(first, limit)
+                .flatten()
+                .copied()
+                .collect()
+        }
+    }
 
     /// A logical line built the way the walker builds one: each char of each row covers
     /// `width(char)` cells, and every byte of the char maps to those cells.
@@ -623,7 +627,11 @@ mod tests {
                 x += width(c);
             }
         }
-        (text, cells, u32::try_from(rows.len()).expect("a test line's rows"))
+        (
+            text,
+            cells,
+            u32::try_from(rows.len()).expect("a test line's rows"),
+        )
     }
 
     fn narrow(_: char) -> u32 {
@@ -720,7 +728,7 @@ mod tests {
             let (text, cells, rows) = line(rows, narrow);
             append(&mut e, *abs, rows, &text, &cells);
         }
-        e.matches().to_vec()
+        e.matches()
     }
 
     fn m(abs_start_line: u64, start_x: u32, abs_end_line: u64, end_x: u32) -> FindMatch {
@@ -882,7 +890,7 @@ mod tests {
             let mut e = FindEngine::default();
             e.set_query("x", false).unwrap();
             e.add_searched(buf.walk(&e, onward(0), 0..buf.end()));
-            e.matches().to_vec()
+            e.matches()
         };
         for budget in [1, 2, 5, 13, 96, 200] {
             let mut e = FindEngine::default();
@@ -1091,7 +1099,7 @@ mod tests {
         append(&mut e, 0, rows, &text, &cells);
         let (text, cells, rows) = line(&["中ab"], |c| if c == '中' { 2 } else { 1 });
         append(&mut e, 2, rows, &text, &cells);
-        let all = e.matches().to_vec();
+        let all = e.matches();
         assert_eq!(
             all,
             [m(0, 0, 0, 1), m(0, 3, 1, 0), m(1, 2, 1, 3), m(2, 2, 2, 3)]
@@ -1294,25 +1302,21 @@ mod tests {
             let (text, cells, rows) = line(rows, narrow);
             append(&mut e, abs, rows, &text, &cells);
         }
-        let all = e.matches().to_vec();
+        let all = e.matches();
         assert_eq!(all, [m(0, 0, 0, 1), m(1, 3, 2, 0), m(4, 0, 4, 1)]);
         assert_eq!(
-            e.matches_in_lines(2, 4),
+            e.in_lines(2, 4),
             &all[1..2],
             "a match ending in the window is in it"
         );
         assert_eq!(
-            e.matches_in_lines(0, 2),
+            e.in_lines(0, 2),
             &all[..2],
             "a match starting in the window is in it"
         );
-        assert_eq!(e.matches_in_lines(3, 4), []);
-        assert_eq!(e.matches_in_lines(0, 9), &all[..]);
-        assert_eq!(
-            e.matches_in_lines(4, 4),
-            [],
-            "an empty window holds nothing"
-        );
+        assert_eq!(e.in_lines(3, 4), []);
+        assert_eq!(e.in_lines(0, 9), &all[..]);
+        assert_eq!(e.in_lines(4, 4), [], "an empty window holds nothing");
     }
 
     #[test]
