@@ -2288,6 +2288,15 @@ class TestScreen(BaseTest):
         self.ae(s.find_set_query('M', False), 1)
         s.cursor_position(1, 1), s.erase_in_line(2, False)
         self.ae(live_is_fresh(s, 'M'), ())
+        # and so does erase_last_command when the command's prompt starts on that bottom row
+        s = self.create_screen(cols=10, lines=10, scrollback=15)
+        draw_multicell(s, 'M', scale=2), s.draw('a\r\n')
+        mark_prompt(s), s.draw('$ p1\r\n')
+        lines_of(s, *(str(i) for i in range(9)))
+        mark_prompt(s), s.draw('$ ')
+        self.ae(s.find_set_query('M', False), 1)
+        self.assertTrue(s.erase_last_command())
+        self.ae(live_is_fresh(s, 'M'), ())
 
         # a text-cache GC renumbers the text of every cell, the record's copy included: an
         # overwrite that lands on the index the old text used is still a change
