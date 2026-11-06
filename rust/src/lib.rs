@@ -13,6 +13,7 @@ use find::{
 #[repr(C)]
 pub struct FindLogicalLine {
     abs_first_line: u64,
+    rows: u32,
     text: *const u8,
     text_len: usize,
     cells: *const FindCellSpan,
@@ -120,7 +121,7 @@ pub unsafe extern "C" fn kitty_rs_find_refeed_line(
             std::slice::from_raw_parts(l.cells, l.text_len),
         )
     };
-    refeed.feed_line(l.abs_first_line, text, cells);
+    refeed.feed_line(l.abs_first_line, l.rows, text, cells);
 }
 
 /// Replaces the matches starting in the refeed's lines, all of them searched, with its own,
@@ -373,6 +374,7 @@ mod tests {
         let cells = [span(0), span(1), span(1)];
         let line = FindLogicalLine {
             abs_first_line: 5,
+            rows: 1,
             text: text.as_ptr(),
             text_len: text.len(),
             cells: cells.as_ptr(),

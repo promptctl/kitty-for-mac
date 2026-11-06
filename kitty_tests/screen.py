@@ -2110,7 +2110,7 @@ class TestScreen(BaseTest):
         walks = []
         find_set_query = s.find_set_query
         w.screen = SimpleNamespace(**{n: getattr(s, n) for n in (
-            'find_status', 'find_status_for_bar', 'find_origin', 'find_step', 'find_set_want', 'user_selection_changes', 'selection_in_progress',
+            'find_status', 'find_status_for_bar', 'find_origin', 'find_step', 'find_set_want', 'user_selection_changes',
             'is_main_linebuf', 'pause_rendering')},
                                    find_set_query=lambda *a: walks.append(a) or find_set_query(*a))
         Window.find(w, 'nomatch')
@@ -2504,7 +2504,7 @@ class TestScreen(BaseTest):
 
         # the window pushes the status to the bar only while it is its OS window's active window
         pushed = []
-        w = self.find_window(s, ('push_find_bar', 'find_status_changed'))
+        w = self.find_window(s, ('push_find_bar', 'find_bar_status', 'find_status_changed'))
         w.find_query = 'x'
         tab_manager = SimpleNamespace(active_window=w)
         boss = SimpleNamespace(os_window_map={1: tab_manager})
@@ -2568,6 +2568,15 @@ class TestScreen(BaseTest):
         lines_of(s, 'xxxxxxx', 'xx', 'y')
         search_all(s)
         is_fresh(s, 'xx')
+
+        # a wrapped line whose last row was erased (a shell redrawing a shorter command line)
+        # still spans both rows: the chunks search each row once
+        for chunk_cells in (1, 5):
+            s = screen(chunk_cells)
+            s.draw('xxxxxxx'), s.carriage_return(), s.erase_in_line()
+            s.find_set_query('xx', False)
+            search_all(s)
+            is_fresh(s, 'xx')
 
         # a resize rewraps every line while the search is under way
         s = screen(1)
@@ -2677,16 +2686,30 @@ class TestScreen(BaseTest):
         wraps(s, w), frames(w)
         self.assertGreater(s.find_status()[3], 0)
 
-        # a drag in progress holds the landing until it ends
+        # a selection the user makes while a step waits stands: the step does not land over it,
+        # and a step pressed after it starts from it
         s = screen(1)
         w = window(s)
         Window.find(w, 'x')
-        s.start_selection(0, 0)
-        while s.find_advance():
+        s.start_selection(0, 0), s.update_selection(2, 0, False, False)
+        frames(w)
+        self.ae(s.text_for_selection(), ('x77',))
+        Window.find_step(w, False)
+        frames(w)
+        self.ae(current(s), (77, 0, 77, 0), 'the first match in the selection')
+
+        # a scroll animation holds the landing, and ending it early, as a key release does, lands it
+        from types import SimpleNamespace
+        s = screen(1)
+        w = self.find_window(s, ('find_status_changed', 'finish_scroll_animation'), push_find_bar=lambda: None)
+        Window.find(w, 'x')
+        w.scroll_animation = SimpleNamespace(timer=1, start_scrolled_by=s.scrolled_by, total=0)
+        with mock.patch.object(window_module, 'remove_timer', lambda timer_id: None):
+            while s.find_advance():
+                w.find_status_changed()
             w.find_status_changed()
-        self.ae(len(w.engine_find.waiting), 1)
-        s.update_selection(1, 0, False, True)
-        w.find_status_changed()
+            self.ae(len(w.engine_find.waiting), 1)
+            w.finish_scroll_animation()
         self.ae(len(w.engine_find.waiting), 0)
 
         # ending the search ends what waits
@@ -2724,6 +2747,17 @@ class TestScreen(BaseTest):
                 return w.find_query, current(s)
             self.ae(typed(True), ('x7', (78, 0, 78, 1)))
             self.ae(typed(False), typed(True))
+
+            # while a short query waits, the bar shows no count: the search running is the previous query's
+            from kitty.find_backends import FindCount
+            s = screen()
+            w = self.find_window(s, ('find_status_changed', 'find_typed', 'find_bar_status'), push_find_bar=lambda: None)
+            w.find_typed('x79')
+            self.ae(w.find_bar_status().total, 1)
+            w.find_typed('x7')
+            self.ae(w.find_bar_status().count, FindCount.pending)
+            timers[-1](w.pending_find_timer)
+            self.ae(w.find_bar_status().total, 10)
             s = screen()
             w = window(s)
             w.find_typed('x0')

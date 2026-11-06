@@ -16,9 +16,11 @@ typedef struct {
 
 // One logical line (physical lines joined through the wrapped-line flag) as UTF-8 text with
 // one FindCellSpan per byte, so a regex match on bytes [s, e) covers cells[s] .. cells[e - 1].
+// It is rows physical lines from abs_first_line, its rows past the last text included.
 // text and cells belong to the walker and are valid only for the duration of the sink call.
 typedef struct {
     uint64_t abs_first_line;
+    uint32_t rows;
     const char *text;
     size_t text_len;
     const FindCellSpan *cells;

@@ -20,6 +20,7 @@ import AppKit
     case exact = 0
     case partial = 1
     case unavailable = 2
+    case pending = 3
 }
 
 @MainActor
@@ -53,6 +54,7 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         bar.status.stringValue = switch (count, current, total) {
         // a search that could not be made is not a search that found nothing
         case (.unavailable, _, _): "Search unavailable"
+        case (.pending, _, _): ""
         case (_, _, 0): bar.field.stringValue.isEmpty ? "" : "0 of 0"
         case (.partial, _, _): "\(total)+ matches"
         case (_, 0, _): "\(total) matches"

@@ -517,7 +517,7 @@ class TmuxFindWindowTest(BaseTest):
         w.foreground = foreground
         w.engine_find = EngineFind(w)
         for name in (
-            'find_backend', 'find_holder', 'end_finds', 'find_backend_to_search', 'find_step', 'set_find_query', 'find', 'push_find_bar',
+            'find_backend', 'find_holder', 'end_finds', 'find_backend_to_search', 'find_step', 'set_find_query', 'find', 'push_find_bar', 'find_bar_status',
             'find_selection_text', 'find_clear', 'find_status_changed', 'use_selection_for_find', 'settle_find', 'cancel_pending_find',
         ):
             setattr(w, name, getattr(Window, name).__get__(w))

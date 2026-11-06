@@ -105,7 +105,7 @@ from .fast_data_types import (
     update_window_visibility,
     wakeup_main_loop,
 )
-from .find_backends import EngineFind, FindBackend
+from .find_backends import EngineFind, FindBackend, FindCount, FindStatus
 from .keys import keyboard_mode_name, mod_mask
 from .notifications import NotificationManager
 from .options.types import Options
@@ -2837,12 +2837,7 @@ class Window:
         elapsed = now - a.start
         progress = min(1.0, elapsed / a.duration) if a.duration > 0 else 1.0
         if progress >= 1.0:
-            # Ensure we land exactly on a line boundary with pixel_scroll_offset_y = 0
-            self.screen.scroll_to_absolute(max(0, a.start_scrolled_by - a.total))
-            remove_timer(a.timer)
-            a.timer = 0
-            # a find step that waited for the scroll to end lands now
-            self.engine_find.resolve()
+            self.finish_scroll_animation()
         else:
             # Use absolute positioning to avoid pixel rounding errors from incremental fractional scrolls
             self.screen.scroll_to_absolute(max(0.0, a.start_scrolled_by - a.total * progress))
@@ -2855,6 +2850,9 @@ class Window:
             a.timer = 0
             # Scroll to the exact integer target line, ensuring pixel_scroll_offset_y = 0
             self.screen.scroll_to_absolute(max(0, a.start_scrolled_by - a.total))
+            # [LAW:single-enforcer] every animation ends here, so a find step that waited for the
+            # scroll to end lands now
+            self.engine_find.resolve()
 
     def start_scroll_animation(self, lines: float) -> None:
         "Start a smooth scroll animation for the given number of lines (negative=up, positive=down)"
@@ -3095,6 +3093,7 @@ class Window:
         self.find_query = text
         if 1 <= len(text) <= 2:
             self.pending_find_timer = add_timer(lambda timer_id: self.settle_find(), 0.5, False)
+            self.push_find_bar()
         else:
             self.find(text)
 
@@ -3129,12 +3128,19 @@ class Window:
     # frame stops reporting a change this window has handled.
     # The holder of the search is read from the backends' own state, never from the foreground
     # process: this runs every frame while a search streams, and a bare window pays nothing for tmux.
+    def find_bar_status(self) -> FindStatus:
+        "Where the search for the bar's query stands"
+        # the engine's read records what the bar is told, whichever status it shows
+        engine = self.engine_find.status()
+        tmux = self.tmux_find_state
+        searched = tmux.status if tmux.reporting() and not self.engine_find.searching() else engine
+        # while typing pauses, the search running is the previous query's, whose count is not this one's
+        return FindStatus(0, 0, FindCount.pending) if self.pending_find_timer else searched
+
     def push_find_bar(self) -> None:
         if not is_macos:
             return
-        engine = self.engine_find.status()
-        tmux = self.tmux_find_state
-        status = tmux.status if tmux.reporting() and not self.engine_find.searching() else engine
+        status = self.find_bar_status()
         if (tm := get_boss().os_window_map.get(self.os_window_id)) and tm.active_window is self:
             cocoa_update_find_bar(self.os_window_id, self.find_query, status.current, status.total, int(status.count))
 

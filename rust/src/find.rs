@@ -79,8 +79,16 @@ pub struct FindRefeed {
 }
 
 impl FindRefeed {
-    /// Adds the matches in one logical line, whose byte i of `text` came from `cells[i]`.
-    pub fn feed_line(&mut self, abs_first_line: u64, text: &[u8], cells: &[FindCellSpan]) {
+    /// Adds the matches in one logical line of `rows` physical lines, whose byte i of `text`
+    /// came from `cells[i]`. Rows past its last text are still its rows: an erased row keeps the
+    /// wrap flag of the row above.
+    pub fn feed_line(
+        &mut self,
+        abs_first_line: u64,
+        rows: u32,
+        text: &[u8],
+        cells: &[FindCellSpan],
+    ) {
         assert_eq!(
             text.len(),
             cells.len(),
@@ -97,7 +105,11 @@ impl FindRefeed {
             abs_first_line >= self.next_line,
             "lines are fed in buffer order, from the range's start"
         );
-        self.next_line = abs_first_line + 1 + cells.last().map_or(0, |c| u64::from(c.row));
+        assert!(
+            rows > 0 && cells.last().is_none_or(|c| c.row < rows),
+            "a logical line's cells lie in its rows"
+        );
+        self.next_line = abs_first_line + u64::from(rows);
         // a non-empty literal never matches empty, so every match has a last byte
         let found = self.regex.iter().flat_map(|re| re.find_iter(text));
         self.matches.extend(found.map(|m| {
@@ -595,7 +607,7 @@ mod tests {
 
     /// A logical line built the way the walker builds one: each char of each row covers
     /// `width(char)` cells, and every byte of the char maps to those cells.
-    fn line(rows: &[&str], width: impl Fn(char) -> u32) -> (Vec<u8>, Vec<FindCellSpan>) {
+    fn line(rows: &[&str], width: impl Fn(char) -> u32) -> (Vec<u8>, Vec<FindCellSpan>, u32) {
         let (mut text, mut cells) = (Vec::new(), Vec::new());
         for (row, s) in (0u32..).zip(rows) {
             let mut x = 0;
@@ -611,7 +623,7 @@ mod tests {
                 x += width(c);
             }
         }
-        (text, cells)
+        (text, cells, u32::try_from(rows.len()).expect("a test line's rows"))
     }
 
     fn narrow(_: char) -> u32 {
@@ -651,11 +663,11 @@ mod tests {
         fn walk(&self, e: &FindEngine, range: FindRefeedRange, lines: Range<u64>) -> FindRefeed {
             let mut r = e.refeed(range);
             for abs in lines.start..lines.end.min(self.end()) {
-                let (text, cells) = line(
+                let (text, cells, rows) = line(
                     &[&self.0[usize::try_from(abs).expect("a test buffer line")]],
                     narrow,
                 );
-                r.feed_line(abs, &text, &cells);
+                r.feed_line(abs, rows, &text, &cells);
             }
             r
         }
@@ -695,9 +707,9 @@ mod tests {
     }
 
     /// One logical line, fed as a fill walks it: the line was unsearched.
-    fn append(e: &mut FindEngine, abs: u64, text: &[u8], cells: &[FindCellSpan]) {
+    fn append(e: &mut FindEngine, abs: u64, rows: u32, text: &[u8], cells: &[FindCellSpan]) {
         let mut r = e.refeed(onward(abs));
-        r.feed_line(abs, text, cells);
+        r.feed_line(abs, rows, text, cells);
         e.add_searched(r);
     }
 
@@ -705,8 +717,8 @@ mod tests {
         let mut e = FindEngine::default();
         e.set_query(query, case_insensitive).unwrap();
         for (abs, rows) in lines {
-            let (text, cells) = line(rows, narrow);
-            append(&mut e, *abs, &text, &cells);
+            let (text, cells, rows) = line(rows, narrow);
+            append(&mut e, *abs, rows, &text, &cells);
         }
         e.matches().to_vec()
     }
@@ -785,12 +797,12 @@ mod tests {
     fn wide_and_multibyte_chars_map_to_their_cells() {
         let mut e = FindEngine::default();
         e.set_query("é中z", false).unwrap();
-        let (text, cells) = line(&["a中é中z"], |c| if c == '中' { 2 } else { 1 });
-        append(&mut e, 0, &text, &cells);
+        let (text, cells, rows) = line(&["a中é中z"], |c| if c == '中' { 2 } else { 1 });
+        append(&mut e, 0, rows, &text, &cells);
         // a=0, 中=1..2, é=3, 中=4..5, z=6: the match ends on z, and starts on é after a wide char
         assert_eq!(e.matches(), [m(0, 3, 0, 6)]);
         e.set_query("中", false).unwrap();
-        append(&mut e, 0, &text, &cells);
+        append(&mut e, 0, rows, &text, &cells);
         // a match that is itself a wide char ends on that char's last cell
         assert_eq!(e.matches(), [m(0, 1, 0, 2), m(0, 4, 0, 5)]);
     }
@@ -799,8 +811,8 @@ mod tests {
     fn a_tab_covers_its_padding() {
         let mut e = FindEngine::default();
         e.set_query("\tb", false).unwrap();
-        let (text, cells) = line(&["a\tb"], |c| if c == '\t' { 7 } else { 1 });
-        append(&mut e, 0, &text, &cells);
+        let (text, cells, rows) = line(&["a\tb"], |c| if c == '\t' { 7 } else { 1 });
+        append(&mut e, 0, rows, &text, &cells);
         assert_eq!(e.matches(), [m(0, 1, 0, 8)]);
     }
 
@@ -1025,8 +1037,8 @@ mod tests {
     fn the_generation_moves_exactly_when_the_list_does() {
         let (mut e, _) = engine_with_one_match_per_line(4);
         let g = e.generation();
-        let (text, cells) = line(&["y"], narrow);
-        append(&mut e, 4, &text, &cells);
+        let (text, cells, rows) = line(&["y"], narrow);
+        append(&mut e, 4, rows, &text, &cells);
         e.evict_before(0);
         assert_eq!(
             e.generation(),
@@ -1075,10 +1087,10 @@ mod tests {
     fn engine_for_steps() -> (FindEngine, Vec<FindMatch>) {
         let mut e = FindEngine::default();
         e.set_query("ab", false).unwrap();
-        let (text, cells) = line(&["ab a", "b ab"], narrow);
-        append(&mut e, 0, &text, &cells);
-        let (text, cells) = line(&["中ab"], |c| if c == '中' { 2 } else { 1 });
-        append(&mut e, 2, &text, &cells);
+        let (text, cells, rows) = line(&["ab a", "b ab"], narrow);
+        append(&mut e, 0, rows, &text, &cells);
+        let (text, cells, rows) = line(&["中ab"], |c| if c == '中' { 2 } else { 1 });
+        append(&mut e, 2, rows, &text, &cells);
         let all = e.matches().to_vec();
         assert_eq!(
             all,
@@ -1279,8 +1291,8 @@ mod tests {
         e.set_query("xx", false).unwrap();
         // lines 0, 1-2 (one match wrapping), 4
         for (abs, rows) in [(0, &["xx"][..]), (1, &["   x", "x  "]), (4, &["xx"])] {
-            let (text, cells) = line(rows, narrow);
-            append(&mut e, abs, &text, &cells);
+            let (text, cells, rows) = line(rows, narrow);
+            append(&mut e, abs, rows, &text, &cells);
         }
         let all = e.matches().to_vec();
         assert_eq!(all, [m(0, 0, 0, 1), m(1, 3, 2, 0), m(4, 0, 4, 1)]);
@@ -1304,13 +1316,31 @@ mod tests {
     }
 
     #[test]
+    fn a_logical_line_walks_its_rows_past_its_last_text() {
+        // two rows, the second erased: the next line starts after both
+        let mut e = FindEngine::default();
+        e.set_query("x", false).unwrap();
+        let (text, cells, _) = line(&["x"], narrow);
+        append(&mut e, 0, 2, &text, &cells);
+        assert_eq!(e.status(bounds(0, 3)).unsearched, 1);
+        assert_eq!(
+            e.next_fill(bounds(0, 3), None),
+            Some(FindFill {
+                from: 2,
+                limit: 3,
+                forward: false
+            })
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "lines are fed in buffer order, from the range's start")]
     fn an_out_of_order_feed_panics() {
         let buf = Buffer::of(4, |_| true);
         let e = FindEngine::default();
         let mut r = buf.walk(&e, onward(3), 3..4);
-        let (text, cells) = line(&["x"], narrow);
-        r.feed_line(2, &text, &cells);
+        let (text, cells, rows) = line(&["x"], narrow);
+        r.feed_line(2, rows, &text, &cells);
     }
 
     #[test]
@@ -1318,7 +1348,7 @@ mod tests {
     fn a_line_past_the_refeed_range_panics() {
         let e = FindEngine::default();
         let mut r = e.refeed(FindRefeedRange { from: 2, limit: 3 });
-        let (text, cells) = line(&["x"], narrow);
-        r.feed_line(3, &text, &cells);
+        let (text, cells, rows) = line(&["x"], narrow);
+        r.feed_line(3, rows, &text, &cells);
     }
 }

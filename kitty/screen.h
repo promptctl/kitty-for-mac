@@ -194,7 +194,7 @@ typedef struct {
     } find_last_rendered;
     // the find state this window last told its find bar, written only by find_status_for_bar:
     // the status, and whether a step waiting on it could land now (main screen, no drag)
-    struct { size_t current, total; uint64_t unsearched; bool main_screen, selecting; } find_reported;
+    struct { size_t current, total; uint64_t unsearched; bool main_screen; } find_reported;
     // the most cells one search chunk walks; tests set it small to get many chunks
     uint64_t find_chunk_cells;
     // what the first of the window's waiting steps needs, so the frame's chunk searches there;
