@@ -5,14 +5,15 @@
 mod find;
 
 use find::{
-    Direction, FindCellSpan, FindEngine, FindMatch, FindPos, FindRefeed, FindRefeedRange,
-    FindStatus,
+    Direction, FindBufferBounds, FindCellSpan, FindEngine, FindFill, FindMatch, FindOrigin,
+    FindPos, FindQueryChange, FindRefeed, FindRefeedRange, FindStatus, FindWant, StepOutcome,
 };
 
 /// `kitty/find.h`'s `FindLogicalLine`: the walker's view of one logical line.
 #[repr(C)]
 pub struct FindLogicalLine {
     abs_first_line: u64,
+    rows: u32,
     text: *const u8,
     text_len: usize,
     cells: *const FindCellSpan,
@@ -32,8 +33,17 @@ pub unsafe extern "C" fn kitty_rs_find_engine_free(engine: *mut FindEngine) {
     drop(unsafe { Box::from_raw(engine) });
 }
 
-/// Returns false when the query cannot be compiled, leaving the empty query and the reason
-/// in `err`.
+/// What `kitty_rs_find_set_query` did, as `kitty/kitty_rs.h` declares it.
+#[repr(C)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum FindQueryResult {
+    Unchanged,
+    Changed,
+    Invalid,
+}
+
+/// Unchanged when the query and case are the ones already searched for, touching nothing.
+/// Invalid when the query cannot be compiled, leaving the empty query and the reason in `err`.
 ///
 /// # Safety
 /// `engine` is live; `utf8` points to `len` readable bytes (non-null even when `len` is 0);
@@ -50,7 +60,7 @@ pub unsafe extern "C" fn kitty_rs_find_set_query(
     case_insensitive: bool,
     err: *mut u8,
     err_size: usize,
-) -> bool {
+) -> FindQueryResult {
     // SAFETY: the caller's contract above.
     let (engine, bytes, err) = unsafe {
         (
@@ -61,10 +71,14 @@ pub unsafe extern "C" fn kitty_rs_find_set_query(
     };
     // [LAW:no-silent-failure] invalid UTF-8 is a caller bug; the panic aborts loudly.
     let query = std::str::from_utf8(bytes).expect("kitty_rs_find_set_query: query is not UTF-8");
-    engine
-        .set_query(query, case_insensitive)
-        .map_err(|e| write_c_string(&e.to_string(), err))
-        .is_ok()
+    match engine.set_query(query, case_insensitive) {
+        Ok(FindQueryChange::Unchanged) => FindQueryResult::Unchanged,
+        Ok(FindQueryChange::Changed) => FindQueryResult::Changed,
+        Err(e) => {
+            write_c_string(&e.to_string(), err);
+            FindQueryResult::Invalid
+        }
+    }
 }
 
 /// Writes `s` into `buf` as a NUL-terminated C string, cut at a char boundary to fit.
@@ -107,10 +121,11 @@ pub unsafe extern "C" fn kitty_rs_find_refeed_line(
             std::slice::from_raw_parts(l.cells, l.text_len),
         )
     };
-    refeed.feed_line(l.abs_first_line, text, cells);
+    refeed.feed_line(l.abs_first_line, l.rows, text, cells);
 }
 
-/// Replaces the matches starting in the refeed's lines with its own, and frees it.
+/// Replaces the matches starting in the refeed's lines, all of them searched, with its own,
+/// and frees it.
 ///
 /// # Safety
 /// `engine` is live; `refeed` came from `kitty_rs_find_refeed_new` and is not used again.
@@ -119,6 +134,37 @@ pub unsafe extern "C" fn kitty_rs_find_splice(engine: *mut FindEngine, refeed: *
     // SAFETY: the caller's contract above.
     let (engine, refeed) = unsafe { (&mut *engine, Box::from_raw(refeed)) };
     engine.splice(*refeed);
+}
+
+/// Adds the matches of the unsearched lines the refeed walked, marks them searched, and frees
+/// it.
+///
+/// # Safety
+/// `engine` is live; `refeed` came from `kitty_rs_find_refeed_new` and is not used again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_add_searched(
+    engine: *mut FindEngine,
+    refeed: *mut FindRefeed,
+) {
+    // SAFETY: the caller's contract above.
+    let (engine, refeed) = unsafe { (&mut *engine, Box::from_raw(refeed)) };
+    engine.add_searched(*refeed);
+}
+
+/// Makes every line from `from` on unsearched, then adds the onward refeed's walked lines as
+/// searched, and frees it.
+///
+/// # Safety
+/// `engine` is live; `refeed` came from `kitty_rs_find_refeed_new` and is not used again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_refresh(
+    engine: *mut FindEngine,
+    from: u64,
+    refeed: *mut FindRefeed,
+) {
+    // SAFETY: the caller's contract above.
+    let (engine, refeed) = unsafe { (&mut *engine, Box::from_raw(refeed)) };
+    engine.refresh(from, *refeed);
 }
 
 /// Frees a refeed without splicing it: the engine keeps the matches it had.
@@ -134,9 +180,9 @@ pub unsafe extern "C" fn kitty_rs_find_refeed_free(refeed: *mut FindRefeed) {
 /// # Safety
 /// `engine` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kitty_rs_find_evict_before(engine: *mut FindEngine, abs_line: u64) {
+pub unsafe extern "C" fn kitty_rs_find_evict_before(engine: *mut FindEngine, oldest: u64) -> bool {
     // SAFETY: the caller's contract above.
-    unsafe { &mut *engine }.evict_before(abs_line);
+    unsafe { &mut *engine }.evict_before(oldest)
 }
 
 /// The matches in buffer order, `*count` of them, valid until the engine next changes.
@@ -192,30 +238,94 @@ pub unsafe extern "C" fn kitty_rs_find_set_current(engine: *mut FindEngine, m: F
     unsafe { &mut *engine }.set_current(m)
 }
 
-/// Steps to the next match, or the previous when `backwards`, writing it to `out`; false,
-/// writing nothing, when there are no matches.
+/// `kitty/kitty_rs.h`'s `FindOrigin`.
 ///
-/// A bool crosses the ABI rather than `Direction`: a C value outside a Rust enum's variants
-/// is undefined behaviour.
+/// After `after_match` when `after` is set, else within `start..end`. A bool tag crosses the
+/// ABI rather than a Rust enum: a C value outside a Rust enum's variants is undefined behaviour.
+#[repr(C)]
+pub struct FindOriginAbi {
+    after: bool,
+    after_match: FindMatch,
+    start: FindPos,
+    end: FindPos,
+}
+
+/// What `kitty_rs_find_step` found, as `kitty/kitty_rs.h` declares it.
+#[repr(C)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum FindStepResult {
+    Landed,
+    NoMatch,
+    Waiting,
+}
+
+/// Steps from `origin`, the next match or the previous when `backwards`. Landed writes the
+/// match to `landed`; Waiting writes what the answer still needs to `want`.
 ///
 /// # Safety
-/// `engine` is live and `out` is writable.
+/// `engine` is live; `landed` and `want` are writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kitty_rs_find_step(
     engine: *mut FindEngine,
     backwards: bool,
-    from_start: FindPos,
-    from_end: FindPos,
-    out: *mut FindMatch,
-) -> bool {
+    origin: FindOriginAbi,
+    bounds: FindBufferBounds,
+    landed: *mut FindMatch,
+    want: *mut FindWant,
+) -> FindStepResult {
     let direction = if backwards {
         Direction::Previous
     } else {
         Direction::Next
     };
+    let origin = if origin.after {
+        FindOrigin::After(origin.after_match)
+    } else {
+        FindOrigin::Within(origin.start..origin.end)
+    };
     // SAFETY: the caller's contract above.
-    unsafe { &mut *engine }
-        .step(direction, from_start..from_end)
+    match unsafe { &mut *engine }.step(direction, &origin, bounds) {
+        StepOutcome::Landed(m) => {
+            unsafe { *landed = m };
+            FindStepResult::Landed
+        }
+        StepOutcome::NoMatch => FindStepResult::NoMatch,
+        StepOutcome::Waiting(w) => {
+            unsafe { *want = w };
+            FindStepResult::Waiting
+        }
+    }
+}
+
+/// Where the fill searches next, toward `want` when it is not NULL; false once nothing is left
+/// to search.
+///
+/// # Safety
+/// `engine` is live; `want` is NULL or readable; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_next_fill(
+    engine: *const FindEngine,
+    bounds: FindBufferBounds,
+    want: *const FindWant,
+    out: *mut FindFill,
+) -> bool {
+    // SAFETY: the caller's contract above.
+    let want = unsafe { want.as_ref() }.copied();
+    unsafe { &*engine }
+        .next_fill(bounds, want)
+        .map(|f| unsafe { *out = f })
+        .is_some()
+}
+
+/// Writes the current match to `out`; false, writing nothing, when there is none.
+///
+/// # Safety
+/// `engine` is live and `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_current(engine: *const FindEngine, out: *mut FindMatch) -> bool {
+    // SAFETY: the caller's contract above.
+    unsafe { &*engine }
+        .current()
         .map(|m| unsafe { *out = m })
         .is_some()
 }
@@ -231,20 +341,31 @@ pub unsafe extern "C" fn kitty_rs_find_end_current(engine: *mut FindEngine) {
 /// # Safety
 /// `engine` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kitty_rs_find_status(engine: *const FindEngine) -> FindStatus {
+pub unsafe extern "C" fn kitty_rs_find_status(
+    engine: *const FindEngine,
+    bounds: FindBufferBounds,
+) -> FindStatus {
     // SAFETY: the caller's contract above.
-    unsafe { &*engine }.status()
+    unsafe { &*engine }.status(bounds)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_search_crosses_the_abi() {
+    const FOUND: FindMatch = FindMatch {
+        abs_start_line: 5,
+        start_x: 1,
+        abs_end_line: 5,
+        end_x: 1,
+    };
+    const BOUNDS: FindBufferBounds = FindBufferBounds { oldest: 5, end: 6 };
+
+    /// An engine that has searched its one-line buffer, "aÉ" on line 5, for "é" across the
+    /// ABI, as kitty/screen.c does: set the query, ask for the fill, walk it, add it.
+    fn searched_engine() -> *mut FindEngine {
         let engine = kitty_rs_find_engine_new();
-        let query = "é";
-        let text = "aÉ";
+        let (query, text) = ("é", "aÉ");
         let span = |x| FindCellSpan {
             row: 0,
             x,
@@ -253,52 +374,13 @@ mod tests {
         let cells = [span(0), span(1), span(1)];
         let line = FindLogicalLine {
             abs_first_line: 5,
+            rows: 1,
             text: text.as_ptr(),
             text_len: text.len(),
             cells: cells.as_ptr(),
         };
-        let mut count = 0;
-        let found = unsafe {
-            let mut err = [0u8; 8];
-            assert!(kitty_rs_find_set_query(
-                engine,
-                query.as_ptr(),
-                query.len(),
-                true,
-                err.as_mut_ptr(),
-                err.len()
-            ));
-            let refeed = kitty_rs_find_refeed_new(
-                engine,
-                FindRefeedRange {
-                    from: 5,
-                    limit: u64::MAX,
-                },
-            );
-            kitty_rs_find_refeed_line(refeed, &raw const line);
-            kitty_rs_find_splice(engine, refeed);
-            std::slice::from_raw_parts(kitty_rs_find_matches(engine, &raw mut count), count)
-                .to_vec()
-        };
-        assert_eq!(
-            found,
-            [FindMatch {
-                abs_start_line: 5,
-                start_x: 1,
-                abs_end_line: 5,
-                end_x: 1
-            }]
-        );
-        unsafe { kitty_rs_find_engine_free(engine) };
-    }
-
-    #[test]
-    fn a_query_that_cannot_compile_reports_why() {
-        let engine = kitty_rs_find_engine_new();
-        // past the regex crate's default compiled-size limit
-        let query = "é".repeat(1 << 17);
-        let mut err = [0xffu8; 256];
-        let ok = unsafe {
+        let mut err = [0u8; 8];
+        let set = |err: &mut [u8]| unsafe {
             kitty_rs_find_set_query(
                 engine,
                 query.as_ptr(),
@@ -308,7 +390,113 @@ mod tests {
                 err.len(),
             )
         };
-        assert!(!ok);
+        assert_eq!(set(&mut err), FindQueryResult::Changed);
+        assert_eq!(set(&mut err), FindQueryResult::Unchanged);
+        let mut fill = FindFill {
+            from: 0,
+            limit: 0,
+            forward: true,
+        };
+        unsafe {
+            assert!(kitty_rs_find_next_fill(
+                engine,
+                BOUNDS,
+                std::ptr::null(),
+                &raw mut fill
+            ));
+            assert_eq!(
+                fill,
+                FindFill {
+                    from: 5,
+                    limit: 6,
+                    forward: false
+                }
+            );
+            let refeed = kitty_rs_find_refeed_new(
+                engine,
+                FindRefeedRange {
+                    from: fill.from,
+                    limit: fill.limit,
+                },
+            );
+            kitty_rs_find_refeed_line(refeed, &raw const line);
+            kitty_rs_find_add_searched(engine, refeed);
+            assert!(!kitty_rs_find_next_fill(
+                engine,
+                BOUNDS,
+                std::ptr::null(),
+                &raw mut fill
+            ));
+        }
+        engine
+    }
+
+    #[test]
+    fn a_search_crosses_the_abi() {
+        let engine = searched_engine();
+        let mut count = 0;
+        let matches = unsafe {
+            std::slice::from_raw_parts(kitty_rs_find_matches(engine, &raw mut count), count)
+                .to_vec()
+        };
+        assert_eq!(matches, [FOUND]);
+        unsafe { kitty_rs_find_engine_free(engine) };
+    }
+
+    #[test]
+    fn a_step_crosses_the_abi() {
+        let engine = searched_engine();
+        let origin = FindOriginAbi {
+            after: false,
+            after_match: FOUND,
+            start: FindPos { line: 5, x: 0 },
+            end: FindPos { line: 6, x: 0 },
+        };
+        let mut landed = FindMatch {
+            abs_start_line: 0,
+            start_x: 0,
+            abs_end_line: 0,
+            end_x: 0,
+        };
+        let mut want = FindWant {
+            line: 0,
+            forward: false,
+        };
+        unsafe {
+            assert_eq!(
+                kitty_rs_find_step(
+                    engine,
+                    false,
+                    origin,
+                    BOUNDS,
+                    &raw mut landed,
+                    &raw mut want
+                ),
+                FindStepResult::Landed
+            );
+            assert_eq!(landed, FOUND);
+            assert_eq!(kitty_rs_find_status(engine, BOUNDS).current, 1);
+            kitty_rs_find_engine_free(engine);
+        }
+    }
+
+    #[test]
+    fn a_query_that_cannot_compile_reports_why() {
+        let engine = kitty_rs_find_engine_new();
+        // past the regex crate's default compiled-size limit
+        let query = "é".repeat(1 << 17);
+        let mut err = [0xffu8; 256];
+        let result = unsafe {
+            kitty_rs_find_set_query(
+                engine,
+                query.as_ptr(),
+                query.len(),
+                true,
+                err.as_mut_ptr(),
+                err.len(),
+            )
+        };
+        assert_eq!(result, FindQueryResult::Invalid);
         let reason = std::ffi::CStr::from_bytes_until_nul(&err)
             .unwrap()
             .to_str()

@@ -133,6 +133,10 @@ new_screen_object(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
 #ifdef __APPLE__
         // first, so every failure path below reaches dealloc with an engine to free
         self->find_engine = kitty_rs_find_engine_new();
+        // about 4 ms of walking at the ~2.5 ns per cell measured on 1M history lines
+        self->find_chunk_cells = 1500000;
+        // a new window's bar was told of no search on the main screen, which is what it shows
+        self->find_reported.main_screen = true;
 #endif
         if ((ret = pthread_mutex_init(&self->write_buf_lock, NULL)) != 0) {
             Py_CLEAR(self);
@@ -4526,24 +4530,85 @@ screen_is_cell_selected(Screen *self, index_type x, index_type y) {
 #define FIND_MATCH_MASK 32
 
 #ifdef __APPLE__
+typedef struct {
+    FindRefeed *refeed;
+    // the walk stops after the logical line that reaches this line
+    uint64_t stop_at;
+} BudgetedFeed;
+
 static bool
-feed_find_refeed(void *refeed, const FindLogicalLine *l) {
-    kitty_rs_find_refeed_line(refeed, l);
-    return true;
+feed_find_refeed(void *ctx, const FindLogicalLine *l) {
+    BudgetedFeed *f = ctx;
+    kitty_rs_find_refeed_line(f->refeed, l);
+    return l->abs_first_line + l->rows < f->stop_at;
 }
 
-// Searches lines afresh and splices the result in; false when out of memory, leaving the
-// engine as it was.
+// [LAW:single-enforcer] the one walker into a refeed. Walks lines, which start a logical line and
+// end one or run onward, into a new refeed, stopping after the logical line that reaches stop_at
+// (UINT64_MAX walks them all); NULL when out of memory.
+static FindRefeed*
+walk_find_refeed(Screen *self, FindRefeedRange lines, uint64_t stop_at) {
+    BudgetedFeed feed = {.refeed = kitty_rs_find_refeed_new(self->find_engine, lines), .stop_at = stop_at};
+    if (find_walk_main_buffer(self, lines, feed_find_refeed, &feed) != FIND_WALK_OUT_OF_MEMORY) return feed.refeed;
+    kitty_rs_find_refeed_free(feed.refeed);
+    return NULL;
+}
+
+// Searches searched lines afresh and splices the result in; false when out of memory, leaving
+// the engine as it was.
 static bool
 refeed_find_engine(Screen *self, FindRefeedRange lines) {
-    FindRefeed *refeed = kitty_rs_find_refeed_new(self->find_engine, lines);
-    // the sink never stops the walk, so running out of memory is its only failure
-    if (find_walk_main_buffer(self, lines, feed_find_refeed, refeed) == FIND_WALK_OUT_OF_MEMORY) {
-        kitty_rs_find_refeed_free(refeed);
-        return false;
+    FindRefeed *refeed = walk_find_refeed(self, lines, UINT64_MAX);
+    if (refeed) kitty_rs_find_splice(self->find_engine, refeed);
+    return refeed;
+}
+
+// The most lines one chunk of search walks: the screen's cell budget at its width, and always at
+// least one, so every chunk moves the search on.
+static uint64_t
+find_chunk_lines(const Screen *self) {
+    return MAX(1u, self->find_chunk_cells / MAX(1u, self->columns));
+}
+
+// [LAW:single-enforcer] the one chooser of unsearched lines to walk. One chunk of at most the budget, of
+// whole logical lines, where the engine says: toward want when it is not NULL, else back from the
+// buffer's end. The engine is the caller's, already synced; nothing here reads it through the
+// sync, so nothing below the sync calls back into it. False when out of memory, the engine as it
+// was.
+static bool
+search_find_chunk(Screen *self, FindEngine *synced, const FindWant *want) {
+    FindFill fill;
+    if (!kitty_rs_find_next_fill(synced, find_buffer_bounds(self), want, &fill)) return true;
+    const uint64_t budget = find_chunk_lines(self);
+    FindRefeedRange lines;
+    uint64_t stop_at = UINT64_MAX;
+    if (fill.forward) {
+        // the wanted line may sit inside a logical line, which starts in the same unsearched stretch
+        lines = (FindRefeedRange){.from = find_onward_range(self, fill.from).from, .limit = fill.limit};
+        stop_at = lines.from + budget;
+    } else {
+        // the walk feeds only whole logical lines, so it runs to the end of the one fill.limit ends in
+        const uint64_t limit = find_logical_line_range(self, fill.limit - 1).limit;
+        lines = (FindRefeedRange){.from = find_onward_range(self, limit - MIN(budget, limit - fill.from)).from, .limit = limit};
     }
-    kitty_rs_find_splice(self->find_engine, refeed);
-    return true;
+    FindRefeed *refeed = walk_find_refeed(self, lines, stop_at);
+    if (refeed) kitty_rs_find_add_searched(synced, refeed);
+    return refeed;
+}
+
+// A change at line changed makes everything from its logical line on unsearched, and one chunk
+// back from the buffer's end searches it again in the same call, so output streaming onto the
+// screen leaves its matches as they were, and moves no generation when they are; a change
+// further up than one chunk (a resize) is left to the chunks that follow. False when out of
+// memory.
+static bool
+refresh_find_engine(Screen *self, uint64_t changed) {
+    const uint64_t from = find_onward_range(self, changed).from, end = find_buffer_bounds(self).end;
+    const uint64_t budget = find_chunk_lines(self);
+    const uint64_t chunk_from = find_onward_range(self, MAX(from, end - MIN(budget, end))).from;
+    FindRefeed *refeed = walk_find_refeed(self, (FindRefeedRange){.from = chunk_from, .limit = UINT64_MAX}, UINT64_MAX);
+    if (refeed) kitty_rs_find_refresh(self->find_engine, from, refeed);
+    return refeed;
 }
 
 // Records the buffer the engine now holds the matches of, and that the ring's rewrites so far
@@ -4572,26 +4637,34 @@ release_find_selection(Screen *self) {
     if (self->selections.count && self->selections.items->is_find_match) clear_selection(&self->selections);
 }
 
-// Brings the matches up to date with the main buffer: those whose lines left the ring go,
-// and the lines whose text may have changed since the last read are searched again.
+// [LAW:no-silent-failure] a part-searched list is not an answer: out of memory clears the
+// search, and says so
 static void
-sync_find_engine(Screen *self) {
-    kitty_rs_find_evict_before(self->find_engine, self->historybuf->abs_oldest_line);
-    const FindFedRecord *r = self->find_record;
-    // the empty query has no matches to keep up to date
-    if (!r) return;
-    const uint64_t changed = find_changed_from(self, r);
-    // eviction or a clear that cut a wrapped line leaves its rest a logical line of its own,
-    // unchanged in its cells but able to hold matches the cut line did not
-    const bool oldest_moved = r->abs_oldest_line != self->historybuf->abs_oldest_line;
-    if (!oldest_moved && changed == UINT64_MAX) return;
-    const bool fed = (!oldest_moved || refeed_find_engine(self, find_first_logical_line_range(self))) &&
-        (changed == UINT64_MAX || refeed_find_engine(self, find_onward_range(self, changed)));
-    if (fed && record_fed_buffer(self)) return;
-    // [LAW:no-silent-failure] a part-fed list is not an answer
-    log_error("Out of memory while keeping find matches up to date, the search was cleared");
+clear_find_out_of_memory(Screen *self) {
+    log_error("Out of memory while searching, the search was cleared");
     release_find_selection(self);
     screen_find_clear(self);
+}
+
+// Brings the matches up to date with the main buffer: those whose lines left the ring go, a
+// logical line the eviction cut is searched again, and so are the lines whose text may have
+// changed since the last read. The empty query has no record and nothing to keep up to date.
+static void
+sync_find_engine(Screen *self) {
+    const FindFedRecord *r = self->find_record;
+    if (!r) return;
+    const uint64_t oldest = self->historybuf->abs_oldest_line, changed = find_changed_from(self, r);
+    const bool moved = r->abs_oldest_line != oldest;
+    if (!moved && changed == UINT64_MAX) return;
+    // eviction or a clear that cut a wrapped line leaves its rest a logical line of its own,
+    // unchanged in its cells but able to hold matches the cut line did not; it needs searching
+    // again only when the engine searched it, and a change inside it is the refresh's to search
+    const FindRefeedRange cut = find_logical_line_range(self, oldest);
+    const bool refeed_cut_line = moved && kitty_rs_find_evict_before(self->find_engine, oldest) && changed >= cut.limit;
+    const bool fed = (!refeed_cut_line || refeed_find_engine(self, cut)) &&
+        (changed == UINT64_MAX || refresh_find_engine(self, changed));
+    if (fed && record_fed_buffer(self)) return;
+    clear_find_out_of_memory(self);
 }
 
 // The cells the selection covers in buffer order, from its first through just past its last
@@ -6156,6 +6229,9 @@ update_selection(Screen *self, PyObject *args) {
 static PyObject *
 clear_selection_(Screen *s, PyObject *args UNUSED) {
     clear_selection(&s->selections);
+#ifdef __APPLE__
+    s->user_selection_changes++;
+#endif
     Py_RETURN_NONE;
 }
 
@@ -6516,6 +6592,9 @@ screen_is_selection_dirty(Screen *self) {
 void
 screen_start_selection(Screen *self, index_type x, index_type y, bool in_left_half_of_cell, bool rectangle_select, SelectionExtendMode extend_mode) {
     screen_pause_rendering(self, false, 0);
+#ifdef __APPLE__
+    self->user_selection_changes++;
+#endif
 #define A(attr, val) self->selections.items->attr = val;
     ensure_space_for(&self->selections, items, Selection, self->selections.count + 1, capacity, 1, false);
     memset(self->selections.items, 0, sizeof(Selection));
@@ -6995,6 +7074,9 @@ screen_update_selection(Screen *self, index_type x, index_type y, bool in_left_h
     Selection *s = self->selections.items;
     // extending a selection find made makes it the user's
     s->is_find_match = false;
+#ifdef __APPLE__
+    self->user_selection_changes++;
+#endif
     int delta = clamp_selection_input_to_multicell(self, s, x, y, in_left_half_of_cell);
     index_type orig = self->scrolled_by;
     if (delta) {
@@ -7255,67 +7337,169 @@ reveal_find_match(Screen *self, FindMatch m, MainBufferView view, index_type top
     screen_history_scroll_to_absolute(self, (double)((int64_t)view.abs_row0 - new_top));
 }
 
+static PyObject*
+find_origin_as_tuple(FindOrigin o) {
+    return Py_BuildValue("ON(KI)(KI)", o.after ? Py_True : Py_False, find_match_as_tuple(o.after_match),
+        (unsigned long long)o.start.line, o.start.x, (unsigned long long)o.end.line, o.end.x);
+}
+
+static bool
+find_origin_from_tuple(PyObject *t, FindOrigin *o) {
+    int after;
+    unsigned long long ms, me, s, e;
+    if (!PyArg_ParseTuple(t, "p(KIKI)(KI)(KI)", &after, &ms, &o->after_match.start_x, &me, &o->after_match.end_x, &s, &o->start.x, &e, &o->end.x)) return false;
+    o->after = after;
+    o->after_match.abs_start_line = ms; o->after_match.abs_end_line = me;
+    o->start.line = s; o->end.line = e;
+    return true;
+}
+
+// [LAW:one-source-of-truth] where a step pressed now starts: after the current match, which is
+// the match find's selection shows, else within where the user is looking. The window keeps it
+// for a step that has to wait, so the step starts from where the user was when they pressed it.
+static PyObject *
+find_origin(Screen *self, PyObject *args) {
+    index_type top_inset = 0;
+    if (!PyArg_ParseTuple(args, "|I", &top_inset)) return NULL;
+    MainBufferView view;
+    if (!main_buffer_view_for_selecting(self, &view)) return NULL;
+    FindOrigin o = {0};
+    o.after = kitty_rs_find_current(screen_find_engine(self), &o.after_match);
+    find_step_origin(self, view, MIN(top_inset, self->lines - 1), &o.start, &o.end);
+    return find_origin_as_tuple(o);
+}
+
+// One step from origin, as find_origin gave it: ("landed", match), which is revealed below the
+// top_inset rows and selected; ("none",) when the whole buffer is searched and holds no match;
+// ("waiting", (line, forward)) when unsearched lines could still hold the answer, naming the
+// first of them, with nothing changed.
 static PyObject *
 find_step(Screen *self, PyObject *args) {
     int backwards;
+    PyObject *origin_tuple;
     index_type top_inset = 0;
-    if (!PyArg_ParseTuple(args, "p|I", &backwards, &top_inset)) return NULL;
+    if (!PyArg_ParseTuple(args, "pO!|I", &backwards, &PyTuple_Type, &origin_tuple, &top_inset)) return NULL;
+    FindOrigin origin;
+    if (!find_origin_from_tuple(origin_tuple, &origin)) return NULL;
     // at least one row stays to show a match on
     top_inset = MIN(top_inset, self->lines - 1);
     MainBufferView view;
     if (!main_buffer_view_for_selecting(self, &view)) return NULL;
-    FindEngine *engine = screen_find_engine(self);
-    FindPos start, end;
-    find_step_origin(self, view, top_inset, &start, &end);
     FindMatch m;
-    if (!kitty_rs_find_step(engine, backwards, start, end, &m)) Py_RETURN_NONE;
-    reveal_find_match(self, m, view, top_inset);
-    select_find_match(self, m, view);
-    return find_match_as_tuple(m);
+    FindWant want;
+    switch (kitty_rs_find_step(screen_find_engine(self), backwards, origin, find_buffer_bounds(self), &m, &want)) {
+        case FIND_STEP_LANDED:
+            reveal_find_match(self, m, view, top_inset);
+            select_find_match(self, m, view);
+            return Py_BuildValue("(sN)", "landed", find_match_as_tuple(m));
+        case FIND_STEP_NO_MATCH: return Py_BuildValue("(s)", "none");
+        case FIND_STEP_WAITING: return Py_BuildValue("(s(KO))", "waiting", (unsigned long long)want.line, want.forward ? Py_True : Py_False);
+    }
+    return NULL;
 }
 
-// The user points at the selection, so it is theirs, not find's: a new query leaves it in
-// place, and the next step starts from it rather than past it.
+// The want of the first step the window has waiting, or None: the frame's chunk searches toward
+// it, so that step lands as soon as the search can answer it.
 static PyObject *
-find_disown_selection(Screen *self, PyObject *o UNUSED) {
-    if (self->selections.count) self->selections.items->is_find_match = false;
+find_set_want(Screen *self, PyObject *want) {
+    if (want == Py_None) {
+        self->find_want.wanted = false;
+        Py_RETURN_NONE;
+    }
+    unsigned long long line; int forward;
+    if (!PyArg_ParseTuple(want, "Kp", &line, &forward)) return NULL;
+    self->find_want.wanted = true;
+    self->find_want.want.line = line;
+    self->find_want.want.forward = forward;
     Py_RETURN_NONE;
+}
+
+// The most cells one chunk of search walks.
+static PyObject *
+find_set_chunk_cells(Screen *self, PyObject *cells) {
+    const unsigned long long n = PyLong_AsUnsignedLongLong(cells);
+    if (PyErr_Occurred()) return NULL;
+    self->find_chunk_cells = n;
+    Py_RETURN_NONE;
+}
+
+// The frame's chunk: one chunk of search for a screen that is not paused, toward the window's
+// want. True while lines are left unsearched. Out of memory clears the search and says so.
+bool
+screen_find_advance(Screen *self) {
+    FindEngine *engine = screen_find_engine(self);
+    const FindWant want = {.line = self->find_want.want.line, .forward = self->find_want.want.forward};
+    if (!search_find_chunk(self, engine, self->find_want.wanted ? &want : NULL)) clear_find_out_of_memory(self);
+    return kitty_rs_find_status(engine, find_buffer_bounds(self)).unsearched;
+}
+
+// Whether a screen has lines left to search, read without syncing: a paused screen's buffer is
+// the program's update half drawn.
+bool
+screen_find_searching(const Screen *self) {
+    return kitty_rs_find_status(self->find_engine, find_buffer_bounds(self)).unsearched;
+}
+
+static PyObject *
+find_advance(Screen *self, PyObject *o UNUSED) {
+    return Py_NewRef(screen_find_advance(self) ? Py_True : Py_False);
 }
 
 static PyObject *
 find_status_tuple(FindStatus st) {
-    return Py_BuildValue("nnO", (Py_ssize_t)st.current, (Py_ssize_t)st.total, st.wrapped ? Py_True : Py_False);
+    return Py_BuildValue("nnOK", (Py_ssize_t)st.current, (Py_ssize_t)st.total, st.wrapped ? Py_True : Py_False, (unsigned long long)st.unsearched);
 }
 
 static PyObject *
 find_status(Screen *self, PyObject *o UNUSED) {
-    return find_status_tuple(kitty_rs_find_status(screen_find_engine(self)));
+    return find_status_tuple(kitty_rs_find_status(screen_find_engine(self), find_buffer_bounds(self)));
+}
+
+// The count of the user's own changes to the selection, which a waiting find step compares to
+// tell whether the user acted between two presses.
+static PyObject *
+user_selection_changes(Screen *self, PyObject *o UNUSED) {
+    return PyLong_FromUnsignedLongLong(self->user_selection_changes);
+}
+
+// A drag the user is making, which a waiting find step does not land over: the landing would
+// replace the selection under the pointer
+static PyObject *
+selection_in_progress(Screen *self, PyObject *o UNUSED) {
+    return Py_NewRef(self->selections.in_progress ? Py_True : Py_False);
 }
 
 // [LAW:one-source-of-truth] find_reported has this one writer, the read the window tells the
-// bar from, so it holds what the window last told its bar. The bar shows it while the window
+// bar from, so it holds what the window last told its bar, with what a waiting step needs to
+// land (the main screen showing, no drag in progress). The bar shows it while the window
 // is active, and a window that becomes active tells the bar again. Reads that tell no bar, such
 // as follow_find_bar's, use find_status() and leave it alone.
 static PyObject *
 find_status_for_bar(Screen *self, PyObject *o UNUSED) {
-    const FindStatus st = kitty_rs_find_status(screen_find_engine(self));
+    const FindStatus st = kitty_rs_find_status(screen_find_engine(self), find_buffer_bounds(self));
     self->find_reported.current = st.current;
     self->find_reported.total = st.total;
+    self->find_reported.unsearched = st.unsearched;
+    self->find_reported.main_screen = self->linebuf == self->main_linebuf;
+    self->find_reported.selecting = self->selections.in_progress;
     return find_status_tuple(st);
 }
 
 // The engine changes the status on its own as the buffer it searches changes: output, eviction,
-// a resize or clear, or a current match whose cells changed. Each frame asks whether the bar
-// was told something else, and reports it once no walk over the windows is in progress, since
-// the report runs Python. Until a report reaches the bar it is asked again every frame.
+// a resize or clear, a current match whose cells changed, and each chunk of search. Each frame
+// asks whether the window was told something else, the screen and drag a waiting step lands on
+// included, and reports it once no walk over the windows is in progress, since the report runs
+// Python. Until a report reaches the window it is asked again every frame.
 bool
 screen_find_status_changed(Screen *self) {
     // a paused screen's buffer is the program's update half drawn, and the engine read would
     // release a find selection over cells the update has not yet written back: its status is
     // reported once the pause ends
     if (self->paused_rendering.expires_at) return false;
-    const FindStatus st = kitty_rs_find_status(screen_find_engine(self));
-    return st.current != self->find_reported.current || st.total != self->find_reported.total;
+    const FindStatus st = kitty_rs_find_status(screen_find_engine(self), find_buffer_bounds(self));
+    return st.current != self->find_reported.current || st.total != self->find_reported.total ||
+        st.unsearched != self->find_reported.unsearched ||
+        (self->linebuf == self->main_linebuf) != self->find_reported.main_screen || self->selections.in_progress != self->find_reported.selecting;
 }
 
 void
@@ -7330,30 +7514,36 @@ find_report_status_change(Screen *self, PyObject *o UNUSED) {
     Py_RETURN_NONE;
 }
 
+// True when the query changed, which starts a new search and runs its first chunk at once so a
+// result shows; False when the query and case are the ones already searched for, which changes
+// nothing. A changed query ends the current match, so it releases the selection that showed
+// it, unless users_selection says the user is pointing at it (Cmd+E): then it is theirs.
 static PyObject *
 find_set_query(Screen *self, PyObject *args) {
-    PyObject *text; int case_insensitive;
+    PyObject *text; int case_insensitive, users_selection = 0;
     // [LAW:parse-dont-validate] a str, never bytes: its UTF-8 is valid by construction
-    if (!PyArg_ParseTuple(args, "Up", &text, &case_insensitive)) return NULL;
+    if (!PyArg_ParseTuple(args, "Up|p", &text, &case_insensitive, &users_selection)) return NULL;
     Py_ssize_t len;
     const char *query = PyUnicode_AsUTF8AndSize(text, &len);
     if (!query) return NULL;
-    release_find_selection(self);
-    // the previous query's matches and the record of what they were found in go first
-    screen_find_clear(self);
     char err[512];
-    if (!kitty_rs_find_set_query(self->find_engine, (const uint8_t*)query, len, case_insensitive, err, sizeof(err))) {
+    const FindQueryResult result = kitty_rs_find_set_query(self->find_engine, (const uint8_t*)query, len, case_insensitive, err, sizeof(err));
+    if (result == FIND_QUERY_UNCHANGED) Py_RETURN_FALSE;
+    if (users_selection && self->selections.count) self->selections.items->is_find_match = false;
+    release_find_selection(self);
+    // the previous query's record goes with its matches; the empty query has none
+    find_record_free(self->find_record);
+    self->find_record = NULL;
+    if (result == FIND_QUERY_INVALID) {
         PyErr_Format(PyExc_ValueError, "Cannot search for the query: %s", err);
         return NULL;
     }
-    // a query's matches are kept up to date, so the buffer they came from is recorded; the
-    // empty query has none, so there is nothing to walk or record
-    if (len && (!refeed_find_engine(self, find_onward_range(self, self->historybuf->abs_oldest_line)) || !record_fed_buffer(self))) {
-        // a part-walked buffer is not an answer
+    if (len && (!search_find_chunk(self, self->find_engine, NULL) || !record_fed_buffer(self))) {
+        // a part-walked chunk is not an answer
         screen_find_clear(self);
         return PyErr_NoMemory();
     }
-    return find_count(self, NULL);
+    Py_RETURN_TRUE;
 }
 
 static PyObject *
@@ -7873,7 +8063,7 @@ static PyMethodDef methods[] = {
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
     MND(find_logical_lines, METH_NOARGS)
 #ifdef __APPLE__
-    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_disown_selection, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_status_for_bar, METH_NOARGS) MND(find_report_status_change, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
+    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_origin, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_set_want, METH_O) MND(find_set_chunk_cells, METH_O) MND(find_advance, METH_NOARGS) MND(user_selection_changes, METH_NOARGS) MND(selection_in_progress, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_status_for_bar, METH_NOARGS) MND(find_report_status_change, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
 #endif
     MND(abs_line_at_viewport_top, METH_NOARGS)
 

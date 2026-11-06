@@ -45,7 +45,8 @@ class TestBuild(BaseTest):
 
         s = Screen(None, 1, 10)
         s.draw('héllo')
-        self.ae(s.find_set_query('L', True), 2)
+        self.assertTrue(s.find_set_query('L', True))
+        self.ae(s.find_count(), 2)
 
     def test_slang_build(self) -> None:
         from kitty.shaders.slang import test_slang_build

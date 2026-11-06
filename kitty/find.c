@@ -96,11 +96,15 @@ find_onward_range(Screen *self, uint64_t abs_line) {
 }
 
 FindRefeedRange
-find_first_logical_line_range(Screen *self) {
-    const uint64_t from = self->historybuf->abs_oldest_line;
-    uint64_t last = from;
+find_logical_line_range(Screen *self, uint64_t abs_line) {
+    uint64_t last = abs_line;
     while (continues(self, last)) last++;
-    return (FindRefeedRange){.from = from, .limit = last + 1};
+    return (FindRefeedRange){.from = find_onward_range(self, abs_line).from, .limit = last + 1};
+}
+
+FindBufferBounds
+find_buffer_bounds(const Screen *self) {
+    return (FindBufferBounds){.oldest = self->historybuf->abs_oldest_line, .end = buffer_limit(self)};
 }
 
 FindWalkResult
@@ -127,7 +131,7 @@ find_walk_main_buffer(Screen *self, FindRefeedRange lines, FindLineSink sink, vo
         }
         if (!append_physical_line(&b, line, i - first)) return FIND_WALK_OUT_OF_MEMORY;
         if (!continues(self, hb->abs_oldest_line + i)) {
-            const FindLogicalLine l = {.abs_first_line = hb->abs_oldest_line + first, .text = b.text, .text_len = b.len, .cells = b.cells};
+            const FindLogicalLine l = {.abs_first_line = hb->abs_oldest_line + first, .rows = i - first + 1, .text = b.text, .text_len = b.len, .cells = b.cells};
             if (!sink(ctx, &l)) return FIND_WALK_SINK_STOPPED;
             b.len = 0;
             first = i + 1;

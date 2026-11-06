@@ -16,9 +16,11 @@ typedef struct {
 
 // One logical line (physical lines joined through the wrapped-line flag) as UTF-8 text with
 // one FindCellSpan per byte, so a regex match on bytes [s, e) covers cells[s] .. cells[e - 1].
+// It is rows physical lines from abs_first_line, its rows past the last text included.
 // text and cells belong to the walker and are valid only for the duration of the sink call.
 typedef struct {
     uint64_t abs_first_line;
+    uint32_t rows;
     const char *text;
     size_t text_len;
     const FindCellSpan *cells;
@@ -35,8 +37,15 @@ typedef struct {
 // From the start of the logical line holding abs_line onward. abs_line is in the buffer or is
 // its end, where the range re-feeds nothing and drops the matches past the end.
 FindRefeedRange find_onward_range(Screen *self, uint64_t abs_line);
-// The logical line that is first in the buffer.
-FindRefeedRange find_first_logical_line_range(Screen *self);
+// The logical line holding abs_line, which is in the buffer.
+FindRefeedRange find_logical_line_range(Screen *self, uint64_t abs_line);
+
+// The main buffer as it is now, from its oldest line to just past its last screen row: what the
+// engine is handed by every call that needs the buffer's bounds, since it keeps no copy.
+typedef struct {
+    uint64_t oldest, end;
+} FindBufferBounds;
+FindBufferBounds find_buffer_bounds(const Screen *self);
 
 // Receives each logical line in buffer order; returning false stops the walk.
 typedef bool (*FindLineSink)(void *ctx, const FindLogicalLine *line);

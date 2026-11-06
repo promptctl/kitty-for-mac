@@ -106,7 +106,7 @@ from .fast_data_types import (
     update_window_visibility,
     wakeup_main_loop,
 )
-from .find_backends import EngineFind, FindBackend, FindStatus
+from .find_backends import EngineFind, FindBackend, FindCount, FindStatus
 from .keys import keyboard_mode_name, mod_mask
 from .notifications import NotificationManager
 from .options.types import Options
@@ -822,6 +822,8 @@ class Window:
         # [LAW:one-source-of-truth] the last find query: the engine's copy is derived from it and the
         # find bar's field shows it
         self.find_query = ''
+        # the timer of a search typing left pending, 0 when none is
+        self.pending_find_timer = 0
         self.engine_find = EngineFind(self)
         self.tmux_find_state = TmuxFindState()
         self.claude_find_state = ClaudeFindState()
@@ -1153,6 +1155,8 @@ class Window:
 
         if self.needs_layout or new_geometry.xnum != self.screen.columns or render_ynum != self.screen.lines:
             self.screen.resize(max(0, render_ynum), max(0, new_geometry.xnum))
+            # the rewrap moves every line, so the places the waiting steps were pressed from are gone
+            self.engine_find.drop_waiting()
             self.needs_layout = False
             call_watchers(weakref.ref(self), 'on_resize', {'old_geometry': self.geometry, 'new_geometry': new_geometry})
         current_pty_size = (self.screen.lines, self.screen.columns, max(0, new_geometry.right - new_geometry.left), max(0, render_bottom - render_top))
@@ -2264,6 +2268,7 @@ class Window:
         if self.clear_progress_timer:
             remove_timer(self.clear_progress_timer)
             self.clear_progress_timer = 0
+        self.cancel_pending_find()
         self.clipboard_request_manager.close()
         del self.kitten_result_processors
         if hasattr(self, 'screen'):
@@ -2836,10 +2841,7 @@ class Window:
         elapsed = now - a.start
         progress = min(1.0, elapsed / a.duration) if a.duration > 0 else 1.0
         if progress >= 1.0:
-            # Ensure we land exactly on a line boundary with pixel_scroll_offset_y = 0
-            self.screen.scroll_to_absolute(max(0, a.start_scrolled_by - a.total))
-            remove_timer(a.timer)
-            a.timer = 0
+            self.finish_scroll_animation()
         else:
             # Use absolute positioning to avoid pixel rounding errors from incremental fractional scrolls
             self.screen.scroll_to_absolute(max(0.0, a.start_scrolled_by - a.total * progress))
@@ -2852,6 +2854,9 @@ class Window:
             a.timer = 0
             # Scroll to the exact integer target line, ensuring pixel_scroll_offset_y = 0
             self.screen.scroll_to_absolute(max(0, a.start_scrolled_by - a.total))
+            # [LAW:single-enforcer] every animation ends here, so a find step that waited for the
+            # scroll to end lands now
+            self.engine_find.resolve()
 
     def start_scroll_animation(self, lines: float) -> None:
         "Start a smooth scroll animation for the given number of lines (negative=up, positive=down)"
@@ -3071,6 +3076,9 @@ class Window:
         # that holds nothing. op is the budget of the user's action: every clear spends from it.
         if type(keep) is not EngineFind:
             self.engine_find.clear()
+        # ending every search ends the one typing left pending
+        if keep is None:
+            self.cancel_pending_find()
         self.end_pane_finds(op, keep)
 
     def find_backend_to_search(self, op: TmuxOperation) -> FindBackend | None:
@@ -3088,6 +3096,7 @@ class Window:
     # would otherwise hide the match they moved to. The Screen find_* primitives do not, since
     # automatic callers reach them too and must not tear a paused frame.
     def find_step(self, backwards: bool) -> bool | None:
+        self.settle_find()
         if (backend := self.find_backend_to_search(TmuxOperation())) is None:
             return True
         backend.step(self.find_query, backwards)
@@ -3099,16 +3108,42 @@ class Window:
         if (backend := self.find_backend_to_search(op)) is None:
             return
         backend.restore(text)
-        # the backend took it: a query it rejects never becomes the one the bar shows and stepping repeats
+        # the backend took it: a query it rejects never becomes the one stepping repeats from here.
+        # find_typed is the exception: an edit is the bar's text before any search runs
         self.find_query = text
 
     def find(self, text: str) -> None:
-        "Search the whole buffer for text and step to the first match"
+        "Search the whole buffer for text and step to the first match; the query already searched for changes nothing"
         if (backend := self.find_backend_to_search(TmuxOperation())) is None:
             return
         backend.find(text)
         self.find_query = text
         self.push_find_bar()
+
+    # Short queries match nearly everything, so searching each keystroke of one is work the next
+    # keystroke throws away: they search once typing pauses. The bar shows each edit at once.
+    def find_typed(self, text: str) -> None:
+        "The find bar's text changed to text"
+        self.cancel_pending_find()
+        # an edit changes the query, so what waits for the previous one ends, searched yet or not
+        self.engine_find.drop_waiting()
+        self.find_query = text
+        if 1 <= len(text) <= 2:
+            self.pending_find_timer = add_timer(lambda timer_id: self.settle_find(), 0.5, False)
+            self.push_find_bar()
+        else:
+            self.find(text)
+
+    def settle_find(self) -> None:
+        "Run the search typing left pending, as its timer would, so a step never acts on the query before it"
+        if self.pending_find_timer:
+            self.cancel_pending_find()
+            self.find(self.find_query)
+
+    def cancel_pending_find(self) -> None:
+        if self.pending_find_timer:
+            remove_timer(self.pending_find_timer)
+            self.pending_find_timer = 0
 
     def find_selection_text(self) -> str | None:
         "What Cmd+E searches for: the selection of the program in the window, else kitty's own; None when there is none"
@@ -3138,7 +3173,9 @@ class Window:
             (ClaudeFind, self.claude_find_state.reporting(), self.claude_find_state.status),
         ]
         by_recency = sorted((r for r in reporting if r[1]), key=lambda r: r[0] is not self.find_reporting)
-        return by_recency[0][2] if by_recency else self.engine_find.status()
+        searched = by_recency[0][2] if by_recency else self.engine_find.status()
+        # while typing pauses, the search running is the previous query's, whose count is not this one's
+        return FindStatus(0, 0, FindCount.pending) if self.pending_find_timer else searched
 
     def push_find_bar(self) -> None:
         if not is_macos:
@@ -3149,6 +3186,8 @@ class Window:
 
     def find_status_changed(self) -> None:
         "The screen's callback for the find status changing as the buffer it searches changes"
+        # the search may have reached the answers of the steps waiting for it
+        self.engine_find.resolve()
         self.push_find_bar()
 
     # [LAW:one-source-of-truth] The bar's field is the query of its OS window, whichever kitty window is
@@ -3185,11 +3224,12 @@ class Window:
 
     @ac('sc', 'Search the whole buffer for the selected text and step to it, on macOS. Without a selection the key goes to the program.')
     def use_selection_for_find(self) -> bool | None:
-        if (text := self.find_selection_text()) is None:
+        self.settle_find()
+        if (text := self.find_selection_text()) is None or (backend := self.find_backend_to_search(TmuxOperation())) is None:
             return True
-        # the selection may be find's current match: it lands on the text the user points at
-        self.screen.find_disown_selection()
-        self.find(text)
+        backend.use_selection(text)
+        self.find_query = text
+        self.push_find_bar()
         return None
 
     @ac('sc', 'End the find: clear the match highlights and the selection find made, on macOS')

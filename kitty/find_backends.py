@@ -8,6 +8,7 @@ from enum import IntEnum
 from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 if TYPE_CHECKING:
+    from .fast_data_types import FindOrigin
     from .window import Window
 
 
@@ -16,6 +17,7 @@ class FindCount(IntEnum):
     exact = 0
     partial = 1  # the backend is still counting: the total is a lower bound
     unavailable = 2  # the backend could not be asked: there is no total, which is not the same as no matches
+    pending = 3  # the query is typed but not searched yet: no total belongs to it
 
 
 class FindStatus(NamedTuple):
@@ -30,6 +32,9 @@ class FindBackend(Protocol):
 
     def find(self, text: str) -> None:
         "Search for text and land on the first match"
+
+    def use_selection(self, text: str) -> None:
+        "Search for the text of the selection the user points at, and land on it"
 
     def restore(self, text: str) -> None:
         "Bring the search in line with text after the bar followed focus here"
@@ -50,48 +55,101 @@ class FindBackend(Protocol):
         "The selection of the program in the window (tmux's copy mode) as one line, None when it has none"
 
 
+class WaitingStep(NamedTuple):
+    "A step pressed before the search reached its answer"
+    backwards: bool
+    origin: 'FindOrigin'  # where the user was when they pressed it
+    user_selection_changes: int  # the screen's count of the user's selection changes at the press
+
+
 class EngineFind:
     "Find through kitty's engine, over the buffer of the window's Screen"
 
     def __init__(self, window: 'Window') -> None:
         self.window = window
+        # [LAW:one-source-of-truth] the steps pressed whose answers are not searched yet, in press
+        # order. The frame searches toward the first one's want, and each report tries them again.
+        self.waiting: list[WaitingStep] = []
 
     def can_search(self) -> bool:
         # the alternate screen shows none of the buffer, so there is nothing to search or to show
         return self.window.screen.is_main_linebuf()
 
     def find(self, text: str) -> None:
-        self.restore(text)
-        self.step_to_match(False)
+        # typing the query that is already searched for presses nothing, so the match stays
+        if self.set_query(text, users_selection=False):
+            self.press(False)
+
+    def use_selection(self, text: str) -> None:
+        # the selection may be find's current match: a new query lands on the text the user points
+        # at, and the same query is a Next from it
+        self.set_query(text, users_selection=True)
+        self.press(False)
 
     def restore(self, text: str) -> None:
-        "Search the whole buffer for text, case-insensitively unless it has an uppercase letter"
-        self.window.screen.find_set_query(text, text == text.lower())
+        self.set_query(text, users_selection=False)
+
+    def set_query(self, text: str, users_selection: bool) -> bool:
+        "Search the whole buffer for text, case-insensitively unless it has an uppercase letter; True when the query changed"
+        changed = self.window.screen.find_set_query(text, text == text.lower(), users_selection)
+        if changed:
+            # the steps waiting were for the query that ended
+            self.drop_waiting()
+        return changed
 
     def step(self, text: str, backwards: bool) -> None:
-        # Esc ended the engine's search but not the query: stepping searches for it again
-        if text and not self.searching():
-            self.restore(text)
-        self.step_to_match(backwards)
+        # Esc ended the engine's search but not the query: stepping searches for it again, and an
+        # identical query changes nothing
+        self.restore(text)
+        self.press(backwards)
 
-    def step_to_match(self, backwards: bool) -> None:
+    def press(self, backwards: bool) -> None:
         w = self.window
         w.finish_scroll_animation()
-        # with nothing to move to there is nothing new to show, so a paused frame stays paused
-        if w.screen.find_step(backwards, w.find_bar_top_inset()) is not None:
-            w.screen.pause_rendering(False)
+        s = w.screen
+        self.waiting.append(WaitingStep(backwards, s.find_origin(w.find_bar_top_inset()), s.user_selection_changes()))
+        self.resolve()
+
+    def resolve(self) -> None:
+        "Land the waiting steps, in press order, as far as the search has answered them"
+        w = self.window
+        s = w.screen
+        # a landing scrolls the view and replaces the selection, so it waits for the user's drag or
+        # scroll to end, and for the main screen, the only one it can show a match on
+        if not self.waiting or not s.is_main_linebuf() or s.selection_in_progress() or w.scroll_animation.timer:
+            return
+        while self.waiting:
+            head = self.waiting[0]
+            result = s.find_step(head.backwards, head.origin, w.find_bar_top_inset())
+            if result[0] == 'waiting':
+                s.find_set_want(result[1])
+                return
+            del self.waiting[0]
+            if result[0] == 'landed':
+                # a new match to show, so a paused frame shows it, as the key would
+                s.pause_rendering(False)
+                # "next" pressed after a "next" is the one after it, unless the user moved in between
+                if self.waiting and self.waiting[0].user_selection_changes == head.user_selection_changes:
+                    self.waiting[0] = self.waiting[0]._replace(origin=(True, result[1], (0, 0), (0, 0)))
+        s.find_set_want(None)
+
+    def drop_waiting(self) -> None:
+        self.waiting.clear()
+        self.window.screen.find_set_want(None)
 
     def clear(self) -> None:
+        self.drop_waiting()
         self.window.screen.find_clear()
 
     def searching(self) -> bool:
-        return bool(self.window.screen.find_status()[1])
+        _, total, _, unsearched = self.window.screen.find_status()
+        return bool(total or unsearched)
 
     def status(self) -> FindStatus:
         # [LAW:one-source-of-truth] the read the window tells its bar from: it also records what the
         # bar was told, so the frame stops reporting a change this window has handled
-        current, total, _ = self.window.screen.find_status_for_bar()
-        return FindStatus(current, total, FindCount.exact)
+        current, total, _, unsearched = self.window.screen.find_status_for_bar()
+        return FindStatus(current, total, FindCount.partial if unsearched else FindCount.exact)
 
     def program_selection_text(self) -> str | None:
         # the buffer is kitty's, so the selection is kitty's too

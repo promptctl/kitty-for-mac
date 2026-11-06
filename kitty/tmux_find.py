@@ -340,6 +340,9 @@ class TmuxFind:
     def find(self, text: str) -> None:
         self.search(text, lambda pane: find_command(pane, text))
 
+    def use_selection(self, text: str) -> None:
+        self.find(text)
+
     def restore(self, text: str) -> None:
         self.find(text)
 

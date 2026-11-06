@@ -379,6 +379,9 @@ class ClaudeFind:
             return
         self.guarded(lambda pane: self.search(pane, text))
 
+    def use_selection(self, text: str) -> None:
+        self.find(text)
+
     def restore(self, text: str) -> None:
         self.find(text)
 

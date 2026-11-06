@@ -24,6 +24,15 @@ def cells_with(s, bits, all_bits=False):
     return [(i % s.columns, i // s.columns) for i, b in enumerate(data[leading:]) if (b & bits == bits if all_bits else b & bits)]
 
 
+def find_step(s, backwards, top_inset=0):
+    "One step from where the user is now, on a buffer searched whole: the match it landed on, None when there is none"
+    r = s.find_step(backwards, s.find_origin(top_inset), top_inset)
+    # the launcher runs with -OO, which strips assert statements
+    if r[0] == 'waiting':
+        raise AssertionError(f'the step waited on a buffer searched whole: {r}')
+    return r[1] if r[0] == 'landed' else None
+
+
 class TestScreen(BaseTest):
     def test_wide_character_after_scaled_text_collision(self) -> None:
         for lines in (2, 4):
@@ -1661,7 +1670,7 @@ class TestScreen(BaseTest):
             self.skipTest('The Rust find engine is linked on macOS only')
 
         def find(s, query, case_insensitive=False):
-            self.ae(s.find_set_query(query, case_insensitive), s.find_count())
+            self.assertTrue(s.find_set_query(query, case_insensitive))
             return list(s.find_matches())
 
         # every match inside one physical line, both cells included
@@ -1828,7 +1837,7 @@ class TestScreen(BaseTest):
         s.set_margins(1, 2)
         s.cursor_position(1, 1), s.reverse_index()
         self.ae(cells_with(s, SELECTION_BIT), [])
-        self.ae(s.find_status(), (0, 0, False))
+        self.ae(s.find_status()[:3], (0, 0, False))
 
         # the alternate screen shows no main buffer line, so no main buffer match
         s = self.create_screen(cols=10, lines=2)
@@ -1868,7 +1877,8 @@ class TestScreen(BaseTest):
         for i in range(4):
             s.draw(f'ab{i}')
             s.carriage_return(), s.linefeed()
-        self.ae(s.find_set_query('ab', False), 4)
+        self.assertTrue(s.find_set_query('ab', False))
+        self.ae(s.find_count(), 4)
         matches = s.find_matches()
         # the current match is the selection, also when its line is in history
         both = SELECTION_BIT | FIND_MATCH_BIT
@@ -1891,7 +1901,8 @@ class TestScreen(BaseTest):
         # and so does a new query, which ends the current match whether or not it finds any
         s.find_set_query('ab', False)
         s.find_set_current(s.find_matches()[1])
-        self.ae(s.find_set_query('abz', False), 0)
+        self.assertTrue(s.find_set_query('abz', False))
+        self.ae(s.find_count(), 0)
         self.assertFalse(s.has_selection())
         # a match names itself, so one still in the list stays selectable after eviction moves the list
         s.find_set_query('ab', False)
@@ -1951,31 +1962,34 @@ class TestScreen(BaseTest):
         for i in range(20):
             s.draw(f'x{i:02d}')
             s.carriage_return(), s.linefeed()
-        self.ae(s.find_step(False), None, 'no query, nothing to step to')
-        self.ae(s.find_status(), (0, 0, False))
-        self.ae(s.find_set_query('x', False), 20)
+        self.ae(find_step(s, False), None, 'no query, nothing to step to')
+        self.ae(s.find_status()[:3], (0, 0, False))
+        self.assertTrue(s.find_set_query('x', False))
+        self.ae(s.find_count(), 20)
         matches = s.find_matches()
         top = s.abs_line_at_viewport_top()
         on_screen = [m for m in matches if top <= m[0] < top + s.lines]
         # with no current match, next starts at the top row and previous at the bottom one
-        self.ae(s.find_step(False), on_screen[0])
-        self.ae(s.find_status(), (matches.index(on_screen[0]) + 1, 20, False))
-        s.find_set_query('x', False)
-        self.ae(s.find_step(True), on_screen[-1])
+        self.ae(find_step(s, False), on_screen[0])
+        self.ae(s.find_status()[:3], (matches.index(on_screen[0]) + 1, 20, False))
+        self.assertFalse(s.find_set_query('x', False), 'the same query again changes nothing')
+        self.ae(s.find_status()[0], matches.index(on_screen[0]) + 1)
+        s.find_clear(), s.find_set_query('x', False)
+        self.ae(find_step(s, True), on_screen[-1])
         self.ae(s.abs_line_at_viewport_top(), top, 'a match on screen is not scrolled to')
         # stepping past the last match wraps to the first, and reveals it in history
-        self.ae(s.find_step(False), matches[0])
-        self.ae(s.find_status(), (1, 20, True))
+        self.ae(find_step(s, False), matches[0])
+        self.ae(s.find_status()[:3], (1, 20, True))
         self.ae(s.abs_line_at_viewport_top(), matches[0][0], 'the oldest line cannot be centred: it is the top row')
-        self.ae(s.find_step(True), matches[-1])
-        self.ae(s.find_status(), (20, 20, True))
+        self.ae(find_step(s, True), matches[-1])
+        self.ae(s.find_status()[:3], (20, 20, True))
         self.ae(s.abs_line_at_viewport_top(), top)
         # a match off screen is scrolled to the middle row, one on screen is not scrolled to
         s.find_set_current(matches[9])
-        self.ae(s.find_step(False), matches[10])
-        self.ae(s.find_status(), (11, 20, False))
+        self.ae(find_step(s, False), matches[10])
+        self.ae(s.find_status()[:3], (11, 20, False))
         self.ae(s.abs_line_at_viewport_top(), matches[10][0] - 1)
-        self.ae(s.find_step(False), matches[11])
+        self.ae(find_step(s, False), matches[11])
         self.ae(s.abs_line_at_viewport_top(), matches[10][0] - 1)
         # the current match is the selection
         self.ae(text(s), 'x')
@@ -1986,33 +2000,32 @@ class TestScreen(BaseTest):
         top = s.abs_line_at_viewport_top()
         s.start_selection(1, 3)
         s.update_selection(2, 3)
-        self.ae(s.find_status(), (0, 20, False))
-        self.ae(s.find_step(False), matches[top + 4])
+        self.ae(s.find_status()[:3], (0, 20, False))
+        self.ae(find_step(s, False), matches[top + 4])
         # and backwards from before its end, so a match it covers the start of is taken
         top = s.abs_line_at_viewport_top()
         s.start_selection(0, 1)
         s.update_selection(2, 1)
-        self.ae(s.find_step(True), matches[top + 1])
+        self.ae(find_step(s, True), matches[top + 1])
         # so does one the user changes from find's
-        s.find_step(False)
+        find_step(s, False)
         s.update_selection(3, 2)
-        self.ae(s.find_status(), (0, 20, False))
+        self.ae(s.find_status()[:3], (0, 20, False))
         # and one cleared by anything
-        s.find_step(False)
+        find_step(s, False)
         s.clear_selection()
-        self.ae(s.find_status(), (0, 20, False))
+        self.ae(s.find_status()[:3], (0, 20, False))
         # the empty selection a click leaves shows nothing, so the step starts from the screen
         top = s.abs_line_at_viewport_top()
         s.start_selection(0, 2)
-        self.ae(s.find_step(False), matches[top])
+        self.ae(find_step(s, False), matches[top])
 
-        # disowned, find's current match is the user's: a new query leaves it and the step
-        # lands on it, not past it, as Use Selection for Find needs
-        current = s.find_step(False)
-        s.find_disown_selection()
-        s.find_set_query('x', False)
+        # pointed at by the user, find's current match is theirs: a new query leaves it and the
+        # step lands on it, not past it, as Use Selection for Find needs
+        current = find_step(s, False)
+        s.find_set_query('x', True, True)
         self.ae(text(s), 'x')
-        self.ae(s.find_step(False), current)
+        self.ae(find_step(s, False), current)
 
         # matches are stepped in buffer order across wrapped rows and wide chars
         s = self.create_screen(cols=4, lines=3, scrollback=10)
@@ -2021,8 +2034,8 @@ class TestScreen(BaseTest):
         s.find_set_query('ab', False)
         first, *rest = matches = s.find_matches()
         s.find_set_current(first)
-        self.ae([s.find_step(False) for i in range(4)], rest + [first])
-        self.ae([s.find_step(True) for i in range(4)], list(reversed(matches)))
+        self.ae([find_step(s, False) for i in range(4)], rest + [first])
+        self.ae([find_step(s, True) for i in range(4)], list(reversed(matches)))
         self.ae(matches[1][2] - matches[1][0], 1, 'the second match wraps onto the next row')
         self.ae(matches[3][1], 2, 'the match after the wide char starts on its cell')
 
@@ -2032,7 +2045,7 @@ class TestScreen(BaseTest):
         for i in range(6):
             s.draw('z'), s.carriage_return(), s.linefeed()
         s.find_set_query('abcdefghi', False)
-        m = s.find_step(False)
+        m = find_step(s, False)
         self.ae(m[2] - m[0], 2)
         self.ae(s.abs_line_at_viewport_top(), m[0])
 
@@ -2042,13 +2055,15 @@ class TestScreen(BaseTest):
             for i in range(30):
                 s.draw('Q' if i == 3 else 'ab'), s.carriage_return(), s.linefeed()
             s.find_set_query('Q', False)
-            return s.find_step(False, top_inset)[0] - s.abs_line_at_viewport_top()
+            return find_step(s, False, top_inset)[0] - s.abs_line_at_viewport_top()
         self.ae(row_of_revealed(0), 2)
         self.ae(row_of_revealed(2), 3)
 
         # the alternate screen shows none of the main buffer, so nothing there can be stepped to
+        origin = s.find_origin()
         s.toggle_alt_screen()
-        self.assertRaises(RuntimeError, s.find_step, False)
+        self.assertRaises(RuntimeError, s.find_origin)
+        self.assertRaises(RuntimeError, s.find_step, False, origin)
 
     def find_window(self, s, bound=(), **attrs):
         """A stand-in for a Window whose foreground is a shell, with the real find methods bound to it.
@@ -2059,12 +2074,13 @@ class TestScreen(BaseTest):
         from kitty.find_backends import EngineFind
         from kitty.tmux_find import TmuxFindState
         from kitty.window import Window
-        w = SimpleNamespace(screen=s, find_query='', os_window_id=1, finish_scroll_animation=lambda: None, find_bar_top_inset=lambda: 0,
+        w = SimpleNamespace(screen=s, find_query='', pending_find_timer=0, os_window_id=1, finish_scroll_animation=lambda: None,
+                            scroll_animation=SimpleNamespace(timer=0), find_bar_top_inset=lambda: 0,
                             child=SimpleNamespace(foreground_processes=[]), tmux_find_state=TmuxFindState(), claude_find_state=ClaudeFindState(),
                             claude_host=ClaudeHost(), find_reporting=None, **attrs)
         w.engine_find = EngineFind(w)
         for name in ('tmux_client', 'find_pane_backend', 'find_status', 'end_pane_finds', 'find_backend', 'find_holder', 'end_finds',
-                     'find_backend_to_search', 'find_step', 'set_find_query', 'find', 'find_clear',
+                     'find_backend_to_search', 'find_step', 'set_find_query', 'find', 'find_clear', 'settle_find', 'cancel_pending_find',
                      *bound):
             if name not in attrs:
                 setattr(w, name, getattr(Window, name).__get__(w))
@@ -2088,15 +2104,17 @@ class TestScreen(BaseTest):
         self.ae(pushes[-1][1], 20, 'the bar is told how many matches there are')
         # Esc: the highlights go, the query stays, so Find Next with the bar hidden searches again
         Window.find_clear(w)
-        self.ae(s.find_status(), (0, 0, False))
-        self.ae(pushes[-1], (0, 0, False))
+        self.ae(s.find_status()[:3], (0, 0, False))
+        self.ae(pushes[-1], (0, 0, False, 0))
         Window.find_step(w, False)
         self.ae(s.find_status()[1], 20)
         self.assertGreater(pushes[-1][0], 0, 'and steps to a match')
         # a query with no matches is searched once per keystroke, not again by the step that follows it
         walks = []
         find_set_query = s.find_set_query
-        w.screen = SimpleNamespace(**{n: getattr(s, n) for n in ('find_status', 'find_status_for_bar', 'find_step', 'is_main_linebuf', 'pause_rendering')},
+        w.screen = SimpleNamespace(**{n: getattr(s, n) for n in (
+            'find_status', 'find_status_for_bar', 'find_origin', 'find_step', 'find_set_want', 'user_selection_changes', 'selection_in_progress',
+            'is_main_linebuf', 'pause_rendering')},
                                    find_set_query=lambda *a: walks.append(a) or find_set_query(*a))
         Window.find(w, 'nomatch')
         self.ae(len(walks), 1)
@@ -2118,7 +2136,6 @@ class TestScreen(BaseTest):
         from kitty import window as window_module
         from kitty.boss import Boss
         from kitty.constants import is_macos
-        from kitty.window import Window
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
@@ -2131,7 +2148,7 @@ class TestScreen(BaseTest):
 
         a, b, other_tab = make_window('ab'), make_window('xb'), make_window('ab')
         pushes = []
-        a.push_find_bar = b.push_find_bar = lambda: pushes.append((active[0].find_query, active[0].screen.find_status()))
+        a.push_find_bar = b.push_find_bar = lambda: pushes.append((active[0].find_query, active[0].screen.find_status()[:3]))
         active = [a]
         tab_manager = type('TM', (), {'active_window': a, '__iter__': lambda self: iter([[a, b], [other_tab]])})()
         boss = SimpleNamespace(os_window_map={1: tab_manager})
@@ -2149,8 +2166,8 @@ class TestScreen(BaseTest):
             self.ae(pushes[-1][1][1], 10, 'and reports it')
             # Switching to b: a's search ends, b searches the bar's query without stepping to a match
             follow(b)
-            self.ae(a.screen.find_status(), (0, 0, False))
-            self.ae((b.find_query, b.screen.find_status()), ('b', (0, 10, False)))
+            self.ae(a.screen.find_status()[:3], (0, 0, False))
+            self.ae((b.find_query, b.screen.find_status()[:3]), ('b', (0, 10, False)))
             # following the window the bar is already on keeps the match it was on
             b.find_step(False)
             current = b.screen.find_status()
@@ -2194,8 +2211,10 @@ class TestScreen(BaseTest):
 
         # the oracle: the live matches, after whatever happened since the query was set with
         # no read in between, are the matches a fresh search of the buffer finds now
+        # the same query again changes nothing, so the fresh search starts from no query
         def live_is_fresh(s, query):
             live = s.find_matches()
+            s.find_clear()
             s.find_set_query(query, False)
             self.ae(live, s.find_matches())
             return live
@@ -2263,13 +2282,15 @@ class TestScreen(BaseTest):
         # cut line did not
         s = self.create_screen(cols=5, lines=2, scrollback=2)
         s.draw('bbbbaaab'), s.carriage_return(), s.linefeed()
-        self.ae(s.find_set_query('aa', False), 1)
+        self.assertTrue(s.find_set_query('aa', False))
+        self.ae(s.find_count(), 1)
         lines_of(s, 'c', 'd')
         self.ae(live_is_fresh(s, 'aa'), ((1, 0, 1, 1),))
         # and so does clear_scrollback while screen row 0 continues a history line
         s = self.create_screen(cols=5, lines=2, scrollback=10)
         s.draw('zz\r\n'), s.draw('bbbbaaab'), s.carriage_return(), s.linefeed()
-        self.ae(s.find_set_query('aa', False), 1)
+        self.assertTrue(s.find_set_query('aa', False))
+        self.ae(s.find_count(), 1)
         s.clear_scrollback()
         self.ae(live_is_fresh(s, 'aa'), ((2, 0, 2, 1),))
 
@@ -2277,7 +2298,8 @@ class TestScreen(BaseTest):
         s = self.create_screen(cols=5, lines=3, scrollback=10)
         lines_of(s, 'h0', 'h1', 'h2')
         s.draw('x')
-        self.ae(s.find_set_query('x', False), 1)
+        self.assertTrue(s.find_set_query('x', False))
+        self.ae(s.find_count(), 1)
         s.reverse_scroll(1, True)
         self.ae(live_is_fresh(s, 'x'), ())
 
@@ -2289,7 +2311,8 @@ class TestScreen(BaseTest):
 
         s = self.create_screen(cols=8, lines=3, scrollback=20)
         command_in_history(s)
-        self.ae(s.find_set_query('x', False), 6)
+        self.assertTrue(s.find_set_query('x', False))
+        self.ae(s.find_count(), 6)
         self.assertTrue(s.erase_last_command())
         self.ae(live_is_fresh(s, 'x'), ())
         s = wrapped_history()
@@ -2303,7 +2326,8 @@ class TestScreen(BaseTest):
         # and so does output after erase_last_command
         s = self.create_screen(cols=5, lines=10, scrollback=30)
         lines_of(s, 'x0', *(f'h{i}' for i in range(18)))
-        self.ae(s.find_set_query('x', False), 1)
+        self.assertTrue(s.find_set_query('x', False))
+        self.ae(s.find_count(), 1)
         # x0 is the oldest of the ten history lines: popping them all puts it on screen row 0
         s.reverse_scroll(10, True)
         s.cursor_position(1, 1), s.draw('zz')
@@ -2323,7 +2347,8 @@ class TestScreen(BaseTest):
         s = self.create_screen(cols=8, lines=3, scrollback=10)
         s.draw('zz\r\n'), draw_multicell(s, 'M', scale=2)
         s.cursor_position(3, 1), s.linefeed(), s.linefeed()
-        self.ae(s.find_set_query('M', False), 1)
+        self.assertTrue(s.find_set_query('M', False))
+        self.ae(s.find_count(), 1)
         s.cursor_position(1, 1), s.erase_in_line(2, False)
         self.ae(live_is_fresh(s, 'M'), ())
         # and so does erase_last_command when the command's prompt starts on that bottom row
@@ -2332,7 +2357,8 @@ class TestScreen(BaseTest):
         mark_prompt(s), s.draw('$ p1\r\n')
         lines_of(s, *(str(i) for i in range(9)))
         mark_prompt(s), s.draw('$ ')
-        self.ae(s.find_set_query('M', False), 1)
+        self.assertTrue(s.find_set_query('M', False))
+        self.ae(s.find_count(), 1)
         self.assertTrue(s.erase_last_command())
         self.ae(live_is_fresh(s, 'M'), ())
 
@@ -2362,8 +2388,8 @@ class TestScreen(BaseTest):
         s.set_margins(2, 4)
         s.cursor_position(4, 1), s.index()
         self.ae(s.find_matches(), ((1, 0, 1, 0), (2, 0, 2, 0)))
-        self.ae(s.find_status(), (1, 2, False))
-        self.ae(s.find_step(False), (2, 0, 2, 0))
+        self.ae(s.find_status()[:3], (1, 2, False))
+        self.ae(find_step(s, False), (2, 0, 2, 0))
 
         # unrelated output leaves the current match current
         s = self.create_screen(cols=5, lines=4, scrollback=10)
@@ -2371,8 +2397,8 @@ class TestScreen(BaseTest):
         s.find_set_query('x', False)
         s.find_set_current((1, 0, 1, 0))
         lines_of(s, 'y', 'y', 'y')
-        self.ae(s.find_status(), (2, 2, False))
-        self.ae(s.find_step(False), (0, 0, 0, 0))
+        self.ae(s.find_status()[:3], (2, 2, False))
+        self.ae(find_step(s, False), (0, 0, 0, 0))
 
     def test_activating_a_window_without_the_keyboard_sends_no_focus_event(self):
         from unittest import mock
@@ -2430,7 +2456,6 @@ class TestScreen(BaseTest):
 
         from kitty import window as window_module
         from kitty.constants import is_macos
-        from kitty.window import Window
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
@@ -2458,7 +2483,7 @@ class TestScreen(BaseTest):
         self.ae(reports(s), 0, 'the bar was told')
         # new output adds matches, and a read that tells no bar does not hide the change
         lines_of(s, 'x1', 'x2')
-        self.ae(s.find_status(), (0, 3, False))
+        self.ae(s.find_status()[:3], (0, 3, False))
         self.ae(reports(s), 1)
         # a paused screen shows the frame of the pause, so the change waits for its end
         self.assertTrue(s.pause_rendering(True, 5000))
@@ -2468,21 +2493,21 @@ class TestScreen(BaseTest):
         self.ae(reports(s), 1)
         # output past the ring's end evicts matches
         lines_of(s, *('y' for _ in range(6)))
-        self.ae(s.find_status(), (0, 0, False))
+        self.ae(s.find_status()[:3], (0, 0, False))
         self.ae(reports(s), 1)
         # overwriting the current match's cells ends it
         s = self.create_screen(cols=10, lines=3)
         s.draw('abc ab')
         s.find_set_query('b', False)
-        s.find_step(False)
-        self.ae((s.find_status(), reports(s)), ((1, 2, False), 1))
+        find_step(s, False)
+        self.ae((s.find_status()[:3], reports(s)), ((1, 2, False), 1))
         s.cursor_position(1, 2), s.draw('z')
         self.ae(reports(s), 1)
-        self.ae(s.find_status(), (0, 1, False))
+        self.ae(s.find_status()[:3], (0, 1, False))
 
         # the window pushes the status to the bar only while it is its OS window's active window
         pushed = []
-        w = self.find_window(s, ('push_find_bar', 'find_status_changed'))
+        w = self.find_window(s, ('push_find_bar', 'find_status', 'find_status_changed'))
         w.find_query = 'x'
         tab_manager = SimpleNamespace(active_window=w)
         boss = SimpleNamespace(os_window_map={1: tab_manager})
@@ -2493,6 +2518,264 @@ class TestScreen(BaseTest):
             tab_manager.active_window = None
             w.find_status_changed()
             self.ae(len(pushed), 1)
+
+    def test_find_in_chunks(self):
+        from kitty.constants import is_macos
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+
+        def lines_of(s, *texts):
+            for t in texts:
+                s.draw(t), s.carriage_return(), s.linefeed()
+
+        # wrapped lines among short ones, in a full ring
+        def screen(chunk_cells=None):
+            s = self.create_screen(cols=5, lines=3, scrollback=60)
+            if chunk_cells:
+                s.find_set_chunk_cells(chunk_cells)
+            lines_of(s, *('x' * (1 + i % 7) + str(i % 10) for i in range(80)))
+            return s
+
+        def search_all(s):
+            while s.find_advance():
+                pass
+            self.ae(s.find_status()[3], 0)
+
+        # what a search that took no time finds in the buffer as it is now
+        def is_fresh(s, query):
+            live = s.find_matches()
+            s.find_set_chunk_cells(1500000)
+            s.find_clear(), s.find_set_query(query, False)
+            self.ae(s.find_status()[3], 0)
+            self.ae(live, s.find_matches())
+
+        whole = screen()
+        whole.find_set_query('xx', False)
+        self.ae(whole.find_status()[3], 0, 'a buffer shorter than one chunk is searched in the first')
+        expected = whole.find_matches()
+        self.assertGreater(len(expected), 20)
+
+        s = screen(1)
+        s.find_set_query('xx', False)
+        self.assertGreater(s.find_status()[3], 0, 'a chunk of one line leaves the rest to the frames')
+        self.assertLess(len(s.find_matches()), len(expected))
+        search_all(s)
+        self.ae(s.find_matches(), expected)
+        self.assertFalse(s.find_advance(), 'a search that is done searches nothing more')
+
+        # output streaming into the full ring while the search is under way
+        s = screen(1)
+        s.find_set_query('xx', False)
+        for i in range(5):
+            s.find_advance()
+        lines_of(s, 'xxxxxxx', 'xx', 'y')
+        search_all(s)
+        is_fresh(s, 'xx')
+
+        # a wrapped line whose last row was erased (a shell redrawing a shorter command line)
+        # still spans both rows: the chunks search each row once
+        for chunk_cells in (1, 5):
+            s = screen(chunk_cells)
+            s.draw('xxxxxxx'), s.carriage_return(), s.erase_in_line()
+            s.find_set_query('xx', False)
+            search_all(s)
+            is_fresh(s, 'xx')
+
+        # a resize rewraps every line while the search is under way
+        s = screen(1)
+        s.find_set_query('xx', False)
+        for i in range(5):
+            s.find_advance()
+        s.resize(3, 7)
+        search_all(s)
+        is_fresh(s, 'xx')
+
+        # a step whose answer is on unsearched lines waits, changing nothing, and its want
+        # searches them first, so it lands with the rest still unsearched
+        s = screen(1)
+        s.find_set_query('xx', False)
+        s.scroll(30, True)
+        origin = s.find_origin()
+        r = s.find_step(False, origin)
+        self.ae(r[0], 'waiting')
+        self.ae(s.find_status()[0], 0)
+        s.find_set_want(r[1])
+        while (r := s.find_step(False, origin))[0] == 'waiting':
+            self.assertTrue(s.find_advance())
+        self.ae(r[0], 'landed')
+        self.assertGreater(s.find_status()[3], 0)
+        whole.scroll(30, True)
+        self.ae(r[1], find_step(whole, False), 'it lands where a search that took no time does')
+
+        # the empty query is one state, however it is reached and whatever its case
+        s = screen()
+        s.find_set_query('xx', False), s.find_set_query('', False)
+        cleared = s.find_status(), s.find_matches()
+        s.find_set_query('xx', False), s.find_clear()
+        self.ae((s.find_status(), s.find_matches()), cleared)
+        self.assertFalse(s.find_set_query('', True))
+        self.assertFalse(s.find_advance())
+
+    def test_find_steps_wait_for_the_search(self):
+        from unittest import mock
+
+        from kitty import window as window_module
+        from kitty.constants import is_macos
+        from kitty.window import Window
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+
+        def screen(chunk_cells=None, tail=()):
+            s = self.create_screen(cols=5, lines=4, scrollback=100)
+            if chunk_cells:
+                s.find_set_chunk_cells(chunk_cells)
+            for t in (*(f'x{i:02d}' for i in range(80)), *tail):
+                s.draw(t), s.carriage_return(), s.linefeed()
+            return s
+
+        def window(s):
+            return self.find_window(s, ('find_status_changed', 'find_typed', 'use_selection_for_find', 'find_selection_text'),
+                                    push_find_bar=lambda: None, text_for_selection=lambda: ''.join(s.text_for_selection()))
+
+        # what the frames do while steps wait
+        def frames(w):
+            while w.engine_find.waiting:
+                self.assertTrue(w.screen.find_advance())
+                w.find_status_changed()
+
+        def current(s):
+            n = s.find_status()[0]
+            return s.find_matches()[n - 1] if n else None
+
+        def pressed(chunk_cells, presses, **kw):
+            s = screen(chunk_cells, **kw)
+            w = window(s)
+            presses(s, w)
+            frames(w)
+            return current(s)
+
+        # each case lands where a search that took no time does, with the search in one-line chunks
+        def same_as_instant(presses, **kw):
+            instant = pressed(None, presses, **kw)
+            self.ae(pressed(1, presses, **kw), instant)
+            return instant
+
+        # three presses while the first waits move three matches
+        def three(s, w):
+            Window.find(w, 'x')
+            Window.find_step(w, False), Window.find_step(w, False)
+            if s.find_status()[3]:
+                self.ae(len(w.engine_find.waiting), 3)
+        self.ae(same_as_instant(three), (79, 0, 79, 0))
+
+        # scrolling while a step waits leaves it starting from where the user was when they pressed it
+        def scrolled(s, w):
+            Window.find(w, 'x')
+            s.scroll(30, True)
+        self.ae(same_as_instant(scrolled), (77, 0, 77, 0))
+        # and a landing that comes after the scroll scrolls the match back into view
+        s = screen(1)
+        w = window(s)
+        scrolled(s, w), frames(w)
+        self.assertLessEqual(s.abs_line_at_viewport_top(), 77)
+        self.assertLess(77, s.abs_line_at_viewport_top() + s.lines)
+
+        # a wrapping step searches from the oldest line first, so it lands with lines left unsearched
+        def wraps(s, w):
+            Window.find(w, 'x')
+        self.ae(same_as_instant(wraps, tail=('y',) * 6), (0, 0, 0, 0))
+        s = screen(1, tail=('y',) * 6)
+        w = window(s)
+        wraps(s, w), frames(w)
+        self.assertGreater(s.find_status()[3], 0)
+
+        # a drag in progress holds the landing until it ends
+        s = screen(1)
+        w = window(s)
+        Window.find(w, 'x')
+        s.start_selection(0, 0)
+        while s.find_advance():
+            w.find_status_changed()
+        self.ae(len(w.engine_find.waiting), 1)
+        s.update_selection(1, 0, False, True)
+        w.find_status_changed()
+        self.ae(len(w.engine_find.waiting), 0)
+
+        # a scroll animation holds the landing, and ending it early, as a key release does, lands it
+        from types import SimpleNamespace
+        s = screen(1)
+        w = self.find_window(s, ('find_status_changed', 'finish_scroll_animation'), push_find_bar=lambda: None)
+        Window.find(w, 'x')
+        w.scroll_animation = SimpleNamespace(timer=1, start_scrolled_by=s.scrolled_by, total=0)
+        with mock.patch.object(window_module, 'remove_timer', lambda timer_id: None):
+            while s.find_advance():
+                w.find_status_changed()
+            w.find_status_changed()
+            self.ae(len(w.engine_find.waiting), 1)
+            w.finish_scroll_animation()
+        self.ae(len(w.engine_find.waiting), 0)
+
+        # ending the search ends what waits
+        s = screen(1)
+        w = window(s)
+        Window.find(w, 'x')
+        self.ae(len(w.engine_find.waiting), 1)
+        Window.find_clear(w)
+        self.ae(w.engine_find.waiting, [])
+
+        # Cmd+E: a new query lands on the user's selection, the same one is a Next from it
+        s = screen()
+        w = window(s)
+        s.start_selection(0, 1), s.update_selection(1, 1)
+        Window.use_selection_for_find(w)
+        self.ae((w.find_query, current(s)), ('x7', (78, 0, 78, 1)))
+        Window.use_selection_for_find(w)
+        self.ae(current(s), (79, 0, 79, 1))
+
+        # short queries search once typing pauses; a step first runs the search typing left pending,
+        # so typing fast or slow ends the same
+        timers = []
+        with mock.patch.object(window_module, 'add_timer', lambda cb, *a: timers.append(cb) or len(timers)), \
+                mock.patch.object(window_module, 'remove_timer', lambda timer_id: None):
+            def typed(slow):
+                s = screen()
+                w = window(s)
+                for text in ('x', 'x7'):
+                    w.find_typed(text)
+                    self.ae(w.find_query, text)
+                    if slow:
+                        timers[-1](w.pending_find_timer)
+                self.ae(bool(w.pending_find_timer), not slow)
+                Window.find_step(w, False)
+                return w.find_query, current(s)
+            self.ae(typed(True), ('x7', (78, 0, 78, 1)))
+            self.ae(typed(False), typed(True))
+
+            # while a short query waits, the bar shows no count: the search running is the previous query's
+            from kitty.find_backends import FindCount
+            s = screen()
+            w = self.find_window(s, ('find_status_changed', 'find_typed', 'find_status'), push_find_bar=lambda: None)
+            w.find_typed('x79')
+            self.ae(w.find_status().total, 1)
+            w.find_typed('x7')
+            self.ae(w.find_status().count, FindCount.pending)
+            timers[-1](w.pending_find_timer)
+            self.ae(w.find_status().total, 10)
+
+            # an edit ends what waits for the previous query, even one whose search is pending
+            s = screen(1)
+            w = window(s)
+            w.find_typed('x79')
+            self.ae(len(w.engine_find.waiting), 1)
+            w.find_typed('x7')
+            self.ae(w.engine_find.waiting, [])
+            s = screen()
+            w = window(s)
+            w.find_typed('x0')
+            Window.find_clear(w)
+            self.ae((w.pending_find_timer, s.find_status()[1]), (0, 0), 'ending the search ends the one pending')
+            w.find_typed('x00')
+            self.ae((w.pending_find_timer, current(s)), (0, (0, 0, 0, 2)), 'a longer query searches at once')
 
     def test_user_marking(self):
 

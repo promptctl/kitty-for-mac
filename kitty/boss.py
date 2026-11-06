@@ -4298,7 +4298,7 @@ class Boss:
 
     def find_bar_query_changed(self, os_window_id: int, text: str) -> None:
         if w := self.find_bar_window(os_window_id):
-            w.find(text)
+            w.find_typed(text)
 
     def find_bar_step(self, os_window_id: int, forward: bool) -> None:
         if w := self.find_bar_window(os_window_id):

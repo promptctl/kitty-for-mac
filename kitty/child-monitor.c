@@ -1219,7 +1219,7 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
 // Python, which can close windows and move OS windows and tabs in memory under the walk's
 // pointers. The list holds the Screens themselves, which outlive any of that.
 static void
-report_find_status_changes(void) {
+report_find_status_changes(monotonic_t now) {
     RAII_PyObject(changed, PyList_New(0));
     if (!changed) { PyErr_Print(); return; }
     for (size_t o = 0; o < global_state.num_os_windows; o++) {
@@ -1228,7 +1228,15 @@ report_find_status_changes(void) {
             Tab *tab = os_window->tabs + t;
             for (unsigned i = 0; i < tab->num_windows; i++) {
                 Screen *screen = tab->windows[i].render_data.screen;
-                if (screen && screen_find_status_changed(screen) && PyList_Append(changed, (PyObject*)screen) != 0) PyErr_Print();
+                if (!screen) continue;
+                // [LAW:dataflow-not-control-flow] each frame searches one chunk for every screen
+                // whose buffer can be read, so a search fills in across frames and never holds one
+                if (!screen->paused_rendering.expires_at) {
+                    if (screen_find_advance(screen)) set_maximum_wait(OPT(repaint_delay));
+                } else if (screen_find_searching(screen) && screen->paused_rendering.expires_at > now) {
+                    set_maximum_wait(screen->paused_rendering.expires_at - now);
+                }
+                if (screen_find_status_changed(screen) && PyList_Append(changed, (PyObject*)screen) != 0) PyErr_Print();
             }
         }
     }
@@ -1280,7 +1288,7 @@ render(monotonic_t now, bool input_read) {
     }
     if (!waiting_for_frame) last_render_at = now;
 #ifdef __APPLE__
-    report_find_status_changes();
+    report_find_status_changes(now);
 #endif
     call_boss(cache_process_data, "O", Py_False);
 #undef TD
