@@ -115,7 +115,7 @@ from .program_status import ProgramStatus
 from .progress import Progress
 from .rgb import to_color
 from .terminfo import get_capabilities
-from .tmux_find import CLIENT_FORMAT, TmuxClient, TmuxError, TmuxFind, TmuxFindState, TmuxOperation, parse_pane, tmux_client_of
+from .tmux_find import TmuxClient, TmuxError, TmuxFind, TmuxFindState, TmuxOperation, tmux_client_of
 from .types import MouseEvent, NeighborsMap, OverlayType, WindowGeometry, ac, run_once
 from .typing_compat import BossType, ChildType, EdgeLiteral, TabType, TypedDict
 from .utils import (
@@ -3035,17 +3035,16 @@ class Window:
 
     def find_pane_backend(self, client: TmuxClient, op: TmuxOperation) -> FindBackend:
         "[LAW:single-enforcer] the one place a tmux window's search goes to Claude Code's transcript search or to tmux's history search"
-        try:
-            pane = parse_pane(op.tmux(client, 'list-clients', '-F', CLIENT_FORMAT), client.pid)
-        except TmuxError:  # TmuxFind meets the same failure and reports it
-            return TmuxFind(client, self.tmux_find_state, op)
+        tmux = TmuxFind(client, self.tmux_find_state, op)
+        if isinstance(pane := tmux.lookup(), TmuxError):  # tmux's find meets the same failure and reports it
+            return tmux
         kind: ClaudePane | NotClaude | ClaudeFindFailure
         try:
             kind = recognise(pane, self.claude_host, op)
         except ClaudeFindFailure as failure:  # could not tell: reported by Claude's find, never answered as another program
             kind = failure
         if isinstance(kind, NotClaude):
-            return TmuxFind(client, self.tmux_find_state, op)
+            return tmux
         return ClaudeFind(client, self.claude_find_state, op, self.claude_host, kind)
 
     def find_holder(self) -> FindBackend:

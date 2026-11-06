@@ -303,12 +303,13 @@ class TmuxFindState:
 
 
 class TmuxFind:
-    "Find through the tmux client in a window's foreground. A value built for one operation, on the budget of it."
+    "Find through the tmux client in a window's foreground. A value built for one operation, on the budget of it, and for the one pane that operation finds."
 
     def __init__(self, client: TmuxClient, state: TmuxFindState, op: TmuxOperation) -> None:
         self.client = client
         self.state = state
         self.op = op
+        self.pane: PaneRef | TmuxError | None = None  # not asked until something needs it
 
     @classmethod
     def holding(cls, state: TmuxFindState, op: TmuxOperation) -> 'TmuxFind | None':
@@ -318,9 +319,20 @@ class TmuxFind:
     def tmux(self, client: TmuxClient, *args: str) -> str:
         return self.op.tmux(client, *args)
 
-    def resolve(self) -> PaneRef:
-        # every time, so a pane switch inside tmux is followed
-        return parse_pane(self.tmux(self.client, 'list-clients', '-F', CLIENT_FORMAT), self.client.pid)
+    def lookup(self) -> PaneRef | TmuxError:
+        "[LAW:one-source-of-truth] the one list-clients of an operation: whoever routes on the pane and whoever searches it read this answer, so a pane switch inside tmux is followed by the next operation and never splits one"
+        if self.pane is None:
+            try:
+                self.pane = parse_pane(self.tmux(self.client, 'list-clients', '-F', CLIENT_FORMAT), self.client.pid)
+            except TmuxError as e:
+                self.pane = e
+        return self.pane
+
+    def resolved(self) -> PaneRef:
+        pane = self.lookup()
+        if isinstance(pane, TmuxError):
+            raise TmuxError(str(pane), pane.timed_out) from pane
+        return pane
 
     def can_search(self) -> bool:
         return True
@@ -339,7 +351,7 @@ class TmuxFind:
             self.clear()
             return
         try:
-            pane = self.resolve()
+            pane = self.resolved()
             self.move_to(pane.id)
             counted = parse_count(self.tmux(self.client, *search_batch(pane.id, command(pane.id))))
             self.state.status = self.status_of(pane.id, text, counted)
@@ -385,7 +397,7 @@ class TmuxFind:
 
     def program_selection_text(self) -> str | None:
         try:
-            pane = self.resolve()
+            pane = self.resolved()
             return self.read_selection(pane.id) if pane.in_mode else None
         except TmuxError as e:
             log_error(f'Find in tmux: could not read the selection: {e}')

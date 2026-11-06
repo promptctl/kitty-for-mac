@@ -743,6 +743,30 @@ class TmuxFindWindowTest(BaseTest):
         self.assertIsInstance(w.find_backend(), TmuxFind)
         self.ae(fake.calls, [])
 
+    def test_a_pane_that_changes_between_lookups_cannot_split_routing_from_searching(self):
+        # routing read pane %1 (a main-screen pane: tmux's history); tmux then reports %2. The search must go to %1 and ask list-clients once.
+        fake = FakeTmux(pane='%1')
+        fake.in_mode, fake.alternate = '0', '0'
+        w = self.make_window(self.screen_with_matches(), fake)
+        self.run_in_tmux(w)
+        backend = w.find_pane_backend(w.tmux_client(), TmuxOperation())
+        fake.pane = '%2'
+        backend.find('x')
+        self.ae(len([c for c in fake.calls if 'list-clients' in c]), 1)
+        self.ae(w.tmux_find_state.held.pane, '%1')
+        self.assertTrue(all('%2' not in arg for call in fake.calls for arg in call), 'nothing was sent to the pane tmux switched to')
+
+    def test_a_lookup_that_failed_is_what_the_search_reports(self):
+        fake = FakeTmux()
+        fake.unreachable = True
+        w = self.make_window(self.screen_with_matches(), fake)
+        self.run_in_tmux(w)
+        backend = w.find_pane_backend(w.tmux_client(), TmuxOperation())
+        fake.unreachable = False
+        backend.find('x')
+        self.ae(w.tmux_find_state.status, FindStatus(0, 0, FindCount.unavailable))
+        self.ae(len([c for c in fake.calls if 'list-clients' in c]), 1)
+
     def test_the_lookup_the_clears_and_the_search_spend_one_budget(self):
         fake = FakeTmux()
         w = self.make_window(self.screen_with_matches(), fake)
