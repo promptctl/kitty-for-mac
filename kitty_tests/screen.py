@@ -1714,6 +1714,10 @@ class TestScreen(BaseTest):
         s.find_clear()
         self.ae((s.find_count(), s.find_matches()), (0, ()))
 
+        # the query is text: bytes, even valid UTF-8, are refused before reaching the engine
+        self.assertRaises(TypeError, s.find_set_query, b'\xff', False)
+        self.assertRaises(TypeError, s.find_set_query, b'x', False)
+
     def test_user_marking(self):
 
         def cells(*a, y=0, mark=3):

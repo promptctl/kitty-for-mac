@@ -1268,11 +1268,13 @@ class Screen:
         pass
 
     def find_count(self) -> int:
-        """The number of matches still in the buffer. macOS only."""
+        """The number of matches find_set_query found, less those whose lines have since
+        left the history ring. macOS only."""
         pass
 
     def find_matches(self) -> tuple[tuple[int, int, int, int], ...]:
-        """Test only: every match still in the buffer, in buffer order, as
+        """Test only: the matches find_set_query found, less those whose lines have since
+        left the history ring, in buffer order, as
         (abs_start_line, start_x, abs_end_line, end_x), both cells included. macOS only."""
         pass
 

@@ -3,7 +3,7 @@
 
 use regex::bytes::{Regex, RegexBuilder};
 
-/// The cells one byte of a logical line came from, as kitty/kitty_rs.h defines it.
+/// The cells one byte of a logical line came from, as kitty/find.h defines it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FindCellSpan {
@@ -27,8 +27,12 @@ pub struct FindMatch {
 pub struct FindEngine {
     /// None is the empty query: there is nothing to find, so every line yields no match.
     regex: Option<Regex>,
-    /// Sorted in buffer order: lines are fed oldest first.
+    /// Sorted in buffer order: lines are fed oldest first. The first `evicted` entries have
+    /// left the history ring and are no longer matches.
     matches: Vec<FindMatch>,
+    /// Evicted entries still at the front of `matches`, removed in one drain once they are
+    /// as many as the live ones, so eviction costs amortized O(evicted), not O(live).
+    evicted: usize,
 }
 
 impl FindEngine {
@@ -36,6 +40,7 @@ impl FindEngine {
     /// literal: `regex::escape` puts it through the regex crate's literal fast path.
     pub fn set_query(&mut self, query: &str, case_insensitive: bool) -> Result<(), regex::Error> {
         self.matches.clear();
+        self.evicted = 0;
         // a query that fails to build leaves the empty query, never the previous one
         self.regex = None;
         self.regex = (!query.is_empty())
@@ -47,7 +52,9 @@ impl FindEngine {
     /// Appends the matches in one logical line, whose byte i of `text` came from `cells[i]`.
     pub fn feed_line(&mut self, abs_first_line: u64, text: &[u8], cells: &[FindCellSpan]) {
         assert_eq!(text.len(), cells.len(), "a logical line has one cell span per byte");
-        debug_assert!(
+        // [LAW:no-silent-failure] the cuts in drop_lines_from and evict_before need sorted
+        // matches; an out-of-order feed would make them drop the wrong ones, quietly
+        assert!(
             self.matches.last().is_none_or(|m| m.abs_end_line < abs_first_line),
             "lines are fed in buffer order"
         );
@@ -65,16 +72,21 @@ impl FindEngine {
 
     /// Drops the matches starting at `abs_line` or later, ahead of feeding those lines again.
     pub fn drop_lines_from(&mut self, abs_line: u64) {
-        self.matches.truncate(self.matches.partition_point(|m| m.abs_start_line < abs_line));
+        let live = self.matches().partition_point(|m| m.abs_start_line < abs_line);
+        self.matches.truncate(self.evicted + live);
     }
 
     /// Drops the matches starting before `abs_line`: their lines have left the history ring.
     pub fn evict_before(&mut self, abs_line: u64) {
-        self.matches.drain(..self.matches.partition_point(|m| m.abs_start_line < abs_line));
+        self.evicted += self.matches().partition_point(|m| m.abs_start_line < abs_line);
+        if self.evicted >= self.matches.len() - self.evicted {
+            self.matches.drain(..self.evicted);
+            self.evicted = 0;
+        }
     }
 
     pub fn matches(&self) -> &[FindMatch] {
-        &self.matches
+        &self.matches[self.evicted..]
     }
 }
 
@@ -207,5 +219,47 @@ mod tests {
         assert_eq!(e.matches(), &all[..2]);
         e.evict_before(1);
         assert_eq!(e.matches(), &all[1..2]);
+    }
+
+    fn starts(e: &FindEngine) -> Vec<u64> {
+        e.matches().iter().map(|m| m.abs_start_line).collect()
+    }
+
+    fn engine_with_one_match_per_line(lines: u64) -> FindEngine {
+        let mut e = FindEngine::default();
+        e.set_query("x", false).unwrap();
+        for abs in 0..lines {
+            let (text, cells) = line(&["x"], narrow);
+            e.feed_line(abs, &text, &cells);
+        }
+        e
+    }
+
+    #[test]
+    fn eviction_in_steps_keeps_exactly_the_later_matches() {
+        let mut e = engine_with_one_match_per_line(10);
+        // evicting one line at a time crosses the point where the evicted entries are drained
+        for oldest in 1..=10 {
+            e.evict_before(oldest);
+            assert_eq!(starts(&e), (oldest..10).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn drop_after_evict_cuts_at_the_line() {
+        let mut e = engine_with_one_match_per_line(6);
+        e.evict_before(2);
+        e.drop_lines_from(4);
+        let (text, cells) = line(&["x"], narrow);
+        e.feed_line(4, &text, &cells);
+        assert_eq!(starts(&e), [2, 3, 4]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lines are fed in buffer order")]
+    fn an_out_of_order_feed_panics() {
+        let mut e = engine_with_one_match_per_line(6);
+        let (text, cells) = line(&["x"], narrow);
+        e.feed_line(5, &text, &cells);
     }
 }

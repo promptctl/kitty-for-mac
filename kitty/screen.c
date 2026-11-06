@@ -45,6 +45,9 @@
 #include "vt-parser.h"
 #include "resize.h"
 #include "find.h"
+#ifdef __APPLE__
+#include "kitty_rs.h"
+#endif
 
 static const ScreenModes empty_modes = {0, .mDECAWM = true, .mDECTCEM = true, .mDECARM = true};
 
@@ -6981,24 +6984,36 @@ find_count(Screen *self, PyObject *o UNUSED) {
     return PyLong_FromSize_t(count);
 }
 
+// the empty query compiles, so this cannot fail
+static void
+screen_find_clear(Screen *self) {
+    char err[1];
+    kitty_rs_find_set_query(self->find_engine, (const uint8_t*)"", 0, false, err, sizeof(err));
+}
+
 static PyObject *
 find_clear(Screen *self, PyObject *o UNUSED) {
-    kitty_rs_find_set_query(self->find_engine, (const uint8_t*)"", 0, false);
+    screen_find_clear(self);
     Py_RETURN_NONE;
 }
 
 static PyObject *
 find_set_query(Screen *self, PyObject *args) {
-    const char *query; Py_ssize_t len; int case_insensitive;
-    if (!PyArg_ParseTuple(args, "s#p", &query, &len, &case_insensitive)) return NULL;
-    if (!kitty_rs_find_set_query(self->find_engine, (const uint8_t*)query, len, case_insensitive)) {
-        PyErr_Format(PyExc_ValueError, "Cannot search for the query: %s", query);
+    PyObject *text; int case_insensitive;
+    // [LAW:parse-dont-validate] a str, never bytes: its UTF-8 is valid by construction
+    if (!PyArg_ParseTuple(args, "Up", &text, &case_insensitive)) return NULL;
+    Py_ssize_t len;
+    const char *query = PyUnicode_AsUTF8AndSize(text, &len);
+    if (!query) return NULL;
+    char err[512];
+    if (!kitty_rs_find_set_query(self->find_engine, (const uint8_t*)query, len, case_insensitive, err, sizeof(err))) {
+        PyErr_Format(PyExc_ValueError, "Cannot search for the query: %s", err);
         return NULL;
     }
     // the sink never stops the walk, so running out of memory is its only failure
     if (find_walk_main_buffer(self, feed_find_engine, self->find_engine) == FIND_WALK_OUT_OF_MEMORY) {
         // a part-walked buffer is not an answer
-        find_clear(self, NULL);
+        screen_find_clear(self);
         return PyErr_NoMemory();
     }
     return find_count(self, NULL);
