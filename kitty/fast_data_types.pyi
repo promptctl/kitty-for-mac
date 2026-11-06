@@ -931,6 +931,9 @@ def last_focused_os_window_id() -> int:
 def current_focused_os_window_id() -> int:
     pass
 
+def terminal_has_focus(os_window_id: int) -> bool:
+    pass
+
 def cocoa_keychain_store_secret(service: str, account: str, label: str, secret: Secret) -> None:
     pass
 

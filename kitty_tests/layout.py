@@ -32,7 +32,7 @@ class Window:
         self.margin = EdgeWidths()
         self.focused = False
 
-    def focus_changed(self, focused):
+    def activation_changed(self, focused):
         self.focused = focused
 
     def effective_border(self):
