@@ -797,6 +797,78 @@ is_apple_fn_global_shortcut(NSEvent *event) {
     return has_apple_fn_global_shortcut();
 }
 
+// Keyboard focus belongs to a native AppKit view (a text field, its field
+// editor, a button) rather than to the terminal. The terminal is the window's
+// content view; the window itself as first responder also counts as the
+// terminal, as it always has. A keyboard grab, or a kitty keyboard mode such as
+// a pending multi-key shortcut, sends every key to the terminal.
+GLFWAPI bool
+glfwCocoaNativeViewHasFocus(void) {
+    if (_glfw.keyboard_grabbed || _glfw.ignoreOSKeyboardProcessing) return false;
+    NSWindow *kw = [NSApp keyWindow];
+    if (!kw) return false;
+    NSResponder *fr = [kw firstResponder];
+    return [fr isKindOfClass:[NSView class]] && fr != kw.contentView;
+}
+
+// The key a Command shortcut is matched on: the typed character when it is
+// ASCII, otherwise the key at that position on a US layout, as AppKit's menu
+// matching does on Cyrillic, Greek and other non-Latin layouts.
+static unichar
+command_shortcut_key(NSEvent *event) {
+    NSString *chars = [event characters];
+    if ([chars length] == 1 && [chars characterAtIndex:0] < 0x80) return [[chars lowercaseString] characterAtIndex:0];
+    return vk_code_to_unicode([event keyCode]);
+}
+
+// The standard text editing action kitty has no menu item for, or NULL. Copy
+// and Paste are menu items; their actions follow focus (kitty/cocoa_window.m).
+static SEL
+standard_edit_action(unichar key, NSEventModifierFlags mods) {
+    const bool cmd = mods == NSEventModifierFlagCommand;
+    const bool cmd_shift = mods == (NSEventModifierFlagCommand | NSEventModifierFlagShift);
+    switch (key) {
+        case 'x': return cmd ? @selector(cut:) : NULL;
+        case 'a': return cmd ? @selector(selectAll:) : NULL;
+        case 'z': return cmd ? @selector(undo:) : cmd_shift ? @selector(redo:) : NULL;
+    }
+    return NULL;
+}
+
+// Whether a flagsChanged event leaves its modifier key's flag set. With both
+// keys of a pair held, releasing one still reads as down; the record for it
+// is then cleared by the release of the other.
+static bool
+modifier_key_is_down(NSEvent *event) {
+    NSEventModifierFlags flag = 0;
+    switch ([event keyCode]) {
+        case kVK_Shift: case kVK_RightShift: flag = NSEventModifierFlagShift; break;
+        case kVK_Control: case kVK_RightControl: flag = NSEventModifierFlagControl; break;
+        case kVK_Option: case kVK_RightOption: flag = NSEventModifierFlagOption; break;
+        case kVK_Command: case kVK_RightCommand: flag = NSEventModifierFlagCommand; break;
+        case kVK_CapsLock: flag = NSEventModifierFlagCapsLock; break;
+        case kVK_Function: flag = NSEventModifierFlagFunction; break;
+    }
+    return ([event modifierFlags] & flag) != 0;
+}
+
+// The responder that would take a nil-targeted action and says it can perform
+// it now, asked the way AppKit asks before enabling a menu item, or nil.
+static id
+valid_target_for_action(SEL action) {
+    id target = [NSApp targetForAction:action to:nil from:nil];
+    if (!target) return nil;
+    NSMenuItem *probe = [[[NSMenuItem alloc] initWithTitle:@"" action:action keyEquivalent:@""] autorelease];
+    if ([target respondsToSelector:@selector(validateMenuItem:)]) return [target validateMenuItem:probe] ? target : nil;
+    if ([target respondsToSelector:@selector(validateUserInterfaceItem:)]) return [target validateUserInterfaceItem:probe] ? target : nil;
+    return target;
+}
+
+GLFWAPI bool
+glfwCocoaNativeViewCanPerform(const char *action) {
+    return valid_target_for_action(NSSelectorFromString(@(action))) != nil;
+}
+
 GLFWAPI GLFWapplicationshouldhandlereopenfun
 glfwSetApplicationShouldHandleReopen(GLFWapplicationshouldhandlereopenfun callback) {
     GLFWapplicationshouldhandlereopenfun previous = handle_reopen_callback;
@@ -841,44 +913,74 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
         } last_keydown_shortcut_event;
         last_keydown_shortcut_event.virtual_key_code = 0xffff;
         last_keydown_shortcut_event.input_source_switch_modifiers = 0;
+        void (^record_shortcut_keydown)(NSEvent *, NSEventModifierFlags) = ^(NSEvent *event, NSEventModifierFlags input_source_switch_modifiers) {
+            last_keydown_shortcut_event.virtual_key_code = [event keyCode];
+            last_keydown_shortcut_event.input_source_switch_modifiers = input_source_switch_modifiers;
+            last_keydown_shortcut_event.timestamp = [event timestamp];
+        };
+        // Where each held key's press went, by keycode: 0 when not held,
+        // KEY_TO_APPKIT for a native view, otherwise the windowNumber of the
+        // terminal's window. Repeats and the release follow the press,
+        // whatever focus or the key window does in between.
+        enum { KEY_TO_APPKIT = -1 };
+        static NSInteger key_press_destination[128];
+        NSInteger (^current_key_destination)(void) = ^NSInteger(void) {
+            if (glfwCocoaNativeViewHasFocus()) return KEY_TO_APPKIT;
+            NSWindow *kw = [NSApp keyWindow];
+            return kw ? [kw windowNumber] : 0;
+        };
+        // Sends an event to the terminal in the window numbered dest, or
+        // returns it to AppKit, as the monitor's return value.
+        NSEvent * (^deliver_key_event)(NSEvent *, NSInteger, SEL) = ^NSEvent *(NSEvent *event, NSInteger dest, SEL handler) {
+            if (dest == KEY_TO_APPKIT) {
+                debug_input("key event left to AppKit as its press went to a native view\n");
+                return event;
+            }
+            NSWindow *w = dest > 0 ? [NSApp windowWithWindowNumber:dest] : nil;
+            if (w && w.contentView) [w.contentView performSelector:handler withObject:event];
+            else debug_input("key event ignored as no keyWindow present\n");
+            return nil;
+        };
 
         NSEvent * (^keydown_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("---------------- key down -------------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
+          const bool native_focus = glfwCocoaNativeViewHasFocus();
           if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed) {
               // first check if there is a global menu bar shortcut
               if ([[NSApp mainMenu] performKeyEquivalent:event]) {
                   debug_input("keyDown triggered global menu bar action ignoring\n");
-                  last_keydown_shortcut_event.virtual_key_code = [event keyCode];
-                  last_keydown_shortcut_event.input_source_switch_modifiers = 0;
-                  last_keydown_shortcut_event.timestamp = [event timestamp];
+                  record_shortcut_keydown(event, 0);
+                  return nil;
+              }
+              // the edit shortcuts kitty's menu lacks, for a focused native view
+              SEL edit_action = native_focus ? standard_edit_action(command_shortcut_key(event), USEFUL_MODS([event modifierFlags])) : NULL;
+              id edit_target = edit_action ? valid_target_for_action(edit_action) : nil;
+              if (edit_target && [NSApp sendAction:edit_action to:edit_target from:nil]) {
+                  debug_input("keyDown sent a standard edit action to the focused native view\n");
+                  record_shortcut_keydown(event, 0);
                   return nil;
               }
               // now check if there is a useful apple shortcut
               int global_shortcut = is_active_apple_global_shortcut(event);
               if (is_useful_apple_global_shortcut(global_shortcut)) {
                   debug_input("keyDown triggered global macOS shortcut ignoring\n");
-                  last_keydown_shortcut_event.virtual_key_code = [event keyCode];
                   // record the modifier keys if switching to the next input source
-                  last_keydown_shortcut_event.input_source_switch_modifiers =
-                      (global_shortcut == kSHKSelectNextSourceInInputMenu) ? USEFUL_MODS([event modifierFlags]) : 0;
-                  last_keydown_shortcut_event.timestamp = [event timestamp];
+                  record_shortcut_keydown(event, (global_shortcut == kSHKSelectNextSourceInInputMenu) ? USEFUL_MODS([event modifierFlags]) : 0);
                   return event;
               }
               // check for JIS keyboard layout function keys
               if (is_apple_jis_layout_function_key(event)) {
                   debug_input("keyDown triggered JIS layout function key ignoring\n");
-                  last_keydown_shortcut_event.virtual_key_code = [event keyCode];
-                  last_keydown_shortcut_event.input_source_switch_modifiers = 0;
-                  last_keydown_shortcut_event.timestamp = [event timestamp];
+                  record_shortcut_keydown(event, 0);
                   return event;
               }
           }
           last_keydown_shortcut_event.virtual_key_code = 0xffff;
-          NSWindow *kw = [NSApp keyWindow];
-          if (kw && kw.contentView) [kw.contentView keyDown:event];
-          else debug_input("keyDown ignored as no keyWindow present\n");
-          return nil;
+          const unsigned short vk = [event keyCode];
+          if (vk >= arraysz(key_press_destination)) return deliver_key_event(event, current_key_destination(), @selector(keyDown:));
+          if (![event isARepeat] || !key_press_destination[vk]) key_press_destination[vk] = current_key_destination();
+          return deliver_key_event(event, key_press_destination[vk], @selector(keyDown:));
         };
 
         NSEvent * (^keyup_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
@@ -890,10 +992,11 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               debug_input("keyUp ignored as corresponds to previous keyDown that triggered a shortcut\n");
               return nil;
           }
-          NSWindow *kw = [NSApp keyWindow];
-          if (kw && kw.contentView) [kw.contentView keyUp:event];
-          else debug_input("keyUp ignored as no keyWindow present\n");
-          return nil;
+          const unsigned short vk = [event keyCode];
+          if (vk >= arraysz(key_press_destination) || !key_press_destination[vk]) return deliver_key_event(event, current_key_destination(), @selector(keyUp:));
+          const NSInteger dest = key_press_destination[vk];
+          key_press_destination[vk] = 0;
+          return deliver_key_event(event, dest, @selector(keyUp:));
         };
 
         NSEvent * (^flags_changed_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
@@ -910,10 +1013,15 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                   last_keydown_shortcut_event.input_source_switch_modifiers = 0;
               return event;
           }
-          NSWindow *kw = [NSApp keyWindow];
-          if (kw && kw.contentView) [kw.contentView flagsChanged:event];
-          else debug_input("flagsChanged ignored as no keyWindow present\n");
-          return nil;
+          const unsigned short vk = [event keyCode];
+          if (vk >= arraysz(key_press_destination)) return deliver_key_event(event, current_key_destination(), @selector(flagsChanged:));
+          if (modifier_key_is_down(event)) {
+              if (!key_press_destination[vk]) key_press_destination[vk] = current_key_destination();
+              return deliver_key_event(event, key_press_destination[vk], @selector(flagsChanged:));
+          }
+          const NSInteger dest = key_press_destination[vk] ? key_press_destination[vk] : current_key_destination();
+          key_press_destination[vk] = 0;
+          return deliver_key_event(event, dest, @selector(flagsChanged:));
         };
 
         _glfw.ns.keyUpMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyUp handler:keyup_block];
