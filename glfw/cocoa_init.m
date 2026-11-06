@@ -797,6 +797,42 @@ is_apple_fn_global_shortcut(NSEvent *event) {
     return has_apple_fn_global_shortcut();
 }
 
+// Keyboard focus belongs to a native AppKit view (a text field, its field
+// editor, a button) rather than to the terminal. The terminal is the window's
+// content view; the window itself as first responder also counts as the
+// terminal, as it always has.
+static NSWindow*
+key_window_with_native_focus(void) {
+    NSWindow *kw = [NSApp keyWindow];
+    if (!kw) return nil;
+    NSResponder *fr = [kw firstResponder];
+    if (![fr isKindOfClass:[NSView class]] || fr == kw.contentView) return nil;
+    return kw;
+}
+
+// The standard text editing shortcuts, sent to a focused native view before
+// kitty's menu sees them. kitty's Edit menu Copy and Paste items act on the
+// terminal, and it has no Cut, Select All or Undo items at all.
+static bool
+send_standard_edit_action(NSEvent *event) {
+    NSEventModifierFlags mods = USEFUL_MODS([event modifierFlags]);
+    NSString *chars = [event charactersIgnoringModifiers];
+    if ([chars length] != 1) return false;
+    SEL action = NULL;
+    switch ([[chars lowercaseString] characterAtIndex:0]) {
+        case 'c': if (mods == NSEventModifierFlagCommand) action = @selector(copy:); break;
+        case 'v': if (mods == NSEventModifierFlagCommand) action = @selector(paste:); break;
+        case 'x': if (mods == NSEventModifierFlagCommand) action = @selector(cut:); break;
+        case 'a': if (mods == NSEventModifierFlagCommand) action = @selector(selectAll:); break;
+        case 'z':
+            if (mods == NSEventModifierFlagCommand) action = @selector(undo:);
+            else if (mods == (NSEventModifierFlagCommand | NSEventModifierFlagShift)) action = @selector(redo:);
+            break;
+    }
+    if (!action || ![NSApp targetForAction:action to:nil from:nil]) return false;
+    return [NSApp sendAction:action to:nil from:nil];
+}
+
 GLFWAPI GLFWapplicationshouldhandlereopenfun
 glfwSetApplicationShouldHandleReopen(GLFWapplicationshouldhandlereopenfun callback) {
     GLFWapplicationshouldhandlereopenfun previous = handle_reopen_callback;
@@ -845,6 +881,14 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
         NSEvent * (^keydown_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("---------------- key down -------------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
+          NSWindow *native_focus_window = key_window_with_native_focus();
+          if (native_focus_window && send_standard_edit_action(event)) {
+              debug_input("keyDown sent a standard edit action to the focused native view\n");
+              last_keydown_shortcut_event.virtual_key_code = [event keyCode];
+              last_keydown_shortcut_event.input_source_switch_modifiers = 0;
+              last_keydown_shortcut_event.timestamp = [event timestamp];
+              return nil;
+          }
           if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed) {
               // first check if there is a global menu bar shortcut
               if ([[NSApp mainMenu] performKeyEquivalent:event]) {
@@ -875,6 +919,10 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               }
           }
           last_keydown_shortcut_event.virtual_key_code = 0xffff;
+          if (native_focus_window) {
+              debug_input("keyDown left to AppKit as a native view has focus\n");
+              return event;
+          }
           NSWindow *kw = [NSApp keyWindow];
           if (kw && kw.contentView) [kw.contentView keyDown:event];
           else debug_input("keyDown ignored as no keyWindow present\n");
@@ -890,6 +938,7 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               debug_input("keyUp ignored as corresponds to previous keyDown that triggered a shortcut\n");
               return nil;
           }
+          if (key_window_with_native_focus()) return event;
           NSWindow *kw = [NSApp keyWindow];
           if (kw && kw.contentView) [kw.contentView keyUp:event];
           else debug_input("keyUp ignored as no keyWindow present\n");
@@ -910,6 +959,7 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                   last_keydown_shortcut_event.input_source_switch_modifiers = 0;
               return event;
           }
+          if (key_window_with_native_focus()) return event;
           NSWindow *kw = [NSApp keyWindow];
           if (kw && kw.contentView) [kw.contentView flagsChanged:event];
           else debug_input("flagsChanged ignored as no keyWindow present\n");
