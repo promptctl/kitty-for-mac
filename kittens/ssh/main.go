@@ -657,9 +657,8 @@ func load_color_schemes(names ...string) (ans map[string]map[string]string, err 
 // colors are set via escape codes as for any program. Otherwise, the color
 // schemes for all system color schemes are sent to kitty, which switches
 // between them when the system color scheme changes. This requires kitty to
-// receive the push colors escape code, which does not happen with tmux.
-// change_colors is the escape code that sets the colors for host_opts. Behind
-// tmux, which cannot carry the color scheme DCS, only color_scheme applies.
+// receive the push colors escape code, which does not happen with tmux, so
+// when in_tmux only color_scheme applies.
 func change_colors(host_opts *Config, in_tmux bool) (ans string, err error) {
 	variants := map[string]string{
 		"dark": host_opts.Color_scheme_dark, "light": host_opts.Color_scheme_light, "no_preference": host_opts.Color_scheme_no_preference}

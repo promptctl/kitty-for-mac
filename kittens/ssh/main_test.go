@@ -175,18 +175,18 @@ func TestSSHChangeColors(t *testing.T) {
 		}
 		return s[p]
 	}
-	change := func(c Config) string {
-		ans, err := change_colors(&c, false)
+	change := func(c Config, in_tmux bool) string {
+		ans, err := change_colors(&c, in_tmux)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return ans
 	}
 	// existing configs with only color_scheme use escape codes
-	if ans := change(Config{}); ans != "" {
+	if ans := change(Config{}, false); ans != "" {
 		t.Fatalf("Colors changed with no color scheme: %#v", ans)
 	}
-	if ans := change(Config{Color_scheme: a}); ans != "\x1b[#P"+themes.ColorSettingsAsEscapeCodes(settings(a)) {
+	if ans := change(Config{Color_scheme: a}, false); ans != "\x1b[#P"+themes.ColorSettingsAsEscapeCodes(settings(a)) {
 		t.Fatalf("Incorrect escape codes for color_scheme: %#v", ans)
 	}
 	if _, err := change_colors(&Config{Color_scheme_dark: filepath.Join(tdir, "missing.conf")}, false); err == nil {
@@ -194,7 +194,7 @@ func TestSSHChangeColors(t *testing.T) {
 	}
 
 	variants := func(c Config) map[string]any {
-		ans := change(c)
+		ans := change(c, false)
 		prefix := "\x1b[#P\x1bP@kitty-color-scheme|"
 		if !strings.HasPrefix(ans, prefix) || !strings.HasSuffix(ans, "\x1b\\") {
 			t.Fatalf("Incorrect escape code for color scheme variants: %#v", ans)
@@ -228,18 +228,16 @@ func TestSSHChangeColors(t *testing.T) {
 	if diff := cmp.Diff(map[string]any{"light": spec(b)}, variants(Config{Color_scheme_light: b})); diff != "" {
 		t.Fatalf("Incorrect color scheme variants:\n%s", diff)
 	}
-	// tmux cannot carry the color scheme DCS, so only color_scheme applies
-	in_tmux := func(c Config) string {
-		ans, err := change_colors(&c, true)
-		if err != nil {
-			t.Fatal(err)
+	// behind tmux only color_scheme applies
+	if ans := change(Config{}, true); ans != "" {
+		t.Fatalf("Colors changed in tmux with no color scheme: %#v", ans)
+	}
+	for _, c := range []Config{{Color_scheme: a}, {Color_scheme: a, Color_scheme_dark: b}} {
+		if ans := change(c, true); ans != "\x1b[#P"+themes.ColorSettingsAsEscapeCodes(settings(a)) {
+			t.Fatalf("Incorrect escape codes for color_scheme in tmux: %#v", ans)
 		}
-		return ans
 	}
-	if ans := in_tmux(Config{Color_scheme_dark: b}); ans != "" {
+	if ans := change(Config{Color_scheme_dark: b}, true); ans != "" {
 		t.Fatalf("Colors changed in tmux with only a variant color scheme: %#v", ans)
-	}
-	if ans := in_tmux(Config{Color_scheme: a, Color_scheme_dark: b}); ans != "\x1b[#P"+themes.ColorSettingsAsEscapeCodes(settings(a)) {
-		t.Fatalf("Incorrect escape codes for color_scheme in tmux: %#v", ans)
 	}
 }
