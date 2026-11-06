@@ -44,6 +44,7 @@
 #include "keys.h"
 #include "vt-parser.h"
 #include "resize.h"
+#include "find.h"
 
 static const ScreenModes empty_modes = {0, .mDECAWM = true, .mDECTCEM = true, .mDECARM = true};
 
@@ -6923,6 +6924,34 @@ scroll_to_next_mark(Screen *self, PyObject *args) {
     Py_RETURN_FALSE;
 }
 
+static bool
+append_logical_line_tuple(void *ans, const FindLogicalLine *l) {
+    RAII_PyObject(text, PyUnicode_DecodeUTF8(l->text, l->text_len, "strict"));
+    RAII_PyObject(cells, PyList_New(0));
+    if (!text || !cells) return false;
+    for (size_t i = 0; i < l->text_len; i++) {
+        // one entry per codepoint: the span of its lead byte
+        if ((l->text[i] & 0xC0) == 0x80) continue;
+        RAII_PyObject(t, Py_BuildValue("III", l->cells[i].row, l->cells[i].x, l->cells[i].x_last));
+        if (!t || PyList_Append(cells, t) != 0) return false;
+    }
+    RAII_PyObject(item, Py_BuildValue("KOO", (unsigned long long)l->abs_first_line, text, cells));
+    return item && PyList_Append(ans, item) == 0;
+}
+
+static PyObject *
+find_logical_lines(Screen *self, PyObject *o UNUSED) {
+    RAII_PyObject(ans, PyList_New(0));
+    if (!ans) return NULL;
+    switch (find_walk_main_buffer(self, append_logical_line_tuple, ans)) {
+        case FIND_WALK_COMPLETE: return Py_NewRef(ans);
+        // the sink stops only when a Python call failed, so the error is already set
+        case FIND_WALK_SINK_STOPPED: return NULL;
+        case FIND_WALK_OUT_OF_MEMORY: return PyErr_NoMemory();
+    }
+    return NULL;
+}
+
 static PyObject *
 marked_cells(Screen *self, PyObject *o UNUSED) {
     RAII_PyObject(ans, PyList_New(0));
@@ -7417,6 +7446,7 @@ static PyMethodDef methods[] = {
                                     MND(marked_cells, METH_NOARGS) MND(scroll_to_next_mark, METH_VARARGS) MND(update_only_line_graphics_data, METH_NOARGS)
                                         MND(bell, METH_NOARGS) MND(current_selections, METH_NOARGS) MND(is_selection_dirty, METH_NOARGS){
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
+    MND(find_logical_lines, METH_NOARGS)
 
     {NULL} /* Sentinel */
 };

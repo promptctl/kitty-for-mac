@@ -497,11 +497,7 @@ unicode_in_range(
         }
         if (lc.chars[0] == '\t') {
             buf->len++;
-            unsigned num_cells_to_skip_for_tab = lc.count > 1 ? lc.chars[1] : 0;
-            while (num_cells_to_skip_for_tab && i + 1 < limit && cell_is_char(self->cpu_cells + i + 1, ' ')) {
-                i++;
-                num_cells_to_skip_for_tab--;
-            }
+            i = tab_padding_end(self->cpu_cells, i, limit, lc.count > 1 ? lc.chars[1] : 0);
         } else buf->len += include_cc ? lc.count : 1;
     }
     if (add_trailing_newline && !self->cpu_cells[self->xnum - 1].next_char_was_wrapped && buf->len < buf->capacity) buf->buf[buf->len++] = '\n';
@@ -655,12 +651,7 @@ line_as_ansi(Line *self, ANSILineState *s, index_type start_at, index_type stop_
 
         index_type num_cells_to_skip_for_tab = text_in_cell_ansi(s, self->cpu_cells + s->pos, self->text_cache, skip_multiline_non_zero_lines);
         s->prev_gpu_cell = cell;
-        const CPUCell *next = self->cpu_cells + s->pos + 1;
-        while (num_cells_to_skip_for_tab && s->pos + 1 < s->limit && cell_is_char(next, ' ')) {
-            num_cells_to_skip_for_tab--;
-            s->pos++;
-            next++;
-        }
+        s->pos = tab_padding_end(self->cpu_cells, s->pos, s->limit, num_cells_to_skip_for_tab);
     }
     close_multicell(s);
     if (s->output_buf->active_hyperlink_id && s->limit < self->xnum && !self->cpu_cells[s->limit].hyperlink_id) write_hyperlink_to_ansi_buf(s, 0);
@@ -1058,10 +1049,9 @@ apply_mark(Line *line, const uint16_t mark, index_type *cell_pos, unsigned int *
     text_in_cell(line->cpu_cells + x, line->text_cache, &lc);
     if (lc.chars[0]) {
         if (lc.chars[0] == '\t') {
-            unsigned num_cells_to_skip_for_tab = lc.count > 1 ? lc.chars[1] : 0;
-            while (num_cells_to_skip_for_tab && x + 1 < line->xnum && cell_is_char(line->cpu_cells + x + 1, ' ')) {
+            const index_type last = tab_padding_end(line->cpu_cells, x, line->xnum, lc.count > 1 ? lc.chars[1] : 0);
+            while (x < last) {
                 x++;
-                num_cells_to_skip_for_tab--;
                 MARK;
             }
         } else if (line->cpu_cells[x].is_multicell) {

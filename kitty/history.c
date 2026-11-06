@@ -243,6 +243,7 @@ historybuf_set_line_has_image_placeholders(HistoryBuf *self, index_type y, bool 
 void
 historybuf_clear(HistoryBuf *self) {
     pagerhist_clear(self);
+    self->abs_oldest_line += self->count;
     self->count = 0;
     self->start_of_data = 0;
     for (size_t i = 0; i < self->num_segments; i++) free_segment(self->segments + i);
@@ -320,6 +321,7 @@ historybuf_push(HistoryBuf *self, ANSIBuf *as_ansi_buf, bool *needs_clear) {
     if (self->count == self->ynum) {
         pagerhist_push(self, as_ansi_buf);
         self->start_of_data = (self->start_of_data + 1) % self->ynum;
+        self->abs_oldest_line++;
         *needs_clear = true;
     } else {
         self->count++;
@@ -725,6 +727,7 @@ historybuf_alloc_for_rewrap(unsigned int columns, HistoryBuf *self) {
         if (ans->num_segments < self->num_segments) add_segment(ans, self->num_segments - ans->num_segments);
         ans->count = 0;
         ans->start_of_data = 0;
+        ans->abs_oldest_line = self->abs_oldest_line;
     }
     return ans;
 }

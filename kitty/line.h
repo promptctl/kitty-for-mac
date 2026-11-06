@@ -146,6 +146,14 @@ static inline bool
 cell_is_char(const CPUCell *c, char_type ch) {
     return c->ch_and_idx == ch;
 }
+// A tab cell stores in its second char how many of the ' ' cells after it are its padding
+// (screen_tab). Returns the last cell the tab at x covers: padding stops at limit or at the
+// first padding cell overwritten since.
+static inline index_type
+tab_padding_end(const CPUCell *cells, index_type x, index_type limit, unsigned num_padding) {
+    for (; num_padding && x + 1 < limit && cell_is_char(cells + x + 1, ' '); num_padding--) x++;
+    return x;
+}
 static inline index_type
 cell_scale(const CPUCell *c) {
     return c->is_multicell ? c->scale : 1;
