@@ -192,7 +192,7 @@ typedef struct {
         MainBufferView view;
         size_t painted;
     } find_last_rendered;
-    // the find status the find_status_changed callback last reported
+    // the find status the find bar was last told, written only by find_status_for_bar
     struct { size_t current, total; } find_reported;
 #endif
     bool has_focus;
@@ -412,7 +412,7 @@ bool parse_sgr(Screen *screen, const uint8_t *buf, unsigned int num, const char 
 bool screen_pause_rendering(Screen *self, bool pause, int for_in_ms);
 void screen_check_pause_rendering(Screen *self, monotonic_t now);
 #ifdef __APPLE__
-bool screen_take_find_status_change(Screen *self);
+bool screen_find_status_changed(Screen *self);
 void screen_report_find_status_change(Screen *self);
 #endif
 void screen_designate_charset(Screen *self, uint32_t which, uint32_t as);

@@ -2079,7 +2079,7 @@ class TestScreen(BaseTest):
         # a query with no matches is searched once per keystroke, not again by the step that follows it
         walks = []
         find_set_query = s.find_set_query
-        w.screen = SimpleNamespace(**{n: getattr(s, n) for n in ('find_status', 'find_step', 'is_main_linebuf', 'pause_rendering')},
+        w.screen = SimpleNamespace(**{n: getattr(s, n) for n in ('find_status', 'find_status_for_bar', 'find_step', 'is_main_linebuf', 'pause_rendering')},
                                    find_set_query=lambda *a: walks.append(a) or find_set_query(*a))
         Window.find(w, 'nomatch')
         self.ae(len(walks), 1)
@@ -2425,21 +2425,33 @@ class TestScreen(BaseTest):
             for t in texts:
                 s.draw(t), s.carriage_return(), s.linefeed()
 
-        # each frame reports a status that changed since the last report, once
+        # each frame reports a status the bar was not told, and the window tells it, as
+        # push_find_bar does
         def reports(s):
             before = s.callbacks.find_status_changes
             s.find_report_status_change()
-            return s.callbacks.find_status_changes - before
+            if n := s.callbacks.find_status_changes - before:
+                s.find_status_for_bar()
+            return n
 
         s = self.create_screen(cols=5, lines=3, scrollback=4)
         lines_of(s, 'x0')
         self.ae(reports(s), 0, 'no query, nothing to report')
         s.find_set_query('x', False)
-        self.ae(reports(s), 1)
-        self.ae(reports(s), 0, 'unchanged since the last report')
+        s.find_report_status_change()
+        s.find_report_status_change()
+        self.ae(s.callbacks.find_status_changes, 2, 'a report no window took up is made again')
+        s.find_status_for_bar()
+        self.ae(reports(s), 0, 'the bar was told')
         # new output adds matches, and a read that tells no bar does not hide the change
         lines_of(s, 'x1', 'x2')
         self.ae(s.find_status(), (0, 3, False))
+        self.ae(reports(s), 1)
+        # a paused screen shows the frame of the pause, so the change waits for its end
+        self.assertTrue(s.pause_rendering(True, 5000))
+        lines_of(s, 'x3')
+        self.ae(reports(s), 0)
+        self.assertTrue(s.pause_rendering(False))
         self.ae(reports(s), 1)
         # output past the ring's end evicts matches
         lines_of(s, *('y' for _ in range(6)))

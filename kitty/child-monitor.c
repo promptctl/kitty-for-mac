@@ -1215,7 +1215,7 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
 }
 
 #ifdef __APPLE__
-// [LAW:no-ambient-temporal-coupling] taken during the walk, reported after it: a report runs
+// [LAW:no-ambient-temporal-coupling] asked during the walk, reported after it: a report runs
 // Python, which can close windows and move OS windows and tabs in memory under the walk's
 // pointers. The list holds the Screens themselves, which outlive any of that.
 static void
@@ -1228,7 +1228,7 @@ report_find_status_changes(void) {
             Tab *tab = os_window->tabs + t;
             for (unsigned i = 0; i < tab->num_windows; i++) {
                 Screen *screen = tab->windows[i].render_data.screen;
-                if (screen && screen_take_find_status_change(screen) && PyList_Append(changed, (PyObject*)screen) != 0) PyErr_Print();
+                if (screen && screen_find_status_changed(screen) && PyList_Append(changed, (PyObject*)screen) != 0) PyErr_Print();
             }
         }
     }

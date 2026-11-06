@@ -1316,9 +1316,15 @@ class Screen:
         an end. macOS only."""
         pass
 
+    def find_status_for_bar(self) -> tuple[int, int, bool]:
+        """find_status(), recorded as what the find bar was last told: the one read a window
+        tells the bar from. macOS only."""
+        pass
+
     def find_report_status_change(self) -> None:
-        """What each frame does for this screen: when find_status() has changed since the
-        last report, call the callbacks' find_status_changed(). macOS only."""
+        """What each frame does for this screen: when find_status() differs from what the bar
+        was last told and rendering is not paused, call the callbacks' find_status_changed().
+        macOS only."""
         pass
 
     def find_count(self) -> int:
