@@ -944,3 +944,30 @@ class TestKeys(BaseTest):
         kd = first_kd('--when-focus-on 1 --allow-fallback=ascii ctrl+c copy_to_clipboard')
         self.ae(kd.options.allow_fallback, (KeyFallbackType.alternate,))
         self.ae(kd.options.when_focus_on, '1')
+
+    def test_key_destination(self):
+        from kitty.fast_data_types import test_key_destination
+        # destinations as (kind, id): kind 1 is a terminal window, 2 a native view
+        term, field, other = (1, 7), (2, 0xf1e1d), (2, 0x0e1)
+        a, ret, lshift, rshift, cmd, caps = 0x00, 0x24, 0x38, 0x3C, 0x37, 0x39
+        LSHIFT, RSHIFT, SHIFT, CMD, LCMD, CAPS = 0x2, 0x4, 0x20000, 0x100000, 0x8, 0x10000
+
+        def t(steps, expected):
+            self.ae(test_key_destination([(e, vk, x, *cur) for e, vk, x, cur in steps]), expected)
+
+        # Return held in a field whose action focuses the terminal: repeats and the release stay with the field
+        t([('down', ret, 0, field), ('down', ret, 1, term), ('up', ret, 0, term)], [field, field, field])
+        # a press always goes where focus is now, even if an earlier release was never seen
+        t([('down', a, 0, field), ('down', a, 0, term), ('up', a, 0, field)], [field, term, term])
+        # Cmd pressed in the terminal, released in another app after Cmd+Tab: the next press goes to the field
+        t([('flags', cmd, CMD | LCMD, term), ('flags', cmd, CMD | LCMD, field), ('flags', cmd, 0, term)], [term, field, field])
+        # a release handed to AppKit early still ends the hold: the shift release lands on an event for another key
+        t([('flags', lshift, SHIFT | LSHIFT, term), ('flags', cmd, CMD | LCMD, field), ('flags', lshift, SHIFT | LSHIFT, field)],
+          [term, field, field])
+        # both shifts held: releasing either one releases that key, each to where its press went
+        t([('flags', lshift, SHIFT | LSHIFT, term), ('flags', rshift, SHIFT | LSHIFT | RSHIFT, field),
+           ('flags', lshift, SHIFT | RSHIFT, other), ('flags', rshift, 0, other)], [term, field, term, field])
+        # CapsLock toggles go where focus is at each toggle
+        t([('flags', caps, CAPS, term), ('flags', caps, 0, field)], [term, field])
+        # keys outside the table follow focus
+        t([('down', 200, 0, term), ('up', 200, 0, field)], [term, field])

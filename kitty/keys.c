@@ -9,6 +9,7 @@
 #include "keys.h"
 #include "screen.h"
 #include "glfw-wrapper.h"
+#include "../glfw/key_destination.h"
 #include <structmember.h>
 
 #ifndef __APPLE__
@@ -485,11 +486,41 @@ pyis_modifier_key(PyObject *self UNUSED, PyObject *a) {
     Py_RETURN_FALSE;
 }
 
+// Replays (event, vk, extra, current_kind, current_id) steps through a fresh
+// table and returns the (kind, id) each one is delivered to. event is 'down',
+// 'up' or 'flags'; extra is is_repeat for 'down' and the event's modifierFlags
+// for 'flags'.
+static PyObject *
+test_key_destination(PyObject *self UNUSED, PyObject *steps) {
+    KeyDestinationTable t = {0};
+    RAII_PyObject(ans, PyList_New(0));
+    RAII_PyObject(it, PyObject_GetIter(steps));
+    if (!ans || !it) return NULL;
+    PyObject *step;
+    while ((step = PyIter_Next(it))) {
+        const char *event; unsigned short vk; unsigned long long extra, id; int kind;
+        const int ok = PyArg_ParseTuple(step, "sHKiK", &event, &vk, &extra, &kind, &id);
+        Py_DECREF(step);
+        if (!ok) return NULL;
+        const KeyDestination current = {(KeyDestinationKind)kind, (uintptr_t)id};
+        KeyDestination dest;
+        if (strcmp(event, "down") == 0) dest = key_destination_for_key_down(&t, vk, extra != 0, current);
+        else if (strcmp(event, "up") == 0) dest = key_destination_for_key_up(&t, vk, current);
+        else if (strcmp(event, "flags") == 0) dest = key_destination_for_flags_changed(&t, vk, extra, current);
+        else { PyErr_Format(PyExc_ValueError, "unknown key event: %s", event); return NULL; }
+        RAII_PyObject(r, Py_BuildValue("iK", (int)dest.kind, (unsigned long long)dest.id));
+        if (!r || PyList_Append(ans, r) != 0) return NULL;
+    }
+    if (PyErr_Occurred()) return NULL;
+    return Py_NewRef(ans);
+}
+
 static PyMethodDef module_methods[] = {
     M(key_for_native_key_name, METH_VARARGS),
     M(encode_key_for_tty, METH_VARARGS | METH_KEYWORDS),
     M(inject_key, METH_VARARGS | METH_KEYWORDS),
     M(is_modifier_key, METH_O),
+    METHODB(test_key_destination, METH_O),
     {0}};
 
 // SingleKey {{{

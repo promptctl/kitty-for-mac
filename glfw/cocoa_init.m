@@ -28,6 +28,7 @@
 
 #include "internal.h"
 #include "../kitty/monotonic.h"
+#include "key_destination.h"
 #include <sys/param.h> // For MAXPATHLEN
 #include <sys/sysctl.h>
 #include <stdatomic.h>
@@ -835,22 +836,14 @@ standard_edit_action(unichar key, NSEventModifierFlags mods) {
     return NULL;
 }
 
-// Whether a flagsChanged event leaves its modifier key's flag set. With both
-// keys of a pair held, releasing one still reads as down; the record for it
-// is then cleared by the release of the other.
-static bool
-modifier_key_is_down(NSEvent *event) {
-    NSEventModifierFlags flag = 0;
-    switch ([event keyCode]) {
-        case kVK_Shift: case kVK_RightShift: flag = NSEventModifierFlagShift; break;
-        case kVK_Control: case kVK_RightControl: flag = NSEventModifierFlagControl; break;
-        case kVK_Option: case kVK_RightOption: flag = NSEventModifierFlagOption; break;
-        case kVK_Command: case kVK_RightCommand: flag = NSEventModifierFlagCommand; break;
-        case kVK_CapsLock: flag = NSEventModifierFlagCapsLock; break;
-        case kVK_Function: flag = NSEventModifierFlagFunction; break;
-    }
-    return ([event modifierFlags] & flag) != 0;
-}
+// key_destination.h spells these out so kitty's tests can include it without AppKit.
+_Static_assert(kVK_Shift == 0x38 && kVK_RightShift == 0x3C && kVK_Control == 0x3B && kVK_RightControl == 0x3E &&
+               kVK_Option == 0x3A && kVK_RightOption == 0x3D && kVK_Command == 0x37 && kVK_RightCommand == 0x36 &&
+               kVK_Function == 0x3F, "key_destination.h key codes");
+_Static_assert(NX_DEVICELSHIFTKEYMASK == 0x2 && NX_DEVICERSHIFTKEYMASK == 0x4 && NX_DEVICELCTLKEYMASK == 0x1 &&
+               NX_DEVICERCTLKEYMASK == 0x2000 && NX_DEVICELALTKEYMASK == 0x20 && NX_DEVICERALTKEYMASK == 0x40 &&
+               NX_DEVICELCMDKEYMASK == 0x8 && NX_DEVICERCMDKEYMASK == 0x10 && NSEventModifierFlagFunction == 0x800000,
+               "key_destination.h modifier masks");
 
 // The responder that would take a nil-targeted action and says it can perform
 // it now, asked the way AppKit asks before enabling a menu item, or nil.
@@ -918,28 +911,33 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
             last_keydown_shortcut_event.input_source_switch_modifiers = input_source_switch_modifiers;
             last_keydown_shortcut_event.timestamp = [event timestamp];
         };
-        // Where each held key's press went, by keycode: 0 when not held,
-        // KEY_TO_APPKIT for a native view, otherwise the windowNumber of the
-        // terminal's window. Repeats and the release follow the press,
-        // whatever focus or the key window does in between.
-        enum { KEY_TO_APPKIT = -1 };
-        static NSInteger key_press_destination[128];
-        NSInteger (^current_key_destination)(void) = ^NSInteger(void) {
-            if (glfwCocoaNativeViewHasFocus()) return KEY_TO_APPKIT;
+        static KeyDestinationTable key_destinations;
+        KeyDestination (^current_key_destination)(void) = ^KeyDestination(void) {
             NSWindow *kw = [NSApp keyWindow];
-            return kw ? [kw windowNumber] : 0;
+            if (!kw) return KEY_DEST_NOT_HELD;
+            if (glfwCocoaNativeViewHasFocus()) return (KeyDestination){KEY_DEST_APPKIT, (uintptr_t)[kw firstResponder]};
+            return (KeyDestination){KEY_DEST_TERMINAL, (uintptr_t)[kw windowNumber]};
         };
-        // Sends an event to the terminal in the window numbered dest, or
-        // returns it to AppKit, as the monitor's return value.
-        NSEvent * (^deliver_key_event)(NSEvent *, NSInteger, SEL) = ^NSEvent *(NSEvent *event, NSInteger dest, SEL handler) {
-            if (dest == KEY_TO_APPKIT) {
-                debug_input("key event left to AppKit as its press went to a native view\n");
-                return event;
+        // Sends an event to the terminal it is destined for, or returns it to
+        // AppKit, as the monitor's return value. An AppKit event whose press went
+        // to a responder that has since lost focus is dropped, so a repeat or
+        // release never reaches whatever took focus in between.
+        NSEvent * (^deliver_key_event)(NSEvent *, KeyDestination, SEL) = ^NSEvent *(NSEvent *event, KeyDestination dest, SEL handler) {
+            switch (dest.kind) {
+                case KEY_DEST_APPKIT:
+                    if (key_destination_equal(dest, current_key_destination())) return event;
+                    debug_input("key event dropped as its press went to a native view that no longer has focus\n");
+                    return nil;
+                case KEY_DEST_TERMINAL: {
+                    NSWindow *w = [NSApp windowWithWindowNumber:(NSInteger)dest.id];
+                    if (w && w.contentView) [w.contentView performSelector:handler withObject:event];
+                    else debug_input("key event ignored as the window its press went to is gone\n");
+                    return nil;
+                }
+                case KEY_DEST_NONE:
+                    debug_input("key event ignored as no keyWindow present\n");
+                    return nil;
             }
-            NSWindow *w = dest > 0 ? [NSApp windowWithWindowNumber:dest] : nil;
-            if (w && w.contentView) [w.contentView performSelector:handler withObject:event];
-            else debug_input("key event ignored as no keyWindow present\n");
-            return nil;
         };
 
         NSEvent * (^keydown_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
@@ -977,10 +975,7 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               }
           }
           last_keydown_shortcut_event.virtual_key_code = 0xffff;
-          const unsigned short vk = [event keyCode];
-          if (vk >= arraysz(key_press_destination)) return deliver_key_event(event, current_key_destination(), @selector(keyDown:));
-          if (![event isARepeat] || !key_press_destination[vk]) key_press_destination[vk] = current_key_destination();
-          return deliver_key_event(event, key_press_destination[vk], @selector(keyDown:));
+          return deliver_key_event(event, key_destination_for_key_down(&key_destinations, [event keyCode], [event isARepeat], current_key_destination()), @selector(keyDown:));
         };
 
         NSEvent * (^keyup_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
@@ -992,17 +987,15 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               debug_input("keyUp ignored as corresponds to previous keyDown that triggered a shortcut\n");
               return nil;
           }
-          const unsigned short vk = [event keyCode];
-          if (vk >= arraysz(key_press_destination) || !key_press_destination[vk]) return deliver_key_event(event, current_key_destination(), @selector(keyUp:));
-          const NSInteger dest = key_press_destination[vk];
-          key_press_destination[vk] = 0;
-          return deliver_key_event(event, dest, @selector(keyUp:));
+          return deliver_key_event(event, key_destination_for_key_up(&key_destinations, [event keyCode], current_key_destination()), @selector(keyUp:));
         };
 
         NSEvent * (^flags_changed_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("-------------- flags changed -----------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
           last_keydown_shortcut_event.virtual_key_code = 0xffff;
+          // the table follows every modifier change, including the ones handed to AppKit below
+          const KeyDestination dest = key_destination_for_flags_changed(&key_destinations, [event keyCode], [event modifierFlags], current_key_destination());
           if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed && is_apple_fn_global_shortcut(event)) {
               debug_input("flagsChanged triggered global fn shortcut ignoring\n");
               return event;
@@ -1013,14 +1006,6 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                   last_keydown_shortcut_event.input_source_switch_modifiers = 0;
               return event;
           }
-          const unsigned short vk = [event keyCode];
-          if (vk >= arraysz(key_press_destination)) return deliver_key_event(event, current_key_destination(), @selector(flagsChanged:));
-          if (modifier_key_is_down(event)) {
-              if (!key_press_destination[vk]) key_press_destination[vk] = current_key_destination();
-              return deliver_key_event(event, key_press_destination[vk], @selector(flagsChanged:));
-          }
-          const NSInteger dest = key_press_destination[vk] ? key_press_destination[vk] : current_key_destination();
-          key_press_destination[vk] = 0;
           return deliver_key_event(event, dest, @selector(flagsChanged:));
         };
 
