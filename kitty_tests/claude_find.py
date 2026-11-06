@@ -21,12 +21,14 @@ from kitty.claude_find import (
     Key,
     NotClaude,
     NotYetWritten,
+    PasteBuffer,
     Prompt,
     Searching,
     SearchInput,
     Transcript,
     Unrecognised,
     Written,
+    newest_automatic_buffer,
     parse_view,
     recognise,
     refusal,
@@ -587,6 +589,71 @@ class ClaudeFindIntegrationTest(BaseTest):
                 f.find('zebra')
             self.assertIn(Cause.tmux.name, log.call_args[0][0])
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
+
+
+class SelectionTest(BaseTest):
+    "Cmd+E in a Claude pane: the person's drag is Claude's, copied by Claude at the release into tmux's newest automatic paste buffer"
+
+    def test_the_newest_automatic_buffer_is_the_one_tmux_shows_by_default(self):
+        listing = '100 buffer9\n103 mine\n101 buffer10\n99 buffer2\n'
+        self.ae(newest_automatic_buffer(listing), PasteBuffer('buffer10', 101), 'by number, not by name order, and never a named one')
+        self.assertIsNone(newest_automatic_buffer(''))
+        self.assertIsNone(newest_automatic_buffer('100 mine\n'))
+        for bad in ('buffer1\n', 'x buffer1\n', '100\n'):
+            with self.assertRaises(TmuxError, msg=bad):
+                newest_automatic_buffer(bad)
+
+    def test_a_copy_is_the_selection_when_it_was_made_just_after_the_release(self):
+        released = 1000.9
+        for created, expected, why in (
+            (999, False, 'an old copy'),
+            (1000, True, 'the same second as the release'),
+            (1001, True, 'Claude copied just after the second turned'),
+            (1002, True, 'the slack tmux\'s whole seconds need'),
+            (1003, False, 'a later copy: /copy, or a yank in copy mode'),
+        ):
+            self.ae(PasteBuffer('buffer1', created).copied_at_release(released), expected, why)
+
+    def claude(self, t: PrivateTmux, state: ClaudeFindState) -> ClaudeFind:
+        return ClaudeFind(t.client(), state, TmuxOperation(), ClaudeHost(), ClaudePane(t.pane, 'sid-1', 1, '/x'))
+
+    def test_what_tmux_holds_is_the_selection_only_when_made_by_the_release(self):
+        if not shutil.which('tmux'):
+            self.skipTest('needs tmux')
+        with private_tmux('sleep 600') as t:
+            state = ClaudeFindState()
+
+            class f:  # a find is built for one operation, on the budget of it: each read gets its own
+                @staticmethod
+                def program_selection_text() -> str | None:
+                    return self.claude(t, state).program_selection_text()
+
+            t.tmux('set-buffer', 'an old copy')
+            time.sleep(1.1)  # tmux counts whole seconds
+            self.assertIsNone(f.program_selection_text(), 'no drag has been made in this window')
+            state.released_at = time.time()
+            self.assertIsNone(f.program_selection_text(), 'the newest buffer was made before the release')
+            t.tmux('set-buffer', 'needle')  # Claude copies at the release
+            self.ae(f.program_selection_text(), 'needle')
+            t.tmux('set-buffer', '-b', 'mine', 'a named buffer')
+            self.ae(f.program_selection_text(), 'needle', 'a named buffer is not a copy')
+            t.tmux('set-buffer', 'two\nlines')
+            self.assertIsNone(f.program_selection_text(), 'a query is one line')
+            state.released_at = time.time() - 10
+            self.assertIsNone(f.program_selection_text(), 'a copy long after the release is some other copy')
+            state.released_at = time.time()
+            t.tmux('delete-buffer', '-b', 'mine')
+            while t.tmux('list-buffers', check=False):
+                t.tmux('delete-buffer')
+            self.assertIsNone(f.program_selection_text(), 'nothing copied')
+
+    def test_a_pane_that_cannot_be_told_has_no_selection_to_read(self):
+        state = ClaudeFindState()
+        state.released_at = time.time()
+        failed = ClaudeFindFailure(Cause.undeterminable, 'no session file')
+        f = ClaudeFind(mock.Mock(), state, mock.Mock(), ClaudeHost(), failed)
+        self.assertIsNone(f.program_selection_text())
+        f.op.tmux.assert_not_called()
 
 
 class OperationTest(BaseTest):

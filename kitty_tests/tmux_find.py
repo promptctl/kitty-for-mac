@@ -484,6 +484,8 @@ class FakeTmux:
         self.unreachable = False
         # how list-clients describes the pane: in copy mode, on the main screen, its process
         self.in_mode, self.alternate, self.pane_pid = '1', '0', 4242
+        # the server's paste buffers: (created, name, text)
+        self.buffers: list[tuple[int, str, str]] = []
 
     def __call__(self, argv: Any, env: Any, timeout: float) -> str:
         self.calls.append(list(argv))
@@ -491,6 +493,10 @@ class FakeTmux:
             raise TmuxError('no server running')
         if 'list-clients' in argv:
             return f'{self.client_pid} {self.pane} {self.in_mode} {self.alternate} {self.pane_pid} s:@1.{self.pane}\n'
+        if 'list-buffers' in argv:
+            return ''.join(f'{created} {name}\n' for created, name, _ in self.buffers)
+        if 'show-buffer' in argv:
+            return next(text for _, name, text in self.buffers if name == argv[argv.index('-b') + 1])
         if 'display-message' in argv:
             return self.counted + '\n'
         if 'copy-pipe-no-clear' in argv:
@@ -534,6 +540,7 @@ class TmuxFindWindowTest(BaseTest):
             'tmux_client', 'find_pane_backend', 'find_status', 'end_pane_finds', 'find_backend', 'find_holder', 'end_finds', 'find_backend_to_search',
             'find_step', 'set_find_query', 'find', 'push_find_bar',
             'find_selection_text', 'find_clear', 'find_status_changed', 'use_selection_for_find', 'settle_find', 'cancel_pending_find',
+            'find_backend_for', 'selection_text_in', 'begin_find_in',
         ):
             setattr(w, name, getattr(Window, name).__get__(w))
         w.pushed = []
@@ -726,6 +733,43 @@ class TmuxFindWindowTest(BaseTest):
             tweak(fake)
             _, backend = self.routed(fake, self.claude_host_with(ps, session))
             self.assertIsInstance(backend, TmuxFind, name)
+
+    # Cmd+E in a pane running Claude Code: the drag is Claude's, copied by Claude when the button is released
+
+    def claude_window(self, fake: FakeTmux) -> SimpleNamespace:
+        fake.in_mode, fake.alternate = '0', '1'
+        session = {'pid': 4242, 'sessionId': 'sid', 'tmux': 's:@1.%1'}
+        w = self.make_window(self.screen_with_matches(), fake)
+        w.claude_host = self.claude_host_with('4242 1 /Users/x/.local/bin/claude\n', session)
+        w.on_mouse_event = Window.on_mouse_event.__get__(w)
+        self.run_in_tmux(w)
+        return w
+
+    def release(self, w: SimpleNamespace, **kw: Any) -> None:
+        w.on_mouse_event({'button': 0, 'repeat_count': -1, 'mods': 0, 'grabbed': True, **kw})
+
+    def test_cmd_e_in_a_claude_pane_seeds_from_the_copy_of_the_drag(self):
+        fake = FakeTmux()
+        w = self.claude_window(fake)
+        fake.buffers = [(1, 'buffer0', 'an old copy')]
+        self.assertIsNone(w.find_selection_text(), 'no drag yet: an old copy is not his selection')
+        self.release(w)
+        fake.buffers.append((int(w.claude_find_state.released_at), 'buffer1', 'needle'))
+        self.ae(w.find_selection_text(), 'needle')
+        self.assertTrue(Boss.find_has_selection.__get__(w.boss)(1), 'the menu asks the same function')
+        # a click that selects nothing: the copy of the drag before it is no longer his selection
+        w.claude_find_state.released_at += 60
+        self.assertIsNone(w.find_selection_text())
+        self.assertTrue(w.use_selection_for_find(), 'nothing selected: the key goes to the program')
+
+    def test_only_a_release_the_program_was_given_marks_a_drag(self):
+        w = self.claude_window(FakeTmux())
+        self.release(w, grabbed=False)  # kitty's own selection: its own text
+        self.release(w, repeat_count=1)  # a press
+        self.release(w, button=1)  # the right button
+        self.assertIsNone(w.claude_find_state.released_at)
+        self.release(w)
+        self.assertIsNotNone(w.claude_find_state.released_at)
 
     def test_a_claude_pane_that_cannot_be_told_is_unavailable_and_never_searched_as_tmux(self):
         fake = FakeTmux()

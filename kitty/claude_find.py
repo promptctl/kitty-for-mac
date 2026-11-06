@@ -28,6 +28,7 @@ from .tmux_find import (
     TmuxError,
     TmuxOperation,
     parse_displayed_pane,
+    parse_selection,
     query_argument,
 )
 from .utils import log_error
@@ -299,6 +300,40 @@ def recognise(pane: PaneRef, host: ClaudeHost, op: TmuxOperation) -> ClaudePane 
     raise ClaudeFindFailure(Cause.undeterminable, f'pane {pane.address} runs claude but no session file names it and one of its processes')
 
 
+# What Claude Code copies when the person drags a selection in its UI, which it draws itself: the
+# program has the mouse, so the drag never reaches tmux's copy mode. On release Claude writes the
+# selection into tmux's newest automatic paste buffer.
+
+BUFFER_FORMAT = '#{buffer_created} #{buffer_name}'
+AUTOMATIC_BUFFER = re.compile(r'buffer(\d+)$')
+
+
+# Claude copies inside the handler of the release, so the copy of a selection is made within moments of it. tmux
+# keeps whole seconds, so this is seconds of slack; a newest buffer made later than that is some other copy.
+COPY_LATENCY = 2
+
+
+class PasteBuffer(NamedTuple):
+    name: str
+    created: int  # epoch seconds: tmux keeps no finer time
+
+    def copied_at_release(self, released_at: float) -> bool:
+        "Whether this is the copy Claude Code made when the left button was released at released_at"
+        return int(released_at) <= self.created <= int(released_at) + COPY_LATENCY
+
+
+def newest_automatic_buffer(listing: str) -> PasteBuffer | None:
+    "The buffer show-buffer shows by default, from list-buffers -F BUFFER_FORMAT: the highest-numbered automatic one; a named buffer is never the newest"
+    newest: tuple[int, PasteBuffer] | None = None
+    for line in listing.splitlines():
+        created, _, name = line.partition(' ')
+        if not created.isdigit() or not name:
+            raise TmuxError(f'tmux answered {line!r} where a paste buffer was expected')
+        if (m := AUTOMATIC_BUFFER.match(name)) and (newest is None or int(m[1]) > newest[0]):
+            newest = int(m[1]), PasteBuffer(name, int(created))
+    return newest[1] if newest else None
+
+
 class RanSearch(NamedTuple):
     "The search this backend ran, and the transcript it ran over"
 
@@ -321,6 +356,10 @@ class ClaudeFindState:
         self.held: Hold | None = None
         self.search: RanSearch | None = None
         self.status = IDLE
+        # when the person last let go of the left button in a program that has the mouse: a selection they made in
+        # Claude Code is copied at the release, so only a copy tmux made at or after it is theirs. Not a part of a
+        # search, so rest() leaves it.
+        self.released_at: float | None = None
 
     def reporting(self) -> bool:
         "Whether the bar is told this state's status: a search holds a pane, or failed before it reached one"
@@ -431,7 +470,18 @@ class ClaudeFind:
         return self.state.status
 
     def program_selection_text(self) -> str | None:
-        return None  # a selection made in Claude Code is Cmd+E's own ticket
+        "The text just selected in Claude Code: the newest paste buffer when it is the copy of the last release; any other is some other copy, and None"
+        released_at = self.state.released_at
+        if released_at is None or isinstance(self.pane, ClaudeFindFailure):
+            return None
+        try:
+            newest = newest_automatic_buffer(self.op.tmux(self.client, 'list-buffers', '-F', BUFFER_FORMAT))
+            if newest is None or not newest.copied_at_release(released_at):
+                return None
+            return parse_selection(self.op.tmux(self.client, 'show-buffer', '-b', newest.name))
+        except TmuxError as e:
+            log_error(f'Find in Claude: could not read the selection: {e}')
+            return None
 
     # Operations
 
