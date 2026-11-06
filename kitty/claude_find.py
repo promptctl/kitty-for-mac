@@ -90,6 +90,7 @@ class Unrecognised:
 
 
 View = Prompt | Transcript | SearchInput | Searching | Unrecognised
+ReturnView = type[Prompt] | type[Transcript]
 
 TRANSCRIPT_MARK = 'Showing detailed transcript'
 SEARCHING_MARK = 'n/N to navigate'
@@ -124,6 +125,17 @@ def parse_view(capture: str) -> View:
     if any(INPUT_ROW.match(r) for r in tail) and not any(PICKER_ROW.match(r) for r in tail):
         return Prompt()
     return Unrecognised(footer)
+
+
+def return_view_of(start: View) -> ReturnView:
+    "The view a hold gives back, from what the pane showed before any key of ours: only a prompt or a transcript is known to be the person's"
+    match start:
+        case Prompt():
+            return Prompt
+        case Transcript() | SearchInput() | Searching():
+            return Transcript
+        case Unrecognised(footer):
+            raise ClaudeFindFailure(Cause.unrecognised, f'cannot begin a search from {footer!r}')
 
 
 class Key(NamedTuple):
@@ -300,7 +312,7 @@ class ClaudeFindState:
 
     def __init__(self) -> None:
         self.held: Held | None = None
-        self.began_in_transcript = False  # the person's own view, read once when the hold began: clear gives it back
+        self.return_to: ReturnView = Prompt  # the person's own view, read once when the hold began: clear gives it back
         self.search: RanSearch | None = None
         self.status = IDLE
 
@@ -311,7 +323,7 @@ class ClaudeFindState:
     def rest(self) -> None:
         "Hold nothing and report nothing"
         self.held = None
-        self.began_in_transcript = False
+        self.return_to = Prompt
         self.search = None
         self.status = IDLE
 
@@ -439,7 +451,7 @@ class ClaudeFind:
             if self.state.held is not None:  # the previous pane could not be left; the next clear retries it
                 raise TmuxError('the previous pane could not be taken out of the transcript view')
         if self.state.held is None:  # the start of a hold: later searches in it find the pane in our own views
-            self.state.began_in_transcript = isinstance(self.view(here), (Transcript, SearchInput, Searching))
+            self.state.return_to = return_view_of(self.view(here))  # an unrecognised start fails here, before a hold records a guess
             self.state.held = here
         return here
 
@@ -478,9 +490,8 @@ class ClaudeFind:
         ref = parse_displayed_pane(self.op.tmux(held.client, 'display-message', '-p', '-t', held.pane, PANE_FORMAT))
         if isinstance(recognise(ref, self.host, self.op), NotClaude):
             return  # Claude quit, or the person took the pane over: no key of ours belongs in it
-        rest = Transcript if self.state.began_in_transcript else Prompt
         view = self.view(held)
-        while not isinstance(view, rest):
+        while not isinstance(view, self.state.return_to):
             match view:
                 case Unrecognised(footer):
                     raise ClaudeFindFailure(Cause.unrecognised, f'cannot leave the search from {footer!r}')
