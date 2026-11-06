@@ -22,7 +22,7 @@ from contextlib import suppress
 from enum import Enum
 from functools import lru_cache, partial
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, NamedTuple, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple, Union, cast
 
 src_base = os.path.dirname(os.path.abspath(__file__))
 glfw_base = os.path.join(src_base, 'glfw')
@@ -210,8 +210,11 @@ class CompilationDatabase:
         self.compile_commands: List[Command] = []
         self.link_commands: List[Command] = []
         self.post_link_commands: List[Command] = []
-        # Recorded with compile_commands but never queued: build_all must not run them a second time
+        # Never queued, so build_all does not run them a second time; recorded in the link database, which only this
+        # file reads, because compile_commands.json is a clang compilation database and these are not C-family compiles
         self.built_now: List[Command] = []
+        # Keys whose output this build found or made current; only these get their new command recorded
+        self.current: Set[CompileKey] = set()
         self.db: Dict[CompileKey, Sequence[str]] = {}
         self.linkdb: Dict[CompileKey, Sequence[str]] = {}
 
@@ -237,9 +240,10 @@ class CompilationDatabase:
     def build_now(self, desc: str, cmd: List[str], is_newer_func: Callable[[], bool], key: CompileKey, on_success: Callable[[], None] = null_func) -> None:
         """Run one command before anything build_all runs, for a build whose outputs the C compiles consume."""
         command = Command(desc, cmd, is_newer_func, on_success, key)
-        if self.needs_build(command, self.db):
+        if self.needs_build(command, self.linkdb):
             run_tool(cmd, desc)
             on_success()
+        self.current.add(key)
         self.built_now.append(command)
 
     def needs_build(self, command: Command, database: Dict[CompileKey, Sequence[str]]) -> bool:
@@ -253,18 +257,32 @@ class CompilationDatabase:
                 return os.path.getsize(compile_cmd.keyfile)
             return 0
 
-        items = [c for c in self.compile_commands if self.needs_build(c, self.db)]
+        items = self.stale(self.compile_commands, self.db)
         items.sort(key=sort_key, reverse=True)
         parallel_run(items)
 
-        items = [c for c in self.link_commands if self.needs_build(c, self.linkdb)]
-        parallel_run(items)
+        parallel_run(self.stale(self.link_commands, self.linkdb))
 
         items = []
         for compile_cmd in self.post_link_commands:
             if not self.incremental or compile_cmd.is_newer_func():
                 items.append(compile_cmd)
         parallel_run(items)
+
+    def stale(self, commands: List[Command], database: Dict[CompileKey, Sequence[str]]) -> List[Command]:
+        """The commands that need running, each marking its key current once it succeeds; the rest are current already."""
+        ans = []
+        for c in commands:
+            if self.needs_build(c, database):
+                ans.append(c._replace(on_success=partial(self.ran, c)))
+            elif c.key is not None:
+                self.current.add(c.key)
+        return ans
+
+    def ran(self, command: Command) -> None:
+        command.on_success()
+        if command.key is not None:
+            self.current.add(command.key)
 
     def cmd_changed(self, command: Command, database: Dict[CompileKey, Sequence[str]]) -> bool:
         if command.key is None:
@@ -290,12 +308,13 @@ class CompilationDatabase:
         return self
 
     def __exit__(self, exc_type: Optional[type], *a: object) -> None:
-        # A build that raised may not have registered every command, so each key it never reached keeps the last
-        # build's record; a finished build records exactly its own commands, so a deleted source's record goes with it
+        # A record says which command produced a key's output, so only a current key gets its new command. A build that
+        # raised keeps the last record for every other key, run or not; a finished build has made every key it
+        # registered current, so it records exactly its own commands and a deleted source's record goes with it
         compile_records = dict(self.db) if exc_type is not None else {}
-        compile_records.update((c.key, c.cmd) for c in self.built_now + self.compile_commands if c.key is not None)
+        compile_records.update((c.key, c.cmd) for c in self.compile_commands if c.key in self.current)
         link_records = dict(self.linkdb) if exc_type is not None else {}
-        link_records.update((c.key, c.cmd) for c in self.link_commands if c.key is not None)
+        link_records.update((c.key, c.cmd) for c in self.built_now + self.link_commands if c.key in self.current)
         with suppress(FileNotFoundError):
             with open(self.dbpath, 'w') as f:
                 json.dump([
