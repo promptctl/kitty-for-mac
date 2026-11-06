@@ -295,6 +295,71 @@ class ClaudeFindIntegrationTest(BaseTest):
             self.ae(c.view(), Prompt(), 'the person gets the prompt back')
             self.ae(c.keys().count("b'\\x1b'"), 1, 'one Esc from an accepted search reaches the prompt, and none after')
 
+    def person_opens_transcript(self, c: FakeClaudeSession) -> None:
+        c.t.tmux('send-keys', '-t', c.t.pane, 'C-o')  # the person's own Ctrl+o
+        deadline = time.monotonic() + 5
+        while not isinstance(c.view(), Transcript) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.ae(c.view(), Transcript())
+
+    def test_clear_returns_a_pane_that_was_in_the_transcript_to_the_transcript(self):
+        with fake_claude(*CONVERSATION) as c:
+            self.person_opens_transcript(c)
+            state = ClaudeFindState()
+            c.finder(state).find('zebra')
+            self.ae(c.view(), Searching(1, 3))
+            c.holding(state).clear()
+            self.assertIsNone(state.held)
+            self.ae(c.view(), Transcript(), 'the person gets the view they were reading back')
+
+    def test_the_starting_view_is_recorded_once_per_hold(self):
+        with fake_claude(*CONVERSATION) as c:
+            self.person_opens_transcript(c)
+            state = ClaudeFindState()
+            c.finder(state).find('zebra')  # leaves the pane in Claude's accepted search
+            self.assertIs(state.held.return_to, Transcript)
+            c.finder(state).find('filler')  # the pane shows our search now, which reads as the transcript either way
+            c.finder(state).step('filler', False)
+            self.assertIs(state.held.return_to, Transcript)
+            c.holding(state).clear()
+            self.ae(c.view(), Transcript())
+
+    def test_a_pane_that_began_at_the_prompt_ends_at_the_prompt_after_several_searches(self):
+        with fake_claude(*CONVERSATION) as c:
+            state = ClaudeFindState()
+            c.finder(state).find('zebra')
+            c.finder(state).find('filler')
+            self.assertIs(state.held.return_to, Prompt)
+            c.holding(state).clear()
+            self.ae(c.view(), Prompt())
+            c.finder(state).find('zebra')  # a new hold reads the view again
+            self.assertIs(state.held.return_to, Prompt)
+
+    def test_a_pane_that_began_in_the_persons_own_search_ends_in_the_transcript(self):
+        with fake_claude(*CONVERSATION) as c:
+            self.person_opens_transcript(c)
+            c.t.tmux('send-keys', '-t', c.t.pane, '/')
+            deadline = time.monotonic() + 5
+            while c.view() != SearchInput('') and time.monotonic() < deadline:
+                time.sleep(0.02)
+            state = ClaudeFindState()
+            c.finder(state).find('zebra')
+            c.holding(state).clear()
+            self.ae(c.view(), Transcript())
+
+    def test_a_clear_that_timed_out_after_leaving_the_search_finishes_the_way_back(self):
+        with fake_claude(*CONVERSATION) as c:
+            self.person_opens_transcript(c)
+            state = ClaudeFindState()
+            c.finder(state).find('zebra')
+            c.t.tmux('send-keys', '-t', c.t.pane, 'Escape')  # a first clear got as far as the prompt before it ran out of time
+            deadline = time.monotonic() + 5
+            while not isinstance(c.view(), Prompt) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            c.holding(state).clear()
+            self.ae(c.view(), Transcript())
+            self.assertIsNone(state.held)
+
     def test_a_search_with_no_match_is_zero_and_still_cleared(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
@@ -400,6 +465,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
             self.ae(c.keys(), [], 'a key sent into a dialog could answer it')
             self.assertTrue(state.reporting())
+            self.assertIsNone(state.held, 'a start that is not the persons prompt or transcript is not recorded as one')
 
     def test_a_session_with_matches_and_no_transcript_file_is_unavailable(self):
         with fake_claude(*CONVERSATION) as c:
@@ -485,11 +551,14 @@ class ClaudeFindIntegrationTest(BaseTest):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
             c.finder(state).find('zebra')
-            other = c.t.tmux('split-window', '-d', '-P', '-F', '#{pane_id}', 'sleep 600')
+            other = c.t.tmux('split-window', '-d', '-P', '-F', '#{pane_id}', "printf '❯ \\n'; sleep 600")  # a prompt row: a view of Claude Code
+            deadline = time.monotonic() + 5
+            while not isinstance(parse_view(c.t.tmux('capture-pane', '-p', '-t', other)), Prompt) and time.monotonic() < deadline:
+                time.sleep(0.02)
             f = ClaudeFind(c.t.client(), state, TmuxOperation(), c.host(), ClaudePane(other, 'sid-2', 1, c.dir))
             f.guarded(lambda pane: f.hold(pane.pane_id))
             self.ae(c.view(), Prompt(), 'the first pane was brought back')
-            self.ae(state.held.pane, other)  # type: ignore[union-attr]
+            self.ae(state.held.at.pane, other)  # type: ignore[union-attr]
 
     def test_every_cause_is_logged_once_and_sets_unavailable(self):
         with fake_claude(*CONVERSATION) as c:
