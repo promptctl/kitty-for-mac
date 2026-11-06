@@ -3226,6 +3226,15 @@ cocoa_chrome_window_for_key_window(void *key_window) {
     return NULL;
 }
 
+// The id of the OS window whose NSWindow is w, 0 for none: the bar's callbacks come with the window it is in
+id_type
+cocoa_os_window_id_for_window(void *w) {
+    for (size_t i = 0; w && i < global_state.num_os_windows; i++) {
+        if (chrome_window(global_state.os_windows + i) == w) return global_state.os_windows[i].id;
+    }
+    return 0;
+}
+
 // The NSWindow of the OS window an optional os_window_id argument names, the active OS window when it is 0.
 // False with a Python error set; true with *ans NULL when the window is gone or takes no chrome.
 static bool
@@ -3259,6 +3268,36 @@ name(PyObject UNUSED *self, PyObject *args UNUSED) { \
 COCOA_OS_WINDOW_FUNC(cocoa_minimize_os_window, cocoa_minimize)
 COCOA_OS_WINDOW_FUNC(cocoa_show_find_bar_for_os_window, cocoa_show_find_bar)
 #undef COCOA_OS_WINDOW_FUNC
+
+#ifdef __APPLE__
+static PyObject *
+cocoa_update_find_bar_py(PyObject UNUSED *self, PyObject *args) {
+    id_type os_window_id; const char *query; long current, total;
+    if (!PyArg_ParseTuple(args, "Ksll", &os_window_id, &query, &current, &total)) return NULL;
+    void *window = chrome_window(os_window_for_id(os_window_id));
+    if (window) cocoa_update_find_bar(window, query, current, total);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+cocoa_find_bar_covered_pixels_py(PyObject UNUSED *self, PyObject *args) {
+    id_type os_window_id;
+    if (!PyArg_ParseTuple(args, "K", &os_window_id)) return NULL;
+    void *window = chrome_window(os_window_for_id(os_window_id));
+    return PyLong_FromLong(window ? cocoa_find_bar_covered_pixels(window) : 0);
+}
+#else
+static PyObject *
+cocoa_update_find_bar_py(PyObject UNUSED *self, PyObject *args UNUSED) {
+    PyErr_SetString(PyExc_RuntimeError, "cocoa_update_find_bar() is only supported on macOS");
+    return NULL;
+}
+static PyObject *
+cocoa_find_bar_covered_pixels_py(PyObject UNUSED *self, PyObject *args UNUSED) {
+    PyErr_SetString(PyExc_RuntimeError, "cocoa_find_bar_covered_pixels() is only supported on macOS");
+    return NULL;
+}
+#endif
 
 static PyObject *
 change_os_window_state(PyObject *self UNUSED, PyObject *args) {
@@ -4207,6 +4246,8 @@ static PyMethodDef module_methods[] = {
     METHODB(cocoa_hide_other_apps, METH_NOARGS),
     METHODB(cocoa_minimize_os_window, METH_VARARGS),
     METHODB(cocoa_show_find_bar_for_os_window, METH_VARARGS),
+    {"cocoa_update_find_bar", cocoa_update_find_bar_py, METH_VARARGS, ""},
+    {"cocoa_find_bar_covered_pixels", cocoa_find_bar_covered_pixels_py, METH_VARARGS, ""},
     {"glfw_wayland_inject_init", (PyCFunction)glfw_wayland_inject_init, METH_VARARGS, ""},
     {"glfw_wayland_inject_terminate", (PyCFunction)glfw_wayland_inject_terminate, METH_NOARGS, ""},
     {"glfw_wayland_inject_mouse_motion_absolute", (PyCFunction)glfw_wayland_inject_mouse_motion_absolute, METH_VARARGS, ""},
