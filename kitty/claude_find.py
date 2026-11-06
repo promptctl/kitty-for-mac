@@ -13,11 +13,12 @@ import json
 import os
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import NamedTuple
 
+from .child import environ_of_process
 from .find_backends import FindCount, FindStatus
 from .tmux_find import (
     PANE_FORMAT,
@@ -27,6 +28,7 @@ from .tmux_find import (
     TmuxError,
     TmuxOperation,
     parse_displayed_pane,
+    query_argument,
 )
 from .utils import log_error
 
@@ -39,7 +41,7 @@ class Cause(Enum):
     unrecognised = 'the pane shows something other than the views of Claude Code 2.1.299'
     refused = 'the query cannot be typed and checked'
     tmux = 'tmux could not be asked'
-    timed_out = 'the pane did not show the view a key must produce in time'
+    timed_out = 'the operation ran out of its time before the pane showed the view a key must produce, or the machine answered'
     unlocatable = 'the transcript file of a session with matches cannot be found'
     undeterminable = 'whether the pane is Claude Code could not be told'
     not_claude_pane = 'the pane is not Claude Code'
@@ -131,7 +133,8 @@ class Key(NamedTuple):
     literal: bool = False
 
     def argv(self, pane: str) -> list[str]:
-        return ['send-keys', '-t', pane, '-l', '--', self.send] if self.literal else ['send-keys', '-t', pane, self.send]
+        # tmux splits a command at an argument that ends in a semicolon, so literal text ending in one is escaped
+        return ['send-keys', '-t', pane, '-l', '--', query_argument(self.send)] if self.literal else ['send-keys', '-t', pane, self.send]
 
 
 # how long a step waits for the counter to move before it takes the counter as it is
@@ -167,6 +170,7 @@ class ClaudePane(NamedTuple):
     pane_id: str
     session_id: str
     pid: int
+    config_dir: str  # the claude process's own CLAUDE_CONFIG_DIR: where its session file and transcript are written
 
 
 @dataclass(frozen=True)
@@ -194,31 +198,39 @@ def is_claude_command(command: str) -> bool:
 class ClaudeHost:
     "The machine Claude Code runs on: its session files, its transcripts and its processes. The one place they are read."
 
-    def __init__(self, config_dir: str | None = None, ps: Callable[[], str] | None = None) -> None:
-        self.config_dir = config_dir or os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude')
+    def __init__(self, ps: Callable[[float], str] | None = None, environ_of: Callable[[int], Mapping[str, str]] = environ_of_process) -> None:
         self.ps = ps or self.run_ps
+        self.environ_of = environ_of
 
     @staticmethod
-    def run_ps() -> str:
+    def run_ps(timeout: float) -> str:
         try:
-            cp = subprocess.run(
-                ['ps', '-A', '-o', 'pid=,ppid=,command='], capture_output=True, encoding='utf-8', errors='replace', check=True, timeout=1.0
-            )
+            cp = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,command='], capture_output=True, encoding='utf-8', errors='replace', check=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise ClaudeFindFailure(Cause.timed_out, f'ps did not answer within {max(timeout, 0):.2f}s') from None
         except (OSError, subprocess.SubprocessError) as e:
             raise ClaudeFindFailure(Cause.undeterminable, f'cannot list processes: {e}') from e
         return cp.stdout
 
-    def processes(self) -> dict[int, tuple[int, str]]:
-        "pid -> (parent pid, command)"
+    def processes(self, op: TmuxOperation) -> dict[int, tuple[int, str]]:
+        "pid -> (parent pid, command); the listing spends from the operation's budget like every other wait"
         ans: dict[int, tuple[int, str]] = {}
-        for line in self.ps().splitlines():
+        for line in self.ps(op.remaining()).splitlines():
             if m := re.match(r'\s*(\d+)\s+(\d+)\s+(.*)$', line):
                 ans[int(m[1])] = (int(m[2]), m[3])
         return ans
 
-    def sessions(self) -> list[dict]:
+    def config_dir_of(self, pid: int) -> str:
+        "Where the claude process writes its session file and transcripts: its own CLAUDE_CONFIG_DIR, which kitty's environment need not share"
+        try:
+            env = self.environ_of(pid)
+        except Exception as e:  # the C extension and /proc raise whatever the platform does; the one border where it becomes a typed failure
+            raise ClaudeFindFailure(Cause.undeterminable, f'cannot read the environment of claude process {pid}: {e}') from e
+        return env.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude')
+
+    def sessions(self, config_dir: str) -> list[dict]:
         "The session files of running Claude Code sessions; a file that is not readable JSON is skipped, a directory that cannot be listed is a failure"
-        d = os.path.join(self.config_dir, 'sessions')
+        d = os.path.join(config_dir, 'sessions')
         try:
             names = sorted(os.listdir(d))
         except OSError as e:
@@ -236,9 +248,9 @@ class ClaudeHost:
                 ans.append(data)
         return ans
 
-    def transcript_size(self, session_id: str) -> TranscriptSize:
+    def transcript_size(self, pane: ClaudePane) -> TranscriptSize:
         "The size of the session's transcript file; session ids are UUIDs, so the file is the one match under the projects directory"
-        for path in glob.glob(os.path.join(glob.escape(self.config_dir), 'projects', '*', glob.escape(session_id) + '.jsonl')):
+        for path in glob.glob(os.path.join(glob.escape(pane.config_dir), 'projects', '*', glob.escape(pane.session_id) + '.jsonl')):
             try:
                 return Written(os.stat(path).st_size)
             except OSError:
@@ -246,12 +258,12 @@ class ClaudeHost:
         return NotYetWritten()
 
 
-def recognise(pane: PaneRef, host: ClaudeHost) -> ClaudePane | NotClaude:
+def recognise(pane: PaneRef, host: ClaudeHost, op: TmuxOperation) -> ClaudePane | NotClaude:
     """The pane's kind. NotClaude only on positive evidence; a pane that has a claude process in it whose session
     file cannot be matched is a ClaudeFindFailure, because treating it as another program would search the visible rows."""
     if pane.in_mode or not pane.alternate:
         return NotClaude()
-    table = host.processes()
+    table = host.processes(op)
     children: dict[int, list[int]] = {}
     for pid, (ppid, _) in table.items():
         children.setdefault(ppid, []).append(pid)
@@ -262,12 +274,14 @@ def recognise(pane: PaneRef, host: ClaudeHost) -> ClaudePane | NotClaude:
         if pid not in tree:
             tree.add(pid)
             pending.extend(children.get(pid, ()))
-    if not any(is_claude_command(table[pid][1]) for pid in tree):
+    claudes = sorted(pid for pid in tree if is_claude_command(table[pid][1]))
+    if not claudes:
         return NotClaude()
-    for s in host.sessions():
-        session_id, session_pid = s.get('sessionId'), s.get('pid')
-        if s.get('tmux') == pane.address and isinstance(session_id, str) and isinstance(session_pid, int) and session_pid in tree:
-            return ClaudePane(pane.id, session_id, session_pid)
+    for config_dir in dict.fromkeys(host.config_dir_of(pid) for pid in claudes):
+        for s in host.sessions(config_dir):
+            session_id, session_pid = s.get('sessionId'), s.get('pid')
+            if s.get('tmux') == pane.address and isinstance(session_id, str) and isinstance(session_pid, int) and session_pid in tree:
+                return ClaudePane(pane.id, session_id, session_pid, config_dir)
     raise ClaudeFindFailure(Cause.undeterminable, f'pane {pane.address} runs claude but no session file names it and one of its processes')
 
 
@@ -427,12 +441,12 @@ class ClaudeFind:
         if (why := refusal(text)) is not None:
             raise ClaudeFindFailure(Cause.refused, why)
         # sampled before the first key: a write that lands during the search leaves this smaller than the file
-        size = self.host.transcript_size(pane.session_id)
+        size = self.host.transcript_size(pane)
         held = self.hold(pane.pane_id)
         self.state.search = None
         status = self.run_search(held, text)
-        if status.total > 0 and size == NotYetWritten() and self.host.transcript_size(pane.session_id) == NotYetWritten():
-            where = f'{self.host.config_dir}/projects'
+        if status.total > 0 and size == NotYetWritten() and self.host.transcript_size(pane) == NotYetWritten():
+            where = f'{pane.config_dir}/projects'
             raise ClaudeFindFailure(Cause.unlocatable, f'session {pane.session_id} has {status.total} matches and no transcript file under {where}')
         self.state.search = RanSearch(pane.pane_id, text, size)
         self.state.status = status
@@ -441,7 +455,7 @@ class ClaudeFind:
         held = self.hold(pane.pane_id)
         view = self.view(held)
         ran = self.state.search
-        fresh = ran is not None and ran.pane == pane.pane_id and ran.query == text and ran.size == self.host.transcript_size(pane.session_id)
+        fresh = ran is not None and ran.pane == pane.pane_id and ran.query == text and ran.size == self.host.transcript_size(pane)
         if not (fresh and isinstance(view, Searching)):  # no search of ours is on screen, or Claude's list of matches is out of date
             self.search(pane, text)
             return
@@ -456,7 +470,7 @@ class ClaudeFind:
     def end(self, held: Held) -> None:
         "Bring the held pane back to the prompt, unless it no longer is Claude Code's to bring"
         ref = parse_displayed_pane(self.op.tmux(held.client, 'display-message', '-p', '-t', held.pane, PANE_FORMAT))
-        if isinstance(recognise(ref, self.host), NotClaude):
+        if isinstance(recognise(ref, self.host, self.op), NotClaude):
             return  # Claude quit, or the person took the pane over: no key of ours belongs in it
         view = self.view(held)
         while not isinstance(view, Prompt):

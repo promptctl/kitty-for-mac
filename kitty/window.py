@@ -3041,7 +3041,7 @@ class Window:
             return TmuxFind(client, self.tmux_find_state, op)
         kind: ClaudePane | NotClaude | ClaudeFindFailure
         try:
-            kind = recognise(pane, self.claude_host)
+            kind = recognise(pane, self.claude_host, op)
         except ClaudeFindFailure as failure:  # could not tell: reported by Claude's find, never answered as another program
             kind = failure
         if isinstance(kind, NotClaude):

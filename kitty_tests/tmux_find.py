@@ -697,7 +697,7 @@ class TmuxFindWindowTest(BaseTest):
         if session is not None:
             with open(os.path.join(config, 'sessions', 'one.json'), 'w') as f:
                 json.dump(session, f)
-        return ClaudeHost(config, ps=lambda: ps)
+        return ClaudeHost(ps=lambda timeout: ps, environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': config})
 
     def routed(self, fake: FakeTmux, host: ClaudeHost) -> tuple[SimpleNamespace, Any]:
         w = self.make_window(self.screen_with_matches(), fake)

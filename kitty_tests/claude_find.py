@@ -18,6 +18,7 @@ from kitty.claude_find import (
     ClaudeFindState,
     ClaudeHost,
     ClaudePane,
+    Key,
     NotClaude,
     NotYetWritten,
     Prompt,
@@ -96,7 +97,7 @@ class RecogniserTest(BaseTest):
 
     def host(self, table: str | None = None) -> ClaudeHost:
         text = self.table if table is None else table
-        return ClaudeHost(self.config, ps=lambda: text)
+        return ClaudeHost(ps=lambda timeout: text, environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': self.config})
 
     def session(self, name: str = '600', **kw: Any) -> None:
         write_json(os.path.join(self.config, 'sessions', name + '.json'), {'pid': 600, 'sessionId': 'sid-1', 'tmux': 's:@1.%5', **kw})
@@ -106,51 +107,84 @@ class RecogniserTest(BaseTest):
 
     def test_a_pane_running_claude_is_named_by_its_session_file(self):
         self.session()
-        self.ae(recognise(self.pane(), self.host()), ClaudePane('%5', 'sid-1', 600))
+        self.ae(recognise(self.pane(), self.host(), TmuxOperation()), ClaudePane('%5', 'sid-1', 600, self.config))
         # claude exec'd by the pane's own shell is the pane's process
-        self.ae(recognise(self.pane(pid=600), self.host()), ClaudePane('%5', 'sid-1', 600))
+        self.ae(recognise(self.pane(pid=600), self.host(), TmuxOperation()), ClaudePane('%5', 'sid-1', 600, self.config))
 
     def test_a_pane_that_is_positively_not_claude(self):
         self.session()
-        self.ae(recognise(self.pane(alternate=False), self.host()), NotClaude(), 'main screen: tmux has its history')
-        self.ae(recognise(self.pane(in_mode=True), self.host()), NotClaude(), 'copy mode: keys would reach the mode')
+        self.ae(recognise(self.pane(alternate=False), self.host(), TmuxOperation()), NotClaude(), 'main screen: tmux has its history')
+        self.ae(recognise(self.pane(in_mode=True), self.host(), TmuxOperation()), NotClaude(), 'copy mode: keys would reach the mode')
         # a vim whose pane has the address of a session on another tmux server: the pid is not in its tree
-        self.ae(recognise(self.pane(pid=700), self.host()), NotClaude())
-        self.ae(recognise(self.pane(pid=999), self.host()), NotClaude(), 'a pane whose process is gone')
+        self.ae(recognise(self.pane(pid=700), self.host(), TmuxOperation()), NotClaude())
+        self.ae(recognise(self.pane(pid=999), self.host(), TmuxOperation()), NotClaude(), 'a pane whose process is gone')
 
     def test_could_not_tell_is_never_not_claude(self):
         # the session file names another pane: claude is in the tree and no file explains it
         self.session(tmux='s:@1.%9')
         with self.assertRaises(ClaudeFindFailure) as cm:
-            recognise(self.pane(), self.host())
+            recognise(self.pane(), self.host(), TmuxOperation())
         self.ae(cm.exception.cause, Cause.undeterminable)
         # no sessions directory at all
         shutil.rmtree(os.path.join(self.config, 'sessions'))
         with self.assertRaises(ClaudeFindFailure):
-            recognise(self.pane(), self.host())
+            recognise(self.pane(), self.host(), TmuxOperation())
         # a file that is not JSON among the others is skipped; alone it explains nothing
         self.session('bad', **{})
         write_json(os.path.join(self.config, 'sessions', 'torn.json'), '{"pid": 6')
         write_json(os.path.join(self.config, 'sessions', '600.json'), {'pid': 600, 'sessionId': 'sid-1', 'tmux': 's:@1.%5'})
-        self.ae(recognise(self.pane(), self.host()), ClaudePane('%5', 'sid-1', 600))
+        self.ae(recognise(self.pane(), self.host(), TmuxOperation()), ClaudePane('%5', 'sid-1', 600, self.config))
         os.remove(os.path.join(self.config, 'sessions', '600.json'))
         os.remove(os.path.join(self.config, 'sessions', 'bad.json'))
         with self.assertRaises(ClaudeFindFailure):
-            recognise(self.pane(), self.host())
+            recognise(self.pane(), self.host(), TmuxOperation())
 
     def test_a_ps_that_fails_is_a_failure(self):
-        def boom() -> str:
+        def boom(timeout: float) -> str:
             raise ClaudeFindFailure(Cause.undeterminable, 'cannot list processes')
 
         with self.assertRaises(ClaudeFindFailure):
-            recognise(self.pane(), ClaudeHost(self.config, ps=boom))
+            recognise(self.pane(), ClaudeHost(ps=boom), TmuxOperation())
+
+    def test_the_process_listing_spends_from_the_operations_budget(self):
+        self.session()
+        asked: list[float] = []
+        clock = [0.0]
+
+        def ps(timeout: float) -> str:
+            asked.append(timeout)
+            return self.table
+
+        op = TmuxOperation(now=lambda: clock[0])
+        clock[0] = 0.75
+        recognise(self.pane(), ClaudeHost(ps=ps, environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': self.config}), op)
+        self.ae(asked, [FIND_DEADLINE - 0.75])
+
+    def test_the_config_dir_is_the_claude_process_own_not_kittys(self):
+        # a claude started with its own CLAUDE_CONFIG_DIR writes there; kitty's environment is not consulted
+        with mock.patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': '/nonexistent/kittys'}):
+            self.session()
+            self.ae(recognise(self.pane(), self.host(), TmuxOperation()), ClaudePane('%5', 'sid-1', 600, self.config))
+            with mock.patch.dict(os.environ, {'HOME': self.config}):
+                home = ClaudeHost(ps=lambda timeout: self.table, environ_of=lambda pid: {})  # unset: the default directory
+                write_json(os.path.join(self.config, '.claude', 'sessions', '600.json'), {'pid': 600, 'sessionId': 'sid-2', 'tmux': 's:@1.%5'})
+                self.ae(recognise(self.pane(), home, TmuxOperation()), ClaudePane('%5', 'sid-2', 600, os.path.join(self.config, '.claude')))
+
+    def test_an_environment_that_cannot_be_read_is_a_failure(self):
+        def denied(pid: int) -> dict[str, str]:
+            raise PermissionError('no')
+
+        with self.assertRaises(ClaudeFindFailure) as cm:
+            recognise(self.pane(), ClaudeHost(ps=lambda timeout: self.table, environ_of=denied), TmuxOperation())
+        self.ae(cm.exception.cause, Cause.undeterminable)
 
     def test_the_transcript_of_a_session(self):
         host = self.host()
-        self.ae(host.transcript_size('sid-1'), NotYetWritten())
+        pane = ClaudePane('%5', 'sid-1', 600, self.config)
+        self.ae(host.transcript_size(pane), NotYetWritten())
         write_json(os.path.join(self.config, 'projects', '-Users-x-code-repo', 'sid-1.jsonl'), 'abc\n')
-        self.ae(host.transcript_size('sid-1'), Written(4))
-        self.ae(host.transcript_size('sid-2'), NotYetWritten())
+        self.ae(host.transcript_size(pane), Written(4))
+        self.ae(host.transcript_size(pane._replace(session_id='sid-2')), NotYetWritten())
 
 
 class FakeClaudeSession:
@@ -188,10 +222,10 @@ class FakeClaudeSession:
             os.path.join(self.dir, 'sessions', f'{pane_pid}.json'),
             {'pid': int(pane_pid), 'sessionId': 'sid-1', 'tmux': self.t.fmt('#{session_name}:#{window_id}.#{pane_id}')},
         )
-        return ClaudeHost(self.dir, ps=lambda: f'{pane_pid} 1 /x/claude\n')
+        return ClaudeHost(ps=lambda timeout: f'{pane_pid} 1 /x/claude\n', environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': self.dir})
 
     def pane(self) -> ClaudePane:
-        return ClaudePane(self.t.pane, 'sid-1', int(self.t.fmt('#{pane_pid}')))
+        return ClaudePane(self.t.pane, 'sid-1', int(self.t.fmt('#{pane_pid}')), self.dir)
 
     def finder(self, state: ClaudeFindState, op: TmuxOperation | None = None) -> ClaudeFind:
         return ClaudeFind(self.t.client(), state, op or TmuxOperation(), self.host(), self.pane())
@@ -301,6 +335,18 @@ class ClaudeFindIntegrationTest(BaseTest):
                 self.assertTrue(state.reporting())
             self.ae(c.keys().count("b'\\x0f'"), 1, 'only the first search opened the transcript')
 
+    def test_a_query_ending_in_a_semicolon_reaches_the_field_whole(self):
+        # tmux ends a command at an argument that ends in a semicolon, and the escape for it is the key's own
+        self.ae(Key('a;', literal=True).argv('%1')[-1], 'a\\;')
+        self.ae(Key('Enter').argv('%1'), ['send-keys', '-t', '%1', 'Enter'])
+        with fake_claude('first', 'return x; done', 'x; last') as c:
+            state = ClaudeFindState()
+            c.finder(state).find('x;')
+            self.ae(state.status, FindStatus(1, 2, FindCount.exact))
+            c.holding(state).clear()
+            c.finder(state).find(';')
+            self.ae(state.status, FindStatus(1, 2, FindCount.exact))
+
     def test_stepping_re_searches_when_the_conversation_grew(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
@@ -405,7 +451,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             while c.t.fmt('#{alternate_on}') != '0' and time.monotonic() < deadline:
                 time.sleep(0.02)
             keys = len(c.keys())
-            f = ClaudeFind.holding(state, TmuxOperation(), ClaudeHost(c.dir, ps=lambda: f'{pane_pid} 1 /bin/sh\n'))
+            f = ClaudeFind.holding(state, TmuxOperation(), ClaudeHost(ps=lambda timeout: f'{pane_pid} 1 /bin/sh\n', environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': c.dir}))
             assert f is not None
             f.clear()
             self.assertIsNone(state.held)
@@ -436,7 +482,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             state = ClaudeFindState()
             c.finder(state).find('zebra')
             other = c.t.tmux('split-window', '-d', '-P', '-F', '#{pane_id}', 'sleep 600')
-            f = ClaudeFind(c.t.client(), state, TmuxOperation(), c.host(), ClaudePane(other, 'sid-2', 1))
+            f = ClaudeFind(c.t.client(), state, TmuxOperation(), c.host(), ClaudePane(other, 'sid-2', 1, c.dir))
             f.guarded(lambda pane: f.hold(pane.pane_id))
             self.ae(c.view(), Prompt(), 'the first pane was brought back')
             self.ae(state.held.pane, other)  # type: ignore[union-attr]
