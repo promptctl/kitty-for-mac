@@ -943,7 +943,7 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                       record_shortcut_keydown(event, 0);
                       return nil;
                   }
-                  debug_input("keyDown matched a disabled menu bar item, passing it on\n");
+                  debug_input("keyDown matched a menu bar item that sent no action, passing it on\n");
               }
               // now check if there is a useful apple shortcut
               int global_shortcut = is_active_apple_global_shortcut(event);
