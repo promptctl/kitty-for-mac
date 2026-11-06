@@ -610,7 +610,6 @@ def cocoa_send_notification(
 def cocoa_bundle_image_as_png(path_or_identifier: str, output_path: str = '', image_size: int = 256, image_type: int = 1) -> bytes: ...
 def cocoa_remove_delivered_notification(identifier: str) -> bool: ...
 def cocoa_live_delivered_notifications() -> bool: ...
-def cocoa_swift_wiring_probe(message: str) -> str: ...
 def create_os_window(
     get_window_size: Callable[[int, int, int, int, float, float], Tuple[int, int]],
     pre_show_callback: Callable[[int], None],
@@ -867,6 +866,9 @@ def cocoa_hide_other_apps() -> None:
     pass
 
 def cocoa_minimize_os_window(os_window_id: Optional[int] = None) -> None:
+    pass
+
+def cocoa_show_find_bar_for_os_window(os_window_id: int = 0) -> None:
     pass
 
 def locale_is_valid(name: str) -> bool:

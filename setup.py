@@ -1260,16 +1260,15 @@ def build_swift_module(args: Options, kenv: Env) -> SwiftModule:
     os.makedirs(out_dir, exist_ok=True)
     obj = os.path.join(out_dir, 'KittySwift.o')
     header = os.path.join(out_dir, 'KittySwift-Swift.h')
-    # The inputs are the .swift sources, module.modulemap and the C header it maps; editor and Finder files are not
-    inputs = sorted(os.path.join(swift_src_dir, x) for x in os.listdir(swift_src_dir) if x.endswith(('.swift', '.h', '.modulemap')))
+    # The inputs are the .swift sources; editor and Finder files are not
+    inputs = sorted(os.path.join(swift_src_dir, x) for x in os.listdir(swift_src_dir) if x.endswith('.swift'))
     triple = cc_target_triple(kenv)
     unoptimized = args.debug or args.sanitize
     cmd = swiftc + ['-parse-as-library', '-wmo', '-emit-object', '-module-name', 'KittySwift', '-swift-version', '6', '-target', triple]
     cmd += ['-Onone', '-g'] if unoptimized else ['-O'] + (['-g'] if args.profile else [])
     cmd += ['-sanitize=address,undefined'] if args.sanitize else []
     cmd += [] if args.ignore_compiler_warnings else ['-warnings-as-errors']
-    cmd += ['-I', swift_src_dir, '-emit-objc-header-path', header, '-o', obj]
-    cmd += [x for x in inputs if x.endswith('.swift')]
+    cmd += ['-emit-objc-header-path', header, '-o', obj] + inputs
 
     args.compilation_database.build_now(
         f'Compiling {emphasis("Swift module KittySwift")} ...',

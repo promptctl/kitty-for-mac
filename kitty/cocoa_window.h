@@ -32,7 +32,6 @@ typedef enum {
     TOGGLE_MACOS_SECURE_KEYBOARD_ENTRY,
     MACOS_CYCLE_THROUGH_OS_WINDOWS,
     MACOS_CYCLE_THROUGH_OS_WINDOWS_BACKWARDS,
-    SEARCH_SCROLLBACK,
     TOGGLE_FULLSCREEN,
     OPEN_KITTY_WEBSITE,
     HIDE,
@@ -60,6 +59,7 @@ void cocoa_clear_global_shortcuts(void);
 void cocoa_set_edit_menu_focus(bool native_view_has_focus);
 void cocoa_hide_others(void);
 void cocoa_minimize(void *w);
+void cocoa_show_find_bar(void *w);
 void cocoa_set_uncaught_exception_handler(void);
 void cocoa_update_menu_bar_title(PyObject *);
 size_t cocoa_get_workspace_ids(void *w, size_t *workspace_ids, size_t array_sz);

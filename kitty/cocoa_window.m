@@ -23,7 +23,6 @@
 #include <crt_externs.h>
 #include <libproc.h>
 #include <objc/runtime.h>
-#include "swift/kitty_c.h"
 #include "KittySwift-Swift.h"
 
 static inline void
@@ -301,7 +300,13 @@ PENDING(reload_config, RELOAD_CONFIG)
 PENDING(toggle_macos_secure_keyboard_entry, TOGGLE_MACOS_SECURE_KEYBOARD_ENTRY)
 PENDING(macos_cycle_through_os_windows, MACOS_CYCLE_THROUGH_OS_WINDOWS)
 PENDING(macos_cycle_through_os_windows_backwards, MACOS_CYCLE_THROUGH_OS_WINDOWS_BACKWARDS)
-PENDING(search_scrollback, SEARCH_SCROLLBACK)
+// Not a pending action: those run on a later loop tick, after the keys typed right after
+// Cmd+F, which would land in the shell or in the field before its text is selected.
+// validateMenuItem: has already refused the item unless the key window takes chrome.
+- (void)show_find_bar:(id)sender {
+    (void)sender;
+    [KittyFindBar showIn:cocoa_chrome_window_for_key_window([NSApp keyWindow])];
+}
 PENDING(toggle_fullscreen, TOGGLE_FULLSCREEN)
 PENDING(open_kitty_website, OPEN_KITTY_WEBSITE)
 PENDING(hide_macos_app, HIDE)
@@ -335,6 +340,8 @@ ACTION(use_selection_for_find)
         item.action == @selector(clear_last_command:) || item.action == @selector(clear_scrollback:) || item.action == @selector(clear_screen:) ||
         item.action == @selector(previous_tab:) || item.action == @selector(next_tab:) || item.action == @selector(detach_tab:)) {
         if (![NSApp keyWindow]) return NO;
+    } else if (item.action == @selector(show_find_bar:)) {
+        if (!cocoa_chrome_window_for_key_window([NSApp keyWindow])) return NO;
     } else if (item.action == @selector(paste_from_clipboard:)) {
         if (![NSApp keyWindow]) return NO;
         NSPasteboard *pb = [NSPasteboard generalPasteboard];
@@ -378,7 +385,7 @@ typedef struct {
     GlobalShortcut previous_tab, next_tab, new_tab, new_window, close_window, reset_terminal;
     GlobalShortcut clear_terminal_and_scrollback, clear_screen, clear_scrollback, clear_last_command;
     GlobalShortcut toggle_macos_secure_keyboard_entry, toggle_fullscreen, open_kitty_website;
-    GlobalShortcut hide_macos_app, hide_macos_other_apps, minimize_macos_window, quit, search_scrollback;
+    GlobalShortcut hide_macos_app, hide_macos_other_apps, minimize_macos_window, quit, show_find_bar;
     GlobalShortcut macos_cycle_through_os_windows, macos_cycle_through_os_windows_backwards;
     GlobalShortcut paste_from_clipboard, copy_or_noop;
     GlobalShortcut find_next, find_previous, use_selection_for_find;
@@ -405,7 +412,7 @@ cocoa_set_global_shortcut(PyObject *self UNUSED, PyObject *args) {
     else Q(toggle_macos_secure_keyboard_entry); else Q(toggle_fullscreen);
     else Q(open_kitty_website); else Q(hide_macos_app);
     else Q(hide_macos_other_apps); else Q(minimize_macos_window);
-    else Q(quit); else Q(search_scrollback);
+    else Q(quit); else Q(show_find_bar);
     else Q(macos_cycle_through_os_windows); else Q(macos_cycle_through_os_windows_backwards);
     else Q(paste_from_clipboard); else Q(copy_or_noop);
     else Q(find_next); else Q(find_previous); else Q(use_selection_for_find);
@@ -888,7 +895,7 @@ global_shortcut_for_action(GlobalShortcuts *shortcuts, SEL action) {
     Q(hide_macos_other_apps);
     Q(minimize_macos_window);
     Q(quit);
-    Q(search_scrollback);
+    Q(show_find_bar);
     Q(macos_cycle_through_os_windows);
     Q(macos_cycle_through_os_windows_backwards);
     Q(find_next);
@@ -1053,8 +1060,9 @@ cocoa_create_global_menu(void) {
     NSMenuItem *findMenuItem = [editMenu addItemWithTitle:@"Find" action:NULL keyEquivalent:@""];
     NSMenu *findMenu = [[NSMenu alloc] initWithTitle:@"Find"];
     [findMenuItem setSubmenu:findMenu];
-    MENU_ITEM(findMenu, @"Find…", search_scrollback);
+    MENU_ITEM(findMenu, @"Find…", show_find_bar);
     // NSTextFinderAction tags, by which remappers and assistive tools recognise the items
+    findMenu.itemArray.lastObject.tag = NSTextFinderActionShowFindInterface;
     MENU_ITEM(findMenu, @"Find Next", find_next);
     findMenu.itemArray.lastObject.tag = NSTextFinderActionNextMatch;
     MENU_ITEM(findMenu, @"Find Previous", find_previous);
@@ -1868,17 +1876,10 @@ cocoa_keychain_list_accounts(PyObject *self UNUSED, PyObject *args) {
 }
 // }}}
 
-// Swift wiring proof {{{
-const char*
-kitty_swift_wiring_c_side(void) { return "c"; }
-
-static PyObject*
-cocoa_swift_wiring_probe(PyObject *self UNUSED, PyObject *message) {
-    const char *text = PyUnicode_AsUTF8(message);
-    if (!text) return NULL;
-    @autoreleasepool {
-        return PyUnicode_FromString([KittySwiftWiring roundTrip:@(text)].UTF8String);
-    }
+// Find bar {{{
+void
+cocoa_show_find_bar(void *w) {
+    [KittyFindBar showIn:(NSWindow *)w];
 }
 // }}}
 
@@ -1901,7 +1902,6 @@ static PyMethodDef module_methods[] = {
     {"cocoa_set_dock_icon", (PyCFunction)cocoa_set_dock_icon, METH_VARARGS, ""},
     {"cocoa_show_progress_bar_on_dock_icon", (PyCFunction)cocoa_show_progress_bar_on_dock_icon, METH_VARARGS, ""},
     {"cocoa_bundle_image_as_png", (PyCFunction)(void (*)(void))bundle_image_as_png, METH_VARARGS | METH_KEYWORDS, ""},
-    {"cocoa_swift_wiring_probe", (PyCFunction)cocoa_swift_wiring_probe, METH_O, ""},
     {NULL, NULL, 0, NULL} /* Sentinel */
 };
 
