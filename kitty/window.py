@@ -49,6 +49,7 @@ from .fast_data_types import (
     ESC_OSC,
     GLFW_DRAG_OPERATION_COPY,
     GLFW_MOD_CONTROL,
+    GLFW_MOUSE_BUTTON_LEFT,
     GLFW_PRESS,
     GLFW_RELEASE,
     GLFW_REPEAT,
@@ -1480,6 +1481,8 @@ class Window:
                 self.clear_progress_timer = add_timer(self.clear_progress_if_needed, 1.0, False)
 
     def on_mouse_event(self, event: dict[str, Any]) -> bool:
+        if event['grabbed'] and event['button'] == GLFW_MOUSE_BUTTON_LEFT and event['repeat_count'] == -1:  # the release of a press the program was given
+            self.claude_find_state.released_at = time_ns() / 1e9
         event['mods'] = event.get('mods', 0) & mod_mask
         steps = 1
         if event['button'] in mouse_wheel_buttons:  # repeat_count is the number of wheel steps
@@ -3081,10 +3084,17 @@ class Window:
             self.cancel_pending_find()
         self.end_pane_finds(op, keep)
 
+    def find_backend_for(self, op: TmuxOperation) -> FindBackend:
+        "The backend that sees what the user is looking at, told apart now: the engine, or the tmux pane's search. Starts and ends nothing."
+        client = self.tmux_client()
+        return self.engine_find if client is None else self.find_pane_backend(client, op)
+
     def find_backend_to_search(self, op: TmuxOperation) -> FindBackend | None:
         "The backend a search runs in now, with the other ones' searches ended; None when the window has nothing to search"
-        client = self.tmux_client()
-        backend = self.engine_find if client is None else self.find_pane_backend(client, op)
+        return self.begin_find_in(self.find_backend_for(op), op)
+
+    def begin_find_in(self, backend: FindBackend, op: TmuxOperation) -> FindBackend | None:
+        "Make backend the window's search: the other ones' searches end. None when it has nothing to search."
         if not backend.can_search():
             return None
         self.end_finds(op, backend)
@@ -3147,7 +3157,9 @@ class Window:
 
     def find_selection_text(self) -> str | None:
         "What Cmd+E searches for: the selection of the program in the window, else kitty's own; None when there is none"
-        backend = self.find_backend()
+        return self.selection_text_in(self.find_backend_for(TmuxOperation()))
+
+    def selection_text_in(self, backend: FindBackend) -> str | None:
         if not backend.can_search():
             return None
         return backend.program_selection_text() or self.text_for_selection() or None
@@ -3225,7 +3237,10 @@ class Window:
     @ac('sc', 'Search the whole buffer for the selected text and step to it, on macOS. Without a selection the key goes to the program.')
     def use_selection_for_find(self) -> bool | None:
         self.settle_find()
-        if (text := self.find_selection_text()) is None or (backend := self.find_backend_to_search(TmuxOperation())) is None:
+        op = TmuxOperation()
+        # the backend is told apart once: the pane the selection was read in is the pane the search runs in
+        backend = self.find_backend_for(op)
+        if (text := self.selection_text_in(backend)) is None or self.begin_find_in(backend, op) is None:
             return True
         backend.use_selection(text)
         self.find_query = text

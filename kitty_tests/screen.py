@@ -2080,8 +2080,8 @@ class TestScreen(BaseTest):
                             claude_host=ClaudeHost(), find_reporting=None, **attrs)
         w.engine_find = EngineFind(w)
         for name in ('tmux_client', 'find_pane_backend', 'find_status', 'end_pane_finds', 'find_backend', 'find_holder', 'end_finds',
-                     'find_backend_to_search', 'find_step', 'set_find_query', 'find', 'find_clear', 'settle_find', 'cancel_pending_find',
-                     *bound):
+                     'find_backend_to_search', 'find_backend_for', 'selection_text_in', 'begin_find_in', 'find_step', 'set_find_query', 'find',
+                     'find_clear', 'settle_find', 'cancel_pending_find', *bound):
             if name not in attrs:
                 setattr(w, name, getattr(Window, name).__get__(w))
         return w
