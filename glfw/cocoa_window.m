@@ -2663,15 +2663,16 @@ focus_owner_of(NSResponder *responder) {
 
 // [LAW:single-enforcer] Every native view's unhandled keys end here, wherever
 // in the window the view sits: a text view's as the noop: command, any other
-// view's (a button under Full Keyboard Access) as keyDown:.
+// view's (a button under Full Keyboard Access) as noResponderFor:, after the
+// window's own keyDown: has had it for key-view navigation.
 - (void)doCommandBySelector:(SEL)selector {
     if (selector == @selector(noop:) && _glfwCocoaOfferKeyToShortcuts([NSApp currentEvent])) return;
     [super doCommandBySelector:selector];
 }
 
-- (void)keyDown:(NSEvent *)event {
-    if (_glfwCocoaOfferKeyToShortcuts(event)) return;
-    [super keyDown:event];
+- (void)noResponderFor:(SEL)eventSelector {
+    if (eventSelector == @selector(keyDown:) && _glfwCocoaOfferKeyToShortcuts([NSApp currentEvent])) return;
+    [super noResponderFor:eventSelector];
 }
 
 - (BOOL)canBecomeKeyWindow {

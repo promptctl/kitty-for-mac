@@ -888,15 +888,16 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
             key_destination_consume(&key_destinations, [event keyCode], [event isARepeat]);
             input_source_switch_modifiers = switch_modifiers;
         };
-        // A key window that is not a terminal (an alert, the About panel) is AppKit's.
-        bool (^is_terminal_window)(NSWindow *) = ^bool(NSWindow *w) {
-            for (_GLFWwindow *window = _glfw.windowListHead; window; window = window->next) if (window->ns.object == w) return true;
-            return false;
+        // The terminal a window number names, or nil for a window that is not a
+        // terminal (an alert, the About panel) or is gone.
+        id<GLFWTerminalKeyInput> (^terminal_for_window_number)(NSInteger) = ^id<GLFWTerminalKeyInput>(NSInteger number) {
+            for (_GLFWwindow *window = _glfw.windowListHead; window; window = window->next) if ([window->ns.object windowNumber] == number) return window->ns.view;
+            return nil;
         };
         KeyDestination (^current_key_destination)(void) = ^KeyDestination(void) {
             NSWindow *kw = [NSApp keyWindow];
             if (!kw) return KEY_DEST_NOT_HELD;
-            if (glfwCocoaNativeViewHasFocus() || !is_terminal_window(kw)) return (KeyDestination){KEY_DEST_APPKIT, 0};
+            if (glfwCocoaNativeViewHasFocus() || !terminal_for_window_number([kw windowNumber])) return (KeyDestination){KEY_DEST_APPKIT, 0};
             return (KeyDestination){KEY_DEST_TERMINAL, (uintptr_t)[kw windowNumber]};
         };
         // Sends an event to the terminal it is destined for, or returns it to
@@ -904,11 +905,6 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
         // table was just given. An AppKit event while a terminal has focus is
         // dropped, so a repeat or release never reaches the terminal; with no
         // key window it goes back to AppKit.
-        // The terminal a window number names, or nil once that window is gone.
-        id<GLFWTerminalKeyInput> (^terminal_for_window_number)(NSInteger) = ^id<GLFWTerminalKeyInput>(NSInteger number) {
-            for (_GLFWwindow *window = _glfw.windowListHead; window; window = window->next) if ([window->ns.object windowNumber] == number) return window->ns.view;
-            return nil;
-        };
         NSEvent * (^deliver_key_event)(NSEvent *, KeyDestination, KeyDestination, void (^)(id<GLFWTerminalKeyInput>, NSEvent *)) = ^NSEvent *(NSEvent *event, KeyDestination dest, KeyDestination current, void (^handler)(id<GLFWTerminalKeyInput>, NSEvent *)) {
             switch (dest.kind) {
                 case KEY_DEST_APPKIT:
