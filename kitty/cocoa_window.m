@@ -23,6 +23,8 @@
 #include <crt_externs.h>
 #include <libproc.h>
 #include <objc/runtime.h>
+#include "swift/kitty_c.h"
+#include "KittySwift-Swift.h"
 
 static inline void
 cleanup_cfrelease(void *__p) {
@@ -1828,6 +1830,20 @@ cocoa_keychain_list_accounts(PyObject *self UNUSED, PyObject *args) {
 }
 // }}}
 
+// Swift wiring proof {{{
+const char*
+kitty_swift_wiring_c_side(void) { return "c"; }
+
+static PyObject*
+cocoa_swift_wiring_probe(PyObject *self UNUSED, PyObject *message) {
+    const char *text = PyUnicode_AsUTF8(message);
+    if (!text) return NULL;
+    @autoreleasepool {
+        return PyUnicode_FromString([KittySwiftWiring roundTrip:@(text)].UTF8String);
+    }
+}
+// }}}
+
 static PyMethodDef module_methods[] = {
     {"cocoa_keychain_list_accounts", (PyCFunction)cocoa_keychain_list_accounts, METH_VARARGS, ""},
     {"cocoa_keychain_store_secret", (PyCFunction)cocoa_keychain_store_secret, METH_VARARGS, ""},
@@ -1847,6 +1863,7 @@ static PyMethodDef module_methods[] = {
     {"cocoa_set_dock_icon", (PyCFunction)cocoa_set_dock_icon, METH_VARARGS, ""},
     {"cocoa_show_progress_bar_on_dock_icon", (PyCFunction)cocoa_show_progress_bar_on_dock_icon, METH_VARARGS, ""},
     {"cocoa_bundle_image_as_png", (PyCFunction)(void (*)(void))bundle_image_as_png, METH_VARARGS | METH_KEYWORDS, ""},
+    {"cocoa_swift_wiring_probe", (PyCFunction)cocoa_swift_wiring_probe, METH_O, ""},
     {NULL, NULL, 0, NULL} /* Sentinel */
 };
 

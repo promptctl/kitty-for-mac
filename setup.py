@@ -210,6 +210,8 @@ class CompilationDatabase:
         self.compile_commands: List[Command] = []
         self.link_commands: List[Command] = []
         self.post_link_commands: List[Command] = []
+        # Recorded with compile_commands but never queued: build_all must not run them a second time
+        self.built_now: List[Command] = []
         self.db: Dict[CompileKey, Sequence[str]] = {}
         self.linkdb: Dict[CompileKey, Sequence[str]] = {}
 
@@ -232,6 +234,19 @@ class CompilationDatabase:
             queue = self.link_commands if keyfile is None else self.compile_commands
         queue.append(Command(desc, cmd, is_newer_func, on_success or no_op, key, keyfile))
 
+    def build_now(self, desc: str, cmd: List[str], is_newer_func: Callable[[], bool], key: CompileKey, on_success: Callable[[], None] = null_func) -> None:
+        """Run one command before anything build_all runs, for a build whose outputs the C compiles consume."""
+        command = Command(desc, cmd, is_newer_func, on_success, key)
+        if self.needs_build(command, self.db):
+            run_tool(cmd, desc)
+            on_success()
+        # Recorded only once its outputs match it: a failed run leaves no record, so the next build runs it again
+        self.built_now.append(command)
+
+    def needs_build(self, command: Command, database: Dict[CompileKey, Sequence[str]]) -> bool:
+        # [LAW:single-enforcer] the one rebuild decision for every recorded command
+        return not self.incremental or self.cmd_changed(command, database) or command.is_newer_func()
+
     def build_all(self) -> None:
 
         def sort_key(compile_cmd: Command) -> int:
@@ -239,17 +254,11 @@ class CompilationDatabase:
                 return os.path.getsize(compile_cmd.keyfile)
             return 0
 
-        items = []
-        for compile_cmd in self.compile_commands:
-            if not self.incremental or self.cmd_changed(compile_cmd, self.db) or compile_cmd.is_newer_func():
-                items.append(compile_cmd)
+        items = [c for c in self.compile_commands if self.needs_build(c, self.db)]
         items.sort(key=sort_key, reverse=True)
         parallel_run(items)
 
-        items = []
-        for link_cmd in self.link_commands:
-            if not self.incremental or self.cmd_changed(link_cmd, self.linkdb) or link_cmd.is_newer_func():
-                items.append(link_cmd)
+        items = [c for c in self.link_commands if self.needs_build(c, self.linkdb)]
         parallel_run(items)
 
         items = []
@@ -287,7 +296,9 @@ class CompilationDatabase:
         for key in set(cdb) - self.all_keys:
             del cdb[key]
         compilation_database = [
-            {'file': c.key.src, 'arguments': c.cmd, 'directory': src_base, 'output': c.key.dest} for c in self.compile_commands if c.key is not None
+            {'file': c.key.src, 'arguments': c.cmd, 'directory': src_base, 'output': c.key.dest}
+            for c in self.built_now + self.compile_commands
+            if c.key is not None
         ]
         with suppress(FileNotFoundError):
             with open(self.dbpath, 'w') as f:
@@ -1138,7 +1149,9 @@ def compile_c_extension(
     headers: List[str],
     desc_prefix: str = '',
     build_dsym: bool = False,
+    link_inputs: Sequence[str] = (),
 ) -> None:
+    """link_inputs: prebuilt objects or static archives linked into the module after its own objects."""
     prefix = os.path.basename(module)
     objects = [os.path.join(build_dir, f'{prefix}-{src.replace("/", "-")}.o') for src in sources]
 
@@ -1164,12 +1177,12 @@ def compile_c_extension(
     # warnings on some old systems)
     unsafe = {'-pthread', '-Werror', '-pedantic-errors'}
     linker_cflags = list(filter(lambda x: x not in unsafe, kenv.cflags))
-    cmd = kenv.cc + linker_cflags + kenv.ldflags + objects + kenv.ldpaths + ['-o', dest]
+    cmd = kenv.cc + linker_cflags + kenv.ldflags + objects + list(link_inputs) + kenv.ldpaths + ['-o', dest]
 
     def on_success() -> None:
         os.rename(dest, real_dest)
 
-    compilation_database.add_command(desc, cmd, partial(newer, real_dest, *objects), on_success=on_success, key=LinkKey(f'{module}.so'))
+    compilation_database.add_command(desc, cmd, partial(newer, real_dest, *objects, *link_inputs), on_success=on_success, key=LinkKey(f'{module}.so'))
     if is_macos and build_dsym:
         real_dest = os.path.abspath(real_dest)
         desc = f'Linking dSYM {emphasis(desc_prefix + module)} ...'
@@ -1199,6 +1212,64 @@ def find_c_files() -> Tuple[List[str], List[str]]:
     ans.append('3rdparty/base64/lib/codec_choose.c')
     ans.append('3rdparty/base64/lib/lib.c')
     return ans, headers
+
+
+def cc_target_triple(kenv: Env) -> str:
+    """The target triple the C compiler builds for, as it resolves -arch and MACOSX_DEPLOYMENT_TARGET.
+
+    [LAW:one-source-of-truth] every other toolchain (swiftc, cargo) takes its target from here, so the
+    C build stays the one place that decides the architecture and the minimum OS version."""
+    cp = subprocess.run(kenv.cc + kenv.cflags + ['-###', '-c', '-x', 'c', os.devnull], stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True)
+    m = re.search(r'"-triple" "([^"]+)"', cp.stderr)
+    if m is None:
+        raise SystemExit(f'Could not find the target triple in the output of {kenv.cc[0]} -###:\n{cp.stderr}')
+    return m.group(1)
+
+
+class SwiftModule(NamedTuple):
+    obj: str
+    include_dir: str  # holds the generated Objective-C header, KittySwift-Swift.h
+    library_dirs: Sequence[str]  # where the object's autolinked Swift runtime libraries resolve
+
+
+swift_src_dir = 'kitty/swift'
+
+
+def build_swift_module(args: Options, kenv: Env) -> SwiftModule:
+    """Compile kitty/swift into one object for the kitty extension, before any C compile that #includes its header."""
+    swiftc = shutil.which('swiftc')
+    if swiftc is None:
+        raise SystemExit('swiftc not found: building kitty on macOS needs a Swift 6 toolchain (Xcode or the Command Line Tools)')
+    out_dir = os.path.join(build_dir, 'swift')
+    os.makedirs(out_dir, exist_ok=True)
+    obj = os.path.join(out_dir, 'KittySwift.o')
+    header = os.path.join(out_dir, 'KittySwift-Swift.h')
+    staged_header = f'{header}.staged'
+    # Every file in the directory is an input: the .swift sources, module.modulemap and the C header it maps
+    inputs = sorted(os.path.join(swift_src_dir, x) for x in os.listdir(swift_src_dir))
+    triple = cc_target_triple(kenv)
+    unoptimized = args.debug or args.sanitize
+    cmd = [swiftc, '-parse-as-library', '-wmo', '-emit-object', '-module-name', 'KittySwift', '-swift-version', '6', '-target', triple]
+    cmd += ['-Onone', '-g'] if unoptimized else ['-O'] + (['-g'] if args.profile else [])
+    cmd += ['-sanitize=address,undefined'] if args.sanitize else []
+    cmd += [] if args.ignore_compiler_warnings else ['-warnings-as-errors']
+    cmd += ['-I', swift_src_dir, '-emit-objc-header-path', staged_header, '-o', obj]
+    cmd += [x for x in inputs if x.endswith('.swift')]
+
+    def publish_header() -> None:
+        # Rewritten only when the @objc API changed, so a body-only Swift edit does not recompile the Objective-C including it
+        with open(staged_header) as f:
+            update_if_changed(header, f.read())
+
+    args.compilation_database.build_now(
+        f'Compiling {emphasis("Swift module KittySwift")} ...',
+        cmd,
+        lambda: any(newer(output, *inputs) for output in (obj, header)),
+        CompileKey(swift_src_dir, os.path.basename(obj)),
+        on_success=publish_header,
+    )
+    target_info = json.loads(subprocess.check_output([swiftc, '-print-target-info', '-target', triple]))
+    return SwiftModule(obj, out_dir, tuple(target_info['paths']['runtimeLibraryPaths']))
 
 
 def wayland_protocol_file_name(base: str, ext: str = 'c') -> str:
@@ -1469,13 +1540,22 @@ def build(args: Options, native_optimizations: bool = True, call_init: bool = Tr
     sources, headers = find_c_files()
     headers.append(build_ref_map(args.skip_code_generation))
     headers.append(build_cli_parser_specs(args.skip_code_generation))
+    kenv = kitty_env(args)
+    link_inputs: List[str] = []
+    if is_macos:
+        swift = build_swift_module(args, kenv)
+        # -I, not -isystem: -MMD must record the generated header so its includers recompile when it changes
+        kenv.cppflags.append(f'-I{swift.include_dir}')
+        kenv.ldpaths.extend(f'-L{x}' for x in swift.library_dirs)
+        link_inputs.append(swift.obj)
     compile_c_extension(
-        kitty_env(args),
+        kenv,
         'kitty/fast_data_types',
         args.compilation_database,
         sources,
         headers,
         build_dsym=args.build_dsym,
+        link_inputs=link_inputs,
     )
     compile_glfw(args.compilation_database, args.build_dsym)
     compile_kittens(args)
