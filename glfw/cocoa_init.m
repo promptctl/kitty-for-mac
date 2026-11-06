@@ -874,6 +874,13 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                                                                selector:@selector(applicationDidActivate:)
                                                                    name:NSWorkspaceDidActivateApplicationNotification
                                                                  object:nil];
+        // performKeyEquivalent: says YES for a matching item that validateMenuItem: disables, and
+        // sends it nothing: AppKit's notice of a sent action tells a menu that acted from one that did not
+        static unsigned long menu_actions_sent = 0;
+        _glfw.ns.menuActionObserver = [[NSNotificationCenter defaultCenter] addObserverForName:NSMenuDidSendActionNotification object:nil queue:nil usingBlock:^(NSNotification *note) {
+            (void)note;
+            menu_actions_sent++;
+        }];
         // the modifiers of a pending switch to the next input source
         static NSEventModifierFlags input_source_switch_modifiers = 0;
         static KeyDestinationTable key_destinations;
@@ -927,11 +934,16 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
           // key: the check below, or AppKit's own pass over a key handed back to it
           if (_glfw.ns.key_equivalent_focus_callback) _glfw.ns.key_equivalent_focus_callback(native_focus);
           if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed) {
-              // first check if there is a global menu bar shortcut
+              // first check if there is a global menu bar shortcut; a disabled item that matches
+              // leaves the key to the rest, as though nothing had matched
+              const unsigned long actions_sent = menu_actions_sent;
               if ([[NSApp mainMenu] performKeyEquivalent:event]) {
-                  debug_input("keyDown triggered global menu bar action ignoring\n");
-                  record_shortcut_keydown(event, 0);
-                  return nil;
+                  if (menu_actions_sent != actions_sent) {
+                      debug_input("keyDown triggered global menu bar action ignoring\n");
+                      record_shortcut_keydown(event, 0);
+                      return nil;
+                  }
+                  debug_input("keyDown matched a menu bar item that sent no action, passing it on\n");
               }
               // now check if there is a useful apple shortcut
               int global_shortcut = is_active_apple_global_shortcut(event);
@@ -1093,6 +1105,7 @@ _glfwPlatformTerminate(void) {
         if (_glfw.ns.keyUpMonitor) [NSEvent removeMonitor:_glfw.ns.keyUpMonitor];
         if (_glfw.ns.keyDownMonitor) [NSEvent removeMonitor:_glfw.ns.keyDownMonitor];
         if (_glfw.ns.flagsChangedMonitor) [NSEvent removeMonitor:_glfw.ns.flagsChangedMonitor];
+        if (_glfw.ns.menuActionObserver) [[NSNotificationCenter defaultCenter] removeObserver:_glfw.ns.menuActionObserver];
 
         if (_glfw.ns.appleSettings != nil) {
             [_glfw.ns.appleSettings release];
