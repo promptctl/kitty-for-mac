@@ -192,8 +192,17 @@ typedef struct {
         MainBufferView view;
         size_t painted;
     } find_last_rendered;
-    // the find status this window last told its find bar, written only by find_status_for_bar
-    struct { size_t current, total; } find_reported;
+    // the find state this window last told its find bar, written only by find_status_for_bar:
+    // the status, and whether a step waiting on it could land now (main screen, no drag)
+    struct { size_t current, total; uint64_t unsearched; bool main_screen, selecting; } find_reported;
+    // the most cells one search chunk walks; tests set it small to get many chunks
+    uint64_t find_chunk_cells;
+    // what the first of the window's waiting steps needs, so the frame's chunk searches there;
+    // written only by Screen.find_set_want, which the window calls when that step changes
+    struct { bool wanted; struct { uint64_t line; bool forward; } want; } find_want;
+    // counts the user's own changes to the selection (a click, a drag, a clear), so a find step
+    // pressed after one starts from it rather than from where an earlier waiting step lands
+    uint64_t user_selection_changes;
 #endif
     bool has_focus;
     uint8_t visibility_state; // 0 = unknown, 1 = potentially visible, 2 = not visible
@@ -412,6 +421,8 @@ bool screen_pause_rendering(Screen *self, bool pause, int for_in_ms);
 void screen_check_pause_rendering(Screen *self, monotonic_t now);
 #ifdef __APPLE__
 bool screen_find_status_changed(Screen *self);
+bool screen_find_advance(Screen *self);
+bool screen_find_searching(const Screen *self);
 void screen_report_find_status_change(Screen *self);
 #endif
 void screen_designate_charset(Screen *self, uint32_t which, uint32_t as);

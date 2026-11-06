@@ -18,30 +18,42 @@ typedef struct FindMatch {
     uint32_t end_x;
 } FindMatch;
 
-// The find engine: a query and its matches, kept sorted in buffer order.
+// The find engine: a query, the lines searched for it so far, and every match found in them,
+// kept sorted in buffer order. The engine keeps no fact about the buffer: the calls that need
+// its bounds are handed them.
 typedef struct FindEngine FindEngine;
 
 // Never NULL: allocation failure aborts. The new engine holds the empty query.
 FindEngine* kitty_rs_find_engine_new(void);
 void kitty_rs_find_engine_free(FindEngine *engine);
-// Drops every match and sets a literal query; "" is the query that finds nothing. Returns
-// false when the query cannot be compiled, leaving the empty query and the reason in err
-// (NUL-terminated, truncated to err_size). utf8 must be non-NULL (even when len is 0) and
+typedef enum { FIND_QUERY_UNCHANGED, FIND_QUERY_CHANGED, FIND_QUERY_INVALID } FindQueryResult;
+// Sets a literal query; "" is the query that finds nothing. UNCHANGED when the query and case
+// are the ones already searched for, touching nothing. CHANGED drops every match and searched
+// line. INVALID when the query cannot be compiled, leaving the empty query and the reason in
+// err (NUL-terminated, truncated to err_size). utf8 must be non-NULL (even when len is 0) and
 // valid UTF-8; err_size must be at least 1.
-bool kitty_rs_find_set_query(FindEngine *engine, const uint8_t *utf8, size_t len, bool case_insensitive, char *err, size_t err_size);
-// The matches in a range of lines searched afresh under the engine's query, spliced in whole.
+FindQueryResult kitty_rs_find_set_query(FindEngine *engine, const uint8_t *utf8, size_t len, bool case_insensitive, char *err, size_t err_size);
+// The matches in a range of lines searched under the engine's query, spliced in whole.
 typedef struct FindRefeed FindRefeed;
 // Never NULL: allocation failure aborts.
 FindRefeed* kitty_rs_find_refeed_new(const FindEngine *engine, FindRefeedRange lines);
 // Adds the matches in one logical line; lines must lie in the range and arrive in buffer order.
 void kitty_rs_find_refeed_line(FindRefeed *refeed, const FindLogicalLine *line);
-// Replaces the matches starting in the refeed's lines with its own and frees the refeed. The
-// generation moves only when they differ.
+// Replaces the matches starting in the refeed's lines, which must all be searched, with its
+// own, and frees the refeed. The generation moves only when they differ.
 void kitty_rs_find_splice(FindEngine *engine, FindRefeed *refeed);
+// Adds the matches of the lines the refeed walked, which must all be unsearched, marks them
+// searched, and frees the refeed.
+void kitty_rs_find_add_searched(FindEngine *engine, FindRefeed *refeed);
+// Makes every line from `from` on unsearched, then marks the lines the onward refeed walked
+// (from `from` or past it) searched, its matches replacing those dropped, and frees it. The
+// generation moves only when the matches differ.
+void kitty_rs_find_refresh(FindEngine *engine, uint64_t from, FindRefeed *refeed);
 // Frees a refeed without splicing it.
 void kitty_rs_find_refeed_free(FindRefeed *refeed);
-// Drops the matches starting before abs_line.
-void kitty_rs_find_evict_before(FindEngine *engine, uint64_t abs_line);
+// Drops the matches and searched lines before oldest. True when line oldest is searched, so a
+// logical line the eviction cut holds matches that must be re-fed (kitty_rs_find_splice).
+bool kitty_rs_find_evict_before(FindEngine *engine, uint64_t oldest);
 // The matches in buffer order, *count of them, valid until the engine next changes.
 const FindMatch* kitty_rs_find_matches(const FindEngine *engine, size_t *count);
 // The matches covering any of the lines [first, limit), *count of them, valid until the
@@ -53,6 +65,8 @@ uint64_t kitty_rs_find_generation(const FindEngine *engine);
 // Makes m the current match, returning false and changing nothing when it is not one of the
 // matches. Setting the current match again keeps whether the step to it wrapped.
 bool kitty_rs_find_set_current(FindEngine *engine, FindMatch m);
+// Writes the current match to *out; false, writing nothing, when there is none.
+bool kitty_rs_find_current(const FindEngine *engine, FindMatch *out);
 // Leaves no current match; the matches stay.
 void kitty_rs_find_end_current(FindEngine *engine);
 // A cell position, ordered as a match's start is: by line, then column.
@@ -60,16 +74,43 @@ typedef struct {
     uint64_t line;
     uint32_t x;
 } FindPos;
-// Makes the match one step from the current one, later unless backwards, the current match
-// and writes it to *out, returning false and writing nothing when there are no matches.
-// With no current match the step starts from [from_start, from_end), where the user is
-// looking: forwards the first match starting in it or after, backwards the last starting
-// before from_end. Past either end it wraps, and kitty_rs_find_status says so.
-bool kitty_rs_find_step(FindEngine *engine, bool backwards, FindPos from_start, FindPos from_end, FindMatch *out);
+// An unsearched line a waiting step's answer needs, and which way to search from it: forward
+// from it, or backward through it.
+typedef struct {
+    uint64_t line;
+    bool forward;
+} FindWant;
+// The unsearched lines [from, limit) a fill walks next: forward from `from`, or backward from
+// `limit`.
+typedef struct {
+    uint64_t from, limit;
+    bool forward;
+} FindFill;
+// Where the fill searches next: toward *want while its line is unsearched (want may be NULL),
+// else the unsearched lines nearest the buffer's end, backward. False once nothing is left to
+// search, and always for the empty query.
+bool kitty_rs_find_next_fill(const FindEngine *engine, FindBufferBounds bounds, const FindWant *want, FindFill *out);
+// Where a step starts: after after_match when `after`, as from the current match, else within
+// [start, end), as from the selection or the rows on view.
+typedef struct {
+    bool after;
+    FindMatch after_match;
+    FindPos start, end;
+} FindOrigin;
+typedef enum { FIND_STEP_LANDED, FIND_STEP_NO_MATCH, FIND_STEP_WAITING } FindStepResult;
+// The match one step from origin, later unless backwards: after a match the next or previous
+// one; within a range the first starting in it or after, or the last starting before its end.
+// Past either end it wraps, and kitty_rs_find_status says so. The answer is the whole buffer's:
+// LANDED makes it the current match and writes it to *landed; NO_MATCH means the whole buffer
+// is searched and holds none; WAITING means unsearched lines could still hold the answer, writes
+// the first it needs to *want, and changes nothing.
+FindStepResult kitty_rs_find_step(FindEngine *engine, bool backwards, FindOrigin origin, FindBufferBounds bounds, FindMatch *landed, FindWant *want);
 // current is 1-based among the matches, 0 when there is no current match; wrapped says the
-// step that reached it went past an end.
+// step that reached it went past an end; unsearched counts the buffer's lines not yet searched,
+// 0 once all are and for the empty query.
 typedef struct {
     size_t current, total;
     bool wrapped;
+    uint64_t unsearched;
 } FindStatus;
-FindStatus kitty_rs_find_status(const FindEngine *engine);
+FindStatus kitty_rs_find_status(const FindEngine *engine, FindBufferBounds bounds);

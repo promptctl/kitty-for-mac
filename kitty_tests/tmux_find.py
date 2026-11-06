@@ -511,13 +511,14 @@ class TmuxFindWindowTest(BaseTest):
         w: Any = SimpleNamespace(
             screen=s, find_query='', os_window_id=1, text_for_selection=lambda: s.callbacks.kitty_selection, geometry=None,
             child=SimpleNamespace(foreground_processes=foreground), tmux_find_state=TmuxFindState(),
-            finish_scroll_animation=lambda: None, find_bar_top_inset=lambda: 0,
+            finish_scroll_animation=lambda: None, scroll_animation=SimpleNamespace(timer=0), find_bar_top_inset=lambda: 0,
+            pending_find_timer=0,
         )
         w.foreground = foreground
         w.engine_find = EngineFind(w)
         for name in (
             'find_backend', 'find_holder', 'end_finds', 'find_backend_to_search', 'find_step', 'set_find_query', 'find', 'push_find_bar',
-            'find_selection_text', 'find_clear', 'find_status_changed', 'use_selection_for_find',
+            'find_selection_text', 'find_clear', 'find_status_changed', 'use_selection_for_find', 'settle_find', 'cancel_pending_find',
         ):
             setattr(w, name, getattr(Window, name).__get__(w))
         w.pushed = []
@@ -631,7 +632,8 @@ class TmuxFindWindowTest(BaseTest):
         w.find('x')
         closing: Any = SimpleNamespace(
             tmux_find_state=w.tmux_find_state, call_watchers=lambda *a: None, watchers=SimpleNamespace(on_close=None), id=1,
-            clear_progress_timer=0, clipboard_request_manager=SimpleNamespace(close=lambda: None), kitten_result_processors=[],
+            clear_progress_timer=0, cancel_pending_find=lambda: None, clipboard_request_manager=SimpleNamespace(close=lambda: None),
+            kitten_result_processors=[],
         )
         Window.destroy(closing)
         self.ae(len(fake.cancelled()), 1)

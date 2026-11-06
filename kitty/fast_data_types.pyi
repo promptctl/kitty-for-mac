@@ -1145,6 +1145,13 @@ class Cursor:
     text_blink: bool
     shape: int
 
+
+# (after, match, start, end): after the match when after, else within start..end, each a (line, x)
+FindOrigin = tuple[bool, tuple[int, int, int, int], tuple[int, int], tuple[int, int]]
+FindStepResult = Union[
+    tuple[Literal['landed'], tuple[int, int, int, int]], tuple[Literal['none']], tuple[Literal['waiting'], tuple[int, bool]]]
+
+
 class Screen:
     color_profile: ColorProfile
     columns: int
@@ -1279,10 +1286,13 @@ class Screen:
         one (row, x, x_last) per codepoint, row relative to abs_first_line."""
         pass
 
-    def find_set_query(self, text: str, case_insensitive: bool) -> int:
-        """Search the main buffer for the literal text, replacing the previous search; returns
-        the number of matches. The empty text is no search. Ends the current match and, like
-        find_clear, the selection it made. macOS only."""
+    def find_set_query(self, text: str, case_insensitive: bool, users_selection: bool = False) -> bool:
+        """Start a search of the main buffer for the literal text, replacing the previous one,
+        and search its first chunk at once; True when it changed the query, False when text and
+        case are the ones already searched for, which changes nothing. The empty text is no
+        search. A change ends the current match and the selection it made, unless
+        users_selection says the user points at it: then the selection is theirs. ValueError
+        for a query that cannot be searched, MemoryError when out of memory. macOS only."""
         pass
 
     def find_clear(self) -> None:
@@ -1296,28 +1306,51 @@ class Screen:
         screen shows. macOS only."""
         pass
 
-    def find_step(self, backwards: bool, top_inset: int = 0) -> tuple[int, int, int, int] | None:
-        """Make the next match, or the previous one when backwards, the current match and the
-        selection, scrolling it to the middle of the screen below its top_inset rows, which
-        something covers, when it is not wholly on those rows, and return it; None when there
-        are no matches. From the current match it steps past it, wrapping at either end. With
-        none it starts where the user is looking: their selection, else the rows below the
-        inset. A selection the user makes or changes ends the current match.
+    def find_origin(self, top_inset: int = 0) -> FindOrigin:
+        """Where a step pressed now starts: after the current match, else within the user's
+        selection, else within the rows below the top_inset rows something covers.
         RuntimeError while the alternate screen shows. macOS only."""
         pass
 
-    def find_disown_selection(self) -> None:
-        """Make the selection the user's even while it shows find's current match, so a new
-        query leaves it and the next step starts from it. macOS only."""
+    def find_step(self, backwards: bool, origin: FindOrigin, top_inset: int = 0) -> FindStepResult:
+        """One step from origin to the next match, or the previous one when backwards,
+        wrapping at either end. ('landed', match): it is now the current match and the
+        selection, scrolled to the middle of the screen below the top_inset rows when it is
+        not wholly on them. ('none',): the whole buffer is searched and holds no match.
+        ('waiting', want): lines the answer could be on are unsearched, nothing changed, and
+        want, given to find_set_want, searches them first. RuntimeError while the alternate
+        screen shows. macOS only."""
         pass
 
-    def find_status(self) -> tuple[int, int, bool]:
-        """(current, total, wrapped): the current match's 1-based place among the matches, 0
-        when there is none; how many there are; whether the step that reached it wrapped past
-        an end. macOS only."""
+    def find_set_want(self, want: tuple[int, bool] | None) -> None:
+        """The want of the step waiting first, which each frame's chunk of search searches
+        toward; None searches back from the end. macOS only."""
         pass
 
-    def find_status_for_bar(self) -> tuple[int, int, bool]:
+    def find_set_chunk_cells(self, cells: int) -> None:
+        """The most cells one chunk of search walks. macOS only."""
+        pass
+
+    def find_advance(self) -> bool:
+        """What each frame does for this screen while it is not paused: search one chunk;
+        True while lines are left unsearched. macOS only."""
+        pass
+
+    def user_selection_changes(self) -> int:
+        """How many times the user started, changed or cleared the selection. macOS only."""
+        pass
+
+    def selection_in_progress(self) -> bool:
+        """Whether the user is dragging out a selection."""
+        pass
+
+    def find_status(self) -> tuple[int, int, bool, int]:
+        """(current, total, wrapped, unsearched): the current match's 1-based place among the
+        matches, 0 when there is none; how many have been found; whether the step that reached
+        it wrapped past an end; how many lines are left to search. macOS only."""
+        pass
+
+    def find_status_for_bar(self) -> tuple[int, int, bool, int]:
         """find_status(), recorded as what the find bar was last told: the one read a window
         tells the bar from. macOS only."""
         pass

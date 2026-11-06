@@ -96,11 +96,15 @@ find_onward_range(Screen *self, uint64_t abs_line) {
 }
 
 FindRefeedRange
-find_first_logical_line_range(Screen *self) {
-    const uint64_t from = self->historybuf->abs_oldest_line;
-    uint64_t last = from;
+find_logical_line_range(Screen *self, uint64_t abs_line) {
+    uint64_t last = abs_line;
     while (continues(self, last)) last++;
-    return (FindRefeedRange){.from = from, .limit = last + 1};
+    return (FindRefeedRange){.from = find_onward_range(self, abs_line).from, .limit = last + 1};
+}
+
+FindBufferBounds
+find_buffer_bounds(const Screen *self) {
+    return (FindBufferBounds){.oldest = self->historybuf->abs_oldest_line, .end = buffer_limit(self)};
 }
 
 FindWalkResult
