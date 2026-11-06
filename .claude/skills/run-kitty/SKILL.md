@@ -7,8 +7,9 @@ description: Build this checkout's kitty on a test Mac (studious, else inferno),
 
 kitty runs on a test Mac, never on this one: it takes focus when it starts, and the keys are
 real input that would land in whatever Brandon is typing into. `bin/run-kitty` picks
-studious.local, else inferno.local, and exits if neither answers. Do not work around that by
-running kitty here.
+studious.local, else inferno.local, and exits if neither answers. Running kitty on this Mac
+then needs Brandon's go first, since he may be at the keyboard. `up` and `sync` record the
+host they picked, and every later command goes to that host.
 
 ```bash
 R=.claude/skills/run-kitty/bin/run-kitty   # from the checkout root
