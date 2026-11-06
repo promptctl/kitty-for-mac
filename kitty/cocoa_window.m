@@ -253,6 +253,16 @@ update_secure_input_menu_bar_indicator(BOOL enabled) {
         set_cocoa_pending_action(which, NULL); \
     }
 
+// [LAW:one-type-per-behavior] a menu item that runs a kitty action passes the action's name as
+// data down the USER_MENU_ACTION path to Boss.combine, so it needs no pending action of its own
+// nor a dispatch line in child-monitor.c: new items use this, not PENDING. Each still gets its
+// own selector, which is how global_shortcut_for_action finds the item's shortcut.
+#define ACTION(selector)                                         \
+    -(void)selector : (id)sender {                               \
+        (void)sender;                                            \
+        set_cocoa_pending_action(USER_MENU_ACTION, #selector);   \
+    }
+
 @implementation GlobalMenuTarget
 
 - (void)user_menu_action:(id)sender {
@@ -290,6 +300,9 @@ PENDING(minimize_macos_window, MINIMIZE)
 PENDING(quit, QUIT)
 PENDING(paste_from_clipboard, PASTE_FROM_CLIPBOARD)
 PENDING(copy_or_noop, COPY_OR_NOOP)
+ACTION(find_next)
+ACTION(find_previous)
+ACTION(use_selection_for_find)
 
 // The Edit menu is drawn for whichever view has keyboard focus when it opens.
 - (void)menuNeedsUpdate:(NSMenu *)menu {
@@ -310,7 +323,8 @@ PENDING(copy_or_noop, COPY_OR_NOOP)
         item.action == @selector(close_os_window:) || item.action == @selector(close_tab:) || item.action == @selector(close_window:) ||
         item.action == @selector(reset_terminal:) || item.action == @selector(clear_terminal_and_scrollback:) ||
         item.action == @selector(clear_last_command:) || item.action == @selector(clear_scrollback:) || item.action == @selector(clear_screen:) ||
-        item.action == @selector(previous_tab:) || item.action == @selector(next_tab:) || item.action == @selector(detach_tab:)) {
+        item.action == @selector(previous_tab:) || item.action == @selector(next_tab:) || item.action == @selector(detach_tab:) ||
+        item.action == @selector(find_next:) || item.action == @selector(find_previous:) || item.action == @selector(use_selection_for_find:)) {
         if (![NSApp keyWindow]) return NO;
     } else if (item.action == @selector(paste_from_clipboard:)) {
         if (![NSApp keyWindow]) return NO;
@@ -332,6 +346,7 @@ PENDING(copy_or_noop, COPY_OR_NOOP)
 }
 
 #undef PENDING
+#undef ACTION
 
 + (GlobalMenuTarget *)shared_instance {
     static GlobalMenuTarget *sharedGlobalMenuTarget = nil;
@@ -360,6 +375,7 @@ typedef struct {
     GlobalShortcut hide_macos_app, hide_macos_other_apps, minimize_macos_window, quit, search_scrollback;
     GlobalShortcut macos_cycle_through_os_windows, macos_cycle_through_os_windows_backwards;
     GlobalShortcut paste_from_clipboard, copy_or_noop;
+    GlobalShortcut find_next, find_previous, use_selection_for_find;
 } GlobalShortcuts;
 static GlobalShortcuts global_shortcuts;
 
@@ -386,6 +402,7 @@ cocoa_set_global_shortcut(PyObject *self UNUSED, PyObject *args) {
     else Q(quit); else Q(search_scrollback);
     else Q(macos_cycle_through_os_windows); else Q(macos_cycle_through_os_windows_backwards);
     else Q(paste_from_clipboard); else Q(copy_or_noop);
+    else Q(find_next); else Q(find_previous); else Q(use_selection_for_find);
 #undef Q
     if (gs == NULL) {
         PyErr_SetString(PyExc_KeyError, "Unknown shortcut name");
@@ -868,6 +885,9 @@ global_shortcut_for_action(GlobalShortcuts *shortcuts, SEL action) {
     Q(search_scrollback);
     Q(macos_cycle_through_os_windows);
     Q(macos_cycle_through_os_windows_backwards);
+    Q(find_next);
+    Q(find_previous);
+    Q(use_selection_for_find);
 #undef Q
     return NULL;
 }
@@ -1023,7 +1043,19 @@ cocoa_create_global_menu(void) {
     MENU_ITEM(editMenu, @"Clear Scrollback", clear_scrollback);
     MENU_ITEM(editMenu, @"Clear Screen", clear_screen);
     MENU_ITEM(editMenu, @"Clear Last Command", clear_last_command);
-    MENU_ITEM(editMenu, @"Find", search_scrollback);
+    [editMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *findMenuItem = [editMenu addItemWithTitle:@"Find" action:NULL keyEquivalent:@""];
+    NSMenu *findMenu = [[NSMenu alloc] initWithTitle:@"Find"];
+    [findMenuItem setSubmenu:findMenu];
+    MENU_ITEM(findMenu, @"Find…", search_scrollback);
+    // NSTextFinderAction tags, by which remappers and assistive tools recognise the items
+    MENU_ITEM(findMenu, @"Find Next", find_next);
+    findMenu.itemArray.lastObject.tag = NSTextFinderActionNextMatch;
+    MENU_ITEM(findMenu, @"Find Previous", find_previous);
+    findMenu.itemArray.lastObject.tag = NSTextFinderActionPreviousMatch;
+    MENU_ITEM(findMenu, @"Use Selection for Find", use_selection_for_find);
+    findMenu.itemArray.lastObject.tag = NSTextFinderActionSetSearchString;
+    [findMenu release];
     [editMenu release];
 
     NSMenuItem *windowMenuItem = [bar addItemWithTitle:@"Window" action:NULL keyEquivalent:@""];

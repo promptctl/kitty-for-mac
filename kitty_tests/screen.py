@@ -1913,6 +1913,95 @@ class TestScreen(BaseTest):
         s.find_clear()
         self.assertFalse(s.has_selection())
 
+    def test_find_step(self):
+        from kitty.constants import is_macos
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+
+        def text(s):
+            return ''.join(s.text_for_selection())
+
+        s = self.create_screen(cols=5, lines=4, scrollback=50)
+        for i in range(20):
+            s.draw(f'x{i:02d}')
+            s.carriage_return(), s.linefeed()
+        self.ae(s.find_step(False), None, 'no query, nothing to step to')
+        self.ae(s.find_status(), (0, 0, False))
+        self.ae(s.find_set_query('x', False), 20)
+        matches = s.find_matches()
+        top = s.abs_line_at_viewport_top()
+        on_screen = [m for m in matches if top <= m[0] < top + s.lines]
+        # with no current match, next starts at the top row and previous at the bottom one
+        self.ae(s.find_step(False), on_screen[0])
+        self.ae(s.find_status(), (matches.index(on_screen[0]) + 1, 20, False))
+        s.find_set_query('x', False)
+        self.ae(s.find_step(True), on_screen[-1])
+        self.ae(s.abs_line_at_viewport_top(), top, 'a match on screen is not scrolled to')
+        # stepping past the last match wraps to the first, and reveals it in history
+        self.ae(s.find_step(False), matches[0])
+        self.ae(s.find_status(), (1, 20, True))
+        self.ae(s.abs_line_at_viewport_top(), matches[0][0], 'the oldest line cannot be centred: it is the top row')
+        self.ae(s.find_step(True), matches[-1])
+        self.ae(s.find_status(), (20, 20, True))
+        self.ae(s.abs_line_at_viewport_top(), top)
+        # a match off screen is scrolled to the middle row, one on screen is not scrolled to
+        s.find_set_current(matches[9])
+        self.ae(s.find_step(False), matches[10])
+        self.ae(s.find_status(), (11, 20, False))
+        self.ae(s.abs_line_at_viewport_top(), matches[10][0] - 1)
+        self.ae(s.find_step(False), matches[11])
+        self.ae(s.abs_line_at_viewport_top(), matches[10][0] - 1)
+        # the current match is the selection
+        self.ae(text(s), 'x')
+        self.ae(cells_with(s, SELECTION_BIT | FIND_MATCH_BIT, all_bits=True), [(0, 2)])
+
+        # a selection the user makes ends the current match, and the next step starts from it:
+        # forwards at its first cell, so a match starting before it is passed over
+        top = s.abs_line_at_viewport_top()
+        s.start_selection(1, 3)
+        s.update_selection(2, 3)
+        self.ae(s.find_status(), (0, 20, False))
+        self.ae(s.find_step(False), matches[top + 4])
+        # and backwards from before its end, so a match it covers the start of is taken
+        top = s.abs_line_at_viewport_top()
+        s.start_selection(0, 1)
+        s.update_selection(2, 1)
+        self.ae(s.find_step(True), matches[top + 1])
+        # so does one the user changes from find's
+        s.find_step(False)
+        s.update_selection(3, 2)
+        self.ae(s.find_status(), (0, 20, False))
+        # and one cleared by anything
+        s.find_step(False)
+        s.clear_selection()
+        self.ae(s.find_status(), (0, 20, False))
+
+        # matches are stepped in buffer order across wrapped rows and wide chars
+        s = self.create_screen(cols=4, lines=3, scrollback=10)
+        s.draw('ab a'), s.draw('b ab'), s.carriage_return(), s.linefeed()
+        s.draw('中ab'), s.carriage_return(), s.linefeed()
+        s.find_set_query('ab', False)
+        first, *rest = matches = s.find_matches()
+        s.find_set_current(first)
+        self.ae([s.find_step(False) for i in range(4)], rest + [first])
+        self.ae([s.find_step(True) for i in range(4)], list(reversed(matches)))
+        self.ae(matches[1][2] - matches[1][0], 1, 'the second match wraps onto the next row')
+        self.ae(matches[3][1], 2, 'the match after the wide char starts on its cell')
+
+        # a match taller than the screen shows its first line on the top row
+        s = self.create_screen(cols=3, lines=2, scrollback=20)
+        s.draw('abcdefghi'), s.carriage_return(), s.linefeed()
+        for i in range(6):
+            s.draw('z'), s.carriage_return(), s.linefeed()
+        s.find_set_query('abcdefghi', False)
+        m = s.find_step(False)
+        self.ae(m[2] - m[0], 2)
+        self.ae(s.abs_line_at_viewport_top(), m[0])
+
+        # the alternate screen shows none of the main buffer, so nothing there can be stepped to
+        s.toggle_alt_screen()
+        self.assertRaises(RuntimeError, s.find_step, False)
+
     def test_user_marking(self):
 
         def cells(*a, y=0, mark=3):

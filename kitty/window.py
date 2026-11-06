@@ -2990,6 +2990,41 @@ class Window:
     def scroll_to_mark(self, prev: bool = True, mark: int = 0) -> None:
         self.screen.scroll_to_next_mark(mark, prev)
 
+    # [LAW:single-enforcer] the find actions are what the user does, so they and only they end
+    # a paused render, as a selection the user makes does: a program's synchronized-output pause
+    # would otherwise hide the match they moved to. The Screen find_* primitives do not, since
+    # automatic callers reach them too and must not tear a paused frame.
+    def find_step(self, backwards: bool) -> bool | None:
+        if not self.screen.is_main_linebuf():
+            return True
+        self.finish_scroll_animation()
+        self.screen.pause_rendering(False)
+        self.screen.find_step(backwards)
+        return None
+
+    def find(self, text: str) -> None:
+        "Search the whole buffer for text, case-insensitively unless it has an uppercase letter, and step to the first match"
+        self.screen.find_set_query(text, text == text.lower())
+        self.find_step(False)
+
+    @ac('sc', 'Make the next match of the find query, later in the buffer, the current match and the selection, scrolling it into view and wrapping at the end, on macOS')
+    def find_next(self) -> bool | None:
+        return self.find_step(False)
+
+    @ac('sc', 'Make the previous match of the find query, earlier in the buffer, the current match and the selection, scrolling it into view and wrapping at the start, on macOS')
+    def find_previous(self) -> bool | None:
+        return self.find_step(True)
+
+    @ac('sc', 'Search the whole buffer for the selected text and step to it, on macOS. Does nothing without a selection.')
+    def use_selection_for_find(self) -> None:
+        if text := self.text_for_selection():
+            self.find(text)
+
+    @ac('sc', 'End the find: clear the match highlights and the selection find made, on macOS')
+    def find_clear(self) -> None:
+        self.screen.pause_rendering(False)
+        self.screen.find_clear()
+
     @ac(
         'misc',
         """

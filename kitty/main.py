@@ -219,6 +219,9 @@ def set_cocoa_global_shortcuts(opts: Options) -> dict[str, SingleKey]:
             'minimize_macos_window',
             'quit',
             'search_scrollback',
+            'find_next',
+            'find_previous',
+            'use_selection_for_find',
         ):
             val = get_macos_shortcut_for(func_map, ac)
             if val is not None:
