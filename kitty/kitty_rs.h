@@ -11,7 +11,7 @@
 #include "find.h"
 
 // A match from (abs_start_line, start_x) through (abs_end_line, end_x), both cells included.
-typedef struct {
+typedef struct FindMatch {
     uint64_t abs_start_line;
     uint32_t start_x;
     uint64_t abs_end_line;

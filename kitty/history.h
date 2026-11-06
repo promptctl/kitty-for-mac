@@ -43,8 +43,8 @@ typedef struct {
     uint64_t abs_oldest_line;
     // The lowest absolute line this ring's own operations have renumbered or rewritten since
     // find last read it (pop, delete_newest_lines, rewrap), UINT64_MAX for none. Pushes,
-    // eviction and clear move only abs_oldest_line. Find resets it once it has re-fed the
-    // lines (kitty/screen.c, sync_find_engine).
+    // eviction and clear move only abs_oldest_line. Find resets it each time it records the
+    // buffer it fed (kitty/screen.c, record_fed_buffer).
     uint64_t abs_lowest_rewritten_line;
 } HistoryBuf;
 

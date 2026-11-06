@@ -32,7 +32,8 @@ typedef struct {
     uint64_t from, limit;
 } FindRefeedRange;
 
-// From the start of the logical line holding abs_line, which is in the buffer, onward.
+// From the start of the logical line holding abs_line onward. abs_line is in the buffer or is
+// its end, where the range re-feeds nothing and drops the matches past the end.
 FindRefeedRange find_onward_range(Screen *self, uint64_t abs_line);
 // The logical line that is first in the buffer.
 FindRefeedRange find_first_logical_line_range(Screen *self);
@@ -63,6 +64,7 @@ typedef struct FindFedRecord {
 // A new record of the buffer as it is now; NULL when out of memory.
 FindFedRecord* find_record_capture(Screen *self);
 void find_record_free(FindFedRecord *r);
-// The first absolute line, in the buffer, whose text may differ from what r recorded, taking
-// the history ring's own rewrites into account; UINT64_MAX when there is none.
+// The first absolute line whose text may differ from what r recorded, taking the history
+// ring's own rewrites into account: a line in the buffer, or the buffer's end when only
+// recorded lines past it are gone; UINT64_MAX when there is none.
 uint64_t find_changed_from(Screen *self, const FindFedRecord *r);

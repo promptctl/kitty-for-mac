@@ -811,6 +811,7 @@ dealloc(Screen *self) {
 #ifdef __APPLE__
     kitty_rs_find_engine_free(self->find_engine);
     find_record_free(self->find_record);
+    free(self->paused_rendering.find_matches.items);
 #endif
     PyMem_Free(self->overlay_line.cpu_cells);
     PyMem_Free(self->overlay_line.gpu_cells);
@@ -3898,6 +3899,10 @@ main_buffer_view(const Screen *self) {
 bool
 screen_shows_main_buffer(const Screen *self) { return main_buffer_view(self).shows_main_buffer; }
 
+#ifdef __APPLE__
+static void pause_find_matches(Screen *self);
+#endif
+
 bool
 screen_pause_rendering(Screen *self, bool pause, int for_in_ms) {
     if (!pause) {
@@ -3954,6 +3959,9 @@ screen_pause_rendering(Screen *self, bool pause, int for_in_ms) {
     copy_selections(&self->paused_rendering.selections, &self->selections);
     copy_selections(&self->paused_rendering.url_ranges, &self->url_ranges);
     self->paused_rendering.main_buffer_view = main_buffer_view(self);
+#ifdef __APPLE__
+    pause_find_matches(self);
+#endif
     if (self->extra_cursors.count) {
         self->paused_rendering.extra_cursors.locations = calloc(self->extra_cursors.count, sizeof(self->extra_cursors.locations[0]));
         if (self->paused_rendering.extra_cursors.locations) {
@@ -4650,13 +4658,37 @@ visible_find_matches(Screen *self, MainBufferView view, int extra_leading_rows, 
     return kitty_rs_find_matches_in_lines(screen_find_engine(self), first, limit, count);
 }
 
+// A paused frame shows the rows as the pause found them, while the engine follows the live
+// buffer, so the frame keeps the matches on its rows as they were then, as it keeps the
+// selections.
+static void
+pause_find_matches(Screen *self) {
+    size_t count;
+    const FindMatch *m = visible_find_matches(self, self->paused_rendering.main_buffer_view, self->paused_rendering.pixel_scroll, self->paused_rendering.scrolled_by, &count);
+    struct PausedFindMatches *p = &self->paused_rendering.find_matches;
+    p->count = 0;
+    if (p->capacity < count) {
+        FindMatch *items = realloc(p->items, count * sizeof(FindMatch));
+        if (!items) {
+            log_error("Out of memory while pausing rendering, the paused frame shows no find matches");
+            return;
+        }
+        p->items = items;
+        p->capacity = count;
+    }
+    if (count) memcpy(p->items, m, count * sizeof(FindMatch));
+    p->count = count;
+}
+
 // [LAW:one-source-of-truth] the highlights are drawn from the engine's match list on every
-// paint and kept nowhere else; find_last_rendered records what they were drawn from.
+// live paint, and from the pause's copy of it on a paused one, and kept nowhere else;
+// find_last_rendered records what they were drawn from.
 static void
 apply_find_matches(Screen *self, uint8_t *data, int extra_leading_rows, int scrolled_by) {
-    const MainBufferView view = self->paused_rendering.expires_at ? self->paused_rendering.main_buffer_view : main_buffer_view(self);
-    size_t count;
-    const FindMatch *m = visible_find_matches(self, view, extra_leading_rows, scrolled_by, &count);
+    const bool paused = self->paused_rendering.expires_at;
+    const MainBufferView view = paused ? self->paused_rendering.main_buffer_view : main_buffer_view(self);
+    size_t count = self->paused_rendering.find_matches.count;
+    const FindMatch *m = paused ? self->paused_rendering.find_matches.items : visible_find_matches(self, view, extra_leading_rows, scrolled_by, &count);
     for (size_t i = 0; i < count; i++) {
         Selection s = match_as_selection(m[i], view.abs_row0);
         apply_selection(self, data, &s, FIND_MATCH_MASK, extra_leading_rows, scrolled_by);

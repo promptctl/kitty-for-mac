@@ -1805,6 +1805,19 @@ class TestScreen(BaseTest):
         s.draw('row0zz'), s.carriage_return(), s.linefeed()
         self.ae(s.current_selections(), before)
 
+        # the matches follow the live buffer while the paused frame keeps those it showed: an
+        # erased match stays lit and a match drawn in the pause is unlit until it ends
+        s = self.create_screen(cols=10, lines=3)
+        s.draw('abc')
+        self.ae(search(s, 'b'), [(1, 0)])
+        self.assertTrue(s.pause_rendering(True, 5000))
+        s.cursor_position(1, 1), s.erase_in_line(2)
+        s.cursor_position(2, 1), s.draw('bb')
+        self.ae(highlighted(s), [(1, 0)])
+        self.ae(s.find_matches(), ((1, 0, 1, 0), (1, 1, 1, 1)))
+        self.assertTrue(s.pause_rendering(False))
+        self.ae(highlighted(s), [(0, 1), (1, 1)])
+
         # the alternate screen shows no main buffer line, so no main buffer match
         s = self.create_screen(cols=10, lines=2)
         s.draw('abc')

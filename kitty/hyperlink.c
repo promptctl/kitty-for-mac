@@ -7,6 +7,9 @@
 
 #include "hyperlink.h"
 #include "lineops.h"
+#ifdef __APPLE__
+#include "find.h"
+#endif
 #include <string.h>
 
 #define MAX_KEY_LEN 2048
@@ -108,6 +111,15 @@ remap_hyperlink_ids(Screen *self, bool preserve_hyperlinks_in_history, hyperlink
     LineBuf *second = self->linebuf, *first = second == self->main_linebuf ? self->alt_linebuf : self->main_linebuf;
     for (index_type i = 0; i < self->lines * self->columns; i++) process_cell(pool, map, clone, first->cpu_cell_buf + i);
     for (index_type i = 0; i < self->lines * self->columns; i++) process_cell(pool, map, clone, second->cpu_cell_buf + i);
+#ifdef __APPLE__
+    // find's record compares its copied cells with the live ones, so it holds ids too; an id
+    // only the record holds is of a line since rewritten, and keeps no link in the pool
+    FindFedRecord *r = self->find_record;
+    if (r) for (size_t i = 0; i < (size_t)r->rows * r->columns; i++) {
+        CPUCell *c = r->cells + i;
+        c->hyperlink_id = c->hyperlink_id < clone.count ? map[c->hyperlink_id] : 0;
+    }
+#endif
 }
 
 static void

@@ -2,6 +2,7 @@
 //! (kitty/find.c) feeds it, keeping every match in absolute buffer coordinates.
 
 use regex::bytes::{Regex, RegexBuilder};
+use std::sync::Arc;
 
 /// The cells one byte of a logical line came from, as kitty/find.h defines it.
 #[repr(C)]
@@ -55,7 +56,8 @@ pub struct FindRefeed {
     lines: FindRefeedRange,
     /// The first line the next fed line may start on: past every line fed so far.
     next_line: u64,
-    regex: Option<Regex>,
+    /// The engine's own regex, shared: a cloned Regex would build its search caches anew.
+    regex: Option<Arc<Regex>>,
     matches: Vec<FindMatch>,
 }
 
@@ -119,7 +121,7 @@ pub struct FindStatus {
 #[derive(Default)]
 pub struct FindEngine {
     /// None is the empty query: there is nothing to find, so every line yields no match.
-    regex: Option<Regex>,
+    regex: Option<Arc<Regex>>,
     /// Sorted in buffer order: a refeed is fed in order and spliced in at its range, which
     /// starts a logical line, so no match crosses the cut. The first `evicted` entries have
     /// left the history ring and are no longer matches.
@@ -148,6 +150,7 @@ impl FindEngine {
                 RegexBuilder::new(&regex::escape(query))
                     .case_insensitive(case_insensitive)
                     .build()
+                    .map(Arc::new)
             })
             .transpose()?;
         Ok(())

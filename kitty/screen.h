@@ -249,6 +249,10 @@ typedef struct {
         Selections selections, url_ranges;
         ExtraCursors extra_cursors;
         MainBufferView main_buffer_view;
+#ifdef __APPLE__
+        // the find matches on the paused rows, as the engine had them when the pause began
+        struct PausedFindMatches { struct FindMatch *items; size_t count, capacity; } find_matches;
+#endif
     } paused_rendering;
     CharsetState charset;
     ListOfChars *lc;
