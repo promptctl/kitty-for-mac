@@ -1975,14 +1975,10 @@ class TestScreen(BaseTest):
         s.find_step(False)
         s.clear_selection()
         self.ae(s.find_status(), (0, 20, False))
-        # a click leaves an empty selection, and the step starts from the point it marks
+        # the empty selection a click leaves shows nothing, so the step starts from the screen
         top = s.abs_line_at_viewport_top()
         s.start_selection(0, 2)
-        self.ae(s.find_step(False), matches[top + 2])
-        s.start_selection(0, 2)
-        self.ae(s.find_step(True), matches[top + 1])
-        s.start_selection(0, 2, False, 0, False)
-        self.ae(s.find_step(False), matches[top + 3], 'a click in the right half of a cell points past it')
+        self.ae(s.find_step(False), matches[top])
 
         # disowned, find's current match is the user's: a new query leaves it and the step
         # lands on it, not past it, as Use Selection for Find needs

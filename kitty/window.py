@@ -2998,8 +2998,9 @@ class Window:
         if not self.screen.is_main_linebuf():
             return True
         self.finish_scroll_animation()
-        self.screen.pause_rendering(False)
-        self.screen.find_step(backwards)
+        # with nothing to move to there is nothing new to show, so a paused frame stays paused
+        if self.screen.find_step(backwards) is not None:
+            self.screen.pause_rendering(False)
         return None
 
     def find(self, text: str) -> None:

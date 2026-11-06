@@ -7123,23 +7123,17 @@ find_set_current(Screen *self, PyObject *args) {
 }
 
 // Where the user is looking, from the first cell to just past the last in buffer order: the
-// selection; the point between cells a click left as an empty one; or with neither the rows
-// on screen.
+// selection, or with none the rows on screen. The empty selection a click leaves shows
+// nothing and outlives the click, so it is no place the user can see.
 static void
 find_step_origin(Screen *self, MainBufferView view, FindPos *start, FindPos *end) {
     const uint64_t top = view.abs_row0 - self->scrolled_by;
     *start = (FindPos){.line = top};
     *end = (FindPos){.line = top + self->lines};
-    if (!self->selections.count) return;
-    const Selection *s = self->selections.items;
     IterationData idata;
-    iteration_data(s, &idata, self->columns, -(int)self->historybuf->count, 0);
-    // selection rows count from screen row 0 with history negative, as match_as_selection's do
-    if (iteration_data_is_empty(self, &idata)) {
-        const SelectionBoundary *b = &s->start;
-        *start = *end = (FindPos){.line = view.abs_row0 + (int)b->y - s->start_scrolled_by, .x = b->x + !b->in_left_half_of_cell};
-        return;
-    }
+    if (self->selections.count) iteration_data(self->selections.items, &idata, self->columns, -(int)self->historybuf->count, 0);
+    if (!self->selections.count || iteration_data_is_empty(self, &idata)) return;
+    // iteration rows count from screen row 0 with history negative, as match_as_selection's do
     const index_type last_x_limit = idata.y_limit - 1 == idata.y ? idata.first.x_limit : idata.last.x_limit;
     *start = (FindPos){.line = view.abs_row0 + idata.y, .x = idata.first.x};
     *end = (FindPos){.line = view.abs_row0 + idata.y_limit - 1, .x = last_x_limit};

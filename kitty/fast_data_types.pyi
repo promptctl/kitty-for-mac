@@ -1280,7 +1280,7 @@ class Screen:
         selection, scrolling it to the middle of the screen when it is not wholly on screen, and
         return it; None when there are no matches. From the current match it steps past it,
         wrapping at either end. With none it starts where the user is looking: their selection,
-        the point they clicked, else the screen. A selection the user makes or changes ends the current match.
+        else the screen. A selection the user makes or changes ends the current match.
         RuntimeError while the alternate screen shows. macOS only."""
         pass
 
