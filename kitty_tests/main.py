@@ -20,7 +20,7 @@ from typing import (
 )
 
 from . import is_ci
-from .external import RUST_MODULE, ExternalTestProc, go_exe, reduce_go_pkgs, resolve_rust_tests, run_cargo, run_go, rust_tests_selected
+from .external import RUST_MODULE, ExternalTestProc, cargo_test_cmd, go_exe, reduce_go_pkgs, resolve_rust_tests, run_cargo, run_go, rust_tests_selected
 
 PARALLEL_THRESHOLD = 20
 
@@ -407,7 +407,7 @@ def run_serial_tests(tests: list[unittest.TestCase], verbosity: int) -> bool:
         else:
             status = procs[0].wait()
     except BaseException:
-        terminate_workers(pids, procs, None)
+        terminate_workers(pids, procs, ())
         raise
     done = False
     worker_errors: list[str] = []
@@ -706,7 +706,9 @@ def run_tests(report_env: bool = False) -> None:
     go_pkgs = reduce_go_pkgs(args.module, args.name)
     has_go = bool(go_pkgs)
     has_rust = rust_tests_selected(args.module)
-    rust_paths = resolve_rust_tests(args.name) if has_rust and args.name else []
+    # cargo is found before any worker or external process starts, so a missing cargo leaves none behind
+    cargo_cmd = cargo_test_cmd() if has_rust else []
+    rust_paths = resolve_rust_tests(cargo_cmd, args.name) if has_rust and args.name else []
     has_rust = has_rust and (bool(rust_paths) or not args.name)
     os.environ['ASAN_OPTIONS'] = 'detect_leaks=0'
 
@@ -745,7 +747,7 @@ def run_tests(report_env: bool = False) -> None:
             print('Go packages being tested:', ' '.join(go_pkgs))
         externals.append(run_go(go_pkgs, args.name))
     if has_rust:
-        externals.append(run_cargo(rust_paths))
+        externals.append(run_cargo(cargo_cmd, rust_paths))
     sys.stdout.flush()
     externals_ok = True
     try:

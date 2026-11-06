@@ -1303,8 +1303,8 @@ def build_rust_crate(args: Options, kenv: Env) -> str:
         raise SystemExit('cargo not found: building kitty on macOS needs Rust, install it with rustup (https://rustup.rs)')
     target, deployment_target = rust_target(cc_target_triple(kenv))
     profile = 'debug' if args.debug else 'release'
-    target_dir = os.path.join(build_dir, 'rust')
-    # [LAW:one-source-of-truth] the deployment target rides in the command, so it is recorded with it
+    # cargo's fingerprint ignores MACOSX_DEPLOYMENT_TARGET, so a build for another minimum OS gets its own target dir
+    target_dir = os.path.join(build_dir, 'rust', f'macos{deployment_target}')
     cmd = ['env', f'MACOSX_DEPLOYMENT_TARGET={deployment_target}', cargo, 'build', '--locked', '--manifest-path', rust_manifest]
     cmd += ['--target-dir', target_dir, '--target', target] + ([] if args.debug else ['--release'])
     lib = os.path.join(target_dir, target, profile, 'libkitty_rs.a')

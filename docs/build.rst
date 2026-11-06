@@ -106,7 +106,8 @@ Build-time dependencies:
 
 * ``gcc`` or ``clang``
 * ``swiftc`` from a Swift 6 toolchain, macOS only (Xcode or the Command Line Tools)
-* ``cargo`` from `rustup <https://rustup.rs>`__, macOS only (:file:`rust-toolchain.toml` pins the Rust version, rustup installs it)
+* ``cargo`` from `rustup <https://rustup.rs>`__, macOS only (:file:`rust-toolchain.toml` pins the Rust version, rustup installs it).
+  Homebrew's ``rustup`` is keg-only, so put :file:`$(brew --prefix rustup)/bin` on :envvar:`PATH`.
 * ``simde``
 * ``shader-slang``
 * ``go`` >= _build_go_version (see :file:`go.mod` for go packages used during building)

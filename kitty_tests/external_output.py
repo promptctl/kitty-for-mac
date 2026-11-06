@@ -55,6 +55,22 @@ class TestExternalOutput(BaseTest):
             ],
         )
 
+    def test_go_dependency_that_does_not_build(self) -> None:
+        # Both packages import gp/u, whose compile error is each one's failure
+        records, unplaced = parse(
+            GoJsonParser(),
+            go_events(
+                {'ImportPath': 'gp/u', 'Action': 'build-output', 'Output': 'u/u.go:3:1: syntax error\n'},
+                {'ImportPath': 'gp/u', 'Action': 'build-fail'},
+                {'ImportPath': 'gp/orphan', 'Action': 'build-output', 'Output': 'orphaned\n'},
+                {'Action': 'fail', 'Package': 'gp/a', 'FailedBuild': 'gp/u'},
+                {'Action': 'fail', 'Package': 'gp/b', 'FailedBuild': 'gp/u'},
+                {'Action': 'output', 'Package': 'gp/c', 'Output': 'never finished\n'},
+            ),
+        )
+        self.ae(records, [UnitFailure('gp/a', 'u/u.go:3:1: syntax error\n'), UnitFailure('gp/b', 'u/u.go:3:1: syntax error\n')])
+        self.ae(unplaced, 'orphaned\nnever finished\n')
+
     def test_go_text_outside_json(self) -> None:
         _, unplaced = parse(GoJsonParser(), 'go: downloading x\n' + go_events({'Action': 'pass', 'Package': 'p', 'Test': 'TestA'}))
         self.ae(unplaced, 'go: downloading x\n')
@@ -67,10 +83,11 @@ class TestExternalOutput(BaseTest):
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
      Running unittests src/lib.rs (build/rust/debug/deps/kitty_rs-b5203e56d9ead203)
 
-running 3 tests
+running 4 tests
 test t::a ... ok
 test t::ab ... FAILED
 test t::c ... ignored
+test t::p - should panic ... FAILED
 
 failures:
 
@@ -79,10 +96,14 @@ failures:
 thread 't::ab' panicked at src/lib.rs:9:20:
 boom
 
+---- t::p stdout ----
+note: test did not panic as expected at src/lib.rs:14:8
+
 failures:
     t::ab
+    t::p
 
-test result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: FAILED. 1 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 error: test failed, to rerun pass `--lib`
 """,
@@ -94,6 +115,7 @@ error: test failed, to rerun pass `--lib`
                 TestRecord(f'{target}::t::a', Outcome.passed, None, ''),
                 TestRecord(f'{target}::t::c', Outcome.skipped, None, ''),
                 TestRecord(f'{target}::t::ab', Outcome.failed, None, "\nthread 't::ab' panicked at src/lib.rs:9:20:\nboom\n\n"),
+                TestRecord(f'{target}::t::p', Outcome.failed, None, 'note: test did not panic as expected at src/lib.rs:14:8\n\n'),
             ],
         )
 

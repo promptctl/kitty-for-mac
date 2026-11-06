@@ -58,8 +58,9 @@ class GoJsonParser:
         self.test_output: dict[str, list[str]] = {}
         self.pkg_output: dict[str, list[str]] = {}
         # build-output events name their package by ImportPath ("pkg [pkg.test]"),
-        # and the package's fail event points back at it with FailedBuild.
+        # and the fail event of every package it broke points back at it with FailedBuild.
         self.build_output: dict[str, list[str]] = {}
+        self.placed_builds: set[str] = set()
         self.pkgs_with_failed_tests: set[str] = set()
         self.unplaced: list[str] = []
 
@@ -93,7 +94,9 @@ class GoJsonParser:
         if action == 'output':
             self.pkg_output.setdefault(pkg, []).append(evt.get('Output', ''))
             return []
-        output = ''.join(self.build_output.pop(evt.get('FailedBuild', ''), []) + self.pkg_output.pop(pkg, []))
+        failed_build = evt.get('FailedBuild', '')
+        self.placed_builds.add(failed_build)
+        output = ''.join(self.build_output.get(failed_build, []) + self.pkg_output.pop(pkg, []))
         # [LAW:no-silent-failure] decided per package: a package that failed with no
         # failing test of its own (a build error, a crash in TestMain) is its own failure.
         if action == 'fail' and pkg not in self.pkgs_with_failed_tests:
@@ -101,7 +104,9 @@ class GoJsonParser:
         return []
 
     def finish(self) -> tuple[list[Record], str]:
-        return [], ''.join(self.unplaced)
+        # build output no failed package claimed, and output of packages that never finished
+        leftover = [lines for path, lines in self.build_output.items() if path not in self.placed_builds] + list(self.pkg_output.values())
+        return [], ''.join(self.unplaced) + ''.join(''.join(lines) for lines in leftover)
 
 
 @dataclass
@@ -128,7 +133,7 @@ class CargoTextParser:
     # Parses libtest's stable plain-text output as printed by `cargo test`. libtest's
     # JSON format and its per-test durations need a nightly compiler.
     running = re.compile(r'^\s+Running (.+?) \(.+\)$')
-    result_line = re.compile(r'^test (\S+) \.\.\. (ok|FAILED|ignored)')
+    result_line = re.compile(r'^test (\S+)(?: - should panic)? \.\.\. (ok|FAILED|ignored)')
     failure_header = re.compile(r'^---- (\S+) stdout ----$')
 
     def __init__(self) -> None:
@@ -254,7 +259,7 @@ class ExternalTestProc:
 
     def kill(self) -> None:
         self.proc.kill()
-        self.proc.wait()
+        self.finish()
 
 
 # go {{{
@@ -336,8 +341,9 @@ def cargo_test_cmd() -> list[str]:
     if not cargo:
         raise SystemExit('cargo not found (install rustup: https://rustup.rs), current path: ' + repr(os.environ.get('PATH', '')))
     # rust-toolchain.toml at the repo root pins the toolchain; it is found from the
-    # current directory, which is the repo root like it is for go.
-    return [cargo, 'test', '--locked', '--manifest-path', 'rust/Cargo.toml', '--target-dir', 'build/rust']
+    # current directory, which is the repo root like it is for go. CargoTextParser reads
+    # uncoloured text, whatever colour the user's cargo config asks for.
+    return [cargo, 'test', '--locked', '--color', 'never', '--manifest-path', 'rust/Cargo.toml', '--target-dir', 'build/rust']
 
 
 def cargo_env() -> dict[str, str]:
@@ -353,10 +359,10 @@ def rust_tests_selected(module: str) -> bool:
     return sys.platform == 'darwin' and module in ('', RUST_MODULE)
 
 
-def resolve_rust_tests(names: Sequence[str]) -> list[str]:
+def resolve_rust_tests(cargo_cmd: list[str], names: Sequence[str]) -> list[str]:
     # A name means what it means for Python and go tests, an exact match: it selects the
     # Rust test whose last path segment it equals (counts_ascii -> tests::counts_ascii).
-    r = subprocess.run(cargo_test_cmd() + ['--', '--list'], capture_output=True, text=True, env=os.environ | cargo_env())
+    r = subprocess.run(cargo_cmd + ['--', '--list'], capture_output=True, text=True, env=os.environ | cargo_env())
     if r.returncode != 0:
         # [LAW:no-silent-failure] a list that cannot build is not "no matching tests".
         raise SystemExit(f'Listing the Rust tests failed, they do not build:\n{r.stdout}{r.stderr}')
@@ -364,8 +370,8 @@ def resolve_rust_tests(names: Sequence[str]) -> list[str]:
     return [path for path, kind in (x.rpartition(': ')[::2] for x in r.stdout.splitlines()) if kind == 'test' and path.rpartition('::')[2] in wanted]
 
 
-def run_cargo(exact_paths: Sequence[str]) -> ExternalTestProc:
-    cmd = cargo_test_cmd() + ['--no-fail-fast']
+def run_cargo(cargo_cmd: list[str], exact_paths: Sequence[str]) -> ExternalTestProc:
+    cmd = cargo_cmd + ['--no-fail-fast']
     if exact_paths:
         cmd += ['--', '--exact', *exact_paths]
     return ExternalTestProc('Rust', cmd, CargoTextParser(), cargo_env())
