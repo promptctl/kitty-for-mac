@@ -2411,6 +2411,65 @@ class TestScreen(BaseTest):
             b.focus_changed(True)
             self.ae((sent(a), sent(b), b.is_focused), (b'', b'\x1b[I', True))  # ]
 
+    def test_find_status_changes_are_reported(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from kitty import window as window_module
+        from kitty.constants import is_macos
+        from kitty.window import Window
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+
+        def lines_of(s, *texts):
+            for t in texts:
+                s.draw(t), s.carriage_return(), s.linefeed()
+
+        # each frame reports a status that changed since the last report, once
+        def reports(s):
+            before = s.callbacks.find_status_changes
+            s.find_report_status_change()
+            return s.callbacks.find_status_changes - before
+
+        s = self.create_screen(cols=5, lines=3, scrollback=4)
+        lines_of(s, 'x0')
+        self.ae(reports(s), 0, 'no query, nothing to report')
+        s.find_set_query('x', False)
+        self.ae(reports(s), 1)
+        self.ae(reports(s), 0, 'unchanged since the last report')
+        # new output adds matches, and a read that tells no bar does not hide the change
+        lines_of(s, 'x1', 'x2')
+        self.ae(s.find_status(), (0, 3, False))
+        self.ae(reports(s), 1)
+        # output past the ring's end evicts matches
+        lines_of(s, *('y' for _ in range(6)))
+        self.ae(s.find_status(), (0, 0, False))
+        self.ae(reports(s), 1)
+        # overwriting the current match's cells ends it
+        s = self.create_screen(cols=10, lines=3)
+        s.draw('abc ab')
+        s.find_set_query('b', False)
+        s.find_step(False)
+        self.ae((s.find_status(), reports(s)), ((1, 2, False), 1))
+        s.cursor_position(1, 2), s.draw('z')
+        self.ae(reports(s), 1)
+        self.ae(s.find_status(), (0, 1, False))
+
+        # the window pushes the status to the bar only while it is its OS window's active window
+        pushed = []
+        w = SimpleNamespace(screen=s, find_query='x', os_window_id=1)
+        for name in ('push_find_bar', 'find_status_changed'):
+            setattr(w, name, getattr(Window, name).__get__(w))
+        tab_manager = SimpleNamespace(active_window=w)
+        boss = SimpleNamespace(os_window_map={1: tab_manager})
+        with mock.patch.object(window_module, 'is_macos', True), mock.patch.object(window_module, 'get_boss', lambda: boss), \
+                mock.patch.object(window_module, 'cocoa_update_find_bar', lambda *a: pushed.append(a)):
+            w.find_status_changed()
+            self.ae(pushed, [(1, 'x', *s.find_status()[:2])])
+            tab_manager.active_window = None
+            w.find_status_changed()
+            self.ae(len(pushed), 1)
+
     def test_user_marking(self):
 
         def cells(*a, y=0, mark=3):

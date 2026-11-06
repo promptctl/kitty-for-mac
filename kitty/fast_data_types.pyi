@@ -1316,6 +1316,11 @@ class Screen:
         an end. macOS only."""
         pass
 
+    def find_report_status_change(self) -> None:
+        """What each frame does for this screen: when find_status() has changed since the
+        last report, call the callbacks' find_status_changed(). macOS only."""
+        pass
+
     def find_count(self) -> int:
         """The number of matches find_set_query found, less those whose lines have since
         left the history ring. macOS only."""

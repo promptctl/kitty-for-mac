@@ -7291,6 +7291,32 @@ find_status(Screen *self, PyObject *o UNUSED) {
     return Py_BuildValue("nnO", (Py_ssize_t)st.current, (Py_ssize_t)st.total, st.wrapped ? Py_True : Py_False);
 }
 
+// The engine changes the status on its own as the buffer it searches changes: output, eviction,
+// a resize or clear, or a current match whose cells changed. Each frame takes the change, and
+// reports it once no walk over the windows is in progress, since the report runs Python.
+// [LAW:one-source-of-truth] find_reported has this one writer: a find_status() read tells no
+// bar, so it cannot be what a change is measured from.
+bool
+screen_take_find_status_change(Screen *self) {
+    const FindStatus st = kitty_rs_find_status(screen_find_engine(self));
+    if (st.current == self->find_reported.current && st.total == self->find_reported.total) return false;
+    self->find_reported.current = st.current;
+    self->find_reported.total = st.total;
+    return true;
+}
+
+void
+screen_report_find_status_change(Screen *self) {
+    CALLBACK("find_status_changed", NULL);
+}
+
+// what a frame does for one window, for tests to run without a render loop
+static PyObject *
+find_report_status_change(Screen *self, PyObject *o UNUSED) {
+    if (screen_take_find_status_change(self)) screen_report_find_status_change(self);
+    Py_RETURN_NONE;
+}
+
 static PyObject *
 find_set_query(Screen *self, PyObject *args) {
     PyObject *text; int case_insensitive;
@@ -7834,7 +7860,7 @@ static PyMethodDef methods[] = {
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
     MND(find_logical_lines, METH_NOARGS)
 #ifdef __APPLE__
-    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_disown_selection, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
+    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_disown_selection, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_report_status_change, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
 #endif
     MND(abs_line_at_viewport_top, METH_NOARGS)
 

@@ -3056,6 +3056,10 @@ class Window:
             current, total, _ = self.screen.find_status()
             cocoa_update_find_bar(self.os_window_id, self.find_query, current, total)
 
+    def find_status_changed(self) -> None:
+        "The screen's callback for the find status changing as the buffer it searches changes"
+        self.push_find_bar()
+
     # [LAW:one-source-of-truth] The bar's field is the query of its OS window, whichever kitty window is
     # active. A window that becomes active takes the query over and the windows it replaces drop
     # their search. A window that is already searching for the query keeps its current match.
