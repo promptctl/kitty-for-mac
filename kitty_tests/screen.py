@@ -1876,13 +1876,6 @@ class TestScreen(BaseTest):
         self.assertRaises(LookupError, s.find_set_current, first)
         s.find_set_current(kept)
         self.ae(text(s), 'ab')
-        # a find action is the user's, so like a selection it ends paused rendering
-        for action in (lambda: s.find_set_current(kept), lambda: s.find_set_query('ab', False), s.find_clear):
-            self.assertTrue(s.pause_rendering(True, 5000))
-            action()
-            self.assertFalse(s.pause_rendering(False))
-        s.find_set_query('ab', False)
-        s.find_set_current(kept)
         # the alternate screen shows none of the main buffer, so nothing there can be selected
         s.toggle_alt_screen()
         self.assertRaises(RuntimeError, s.find_set_current, kept)
@@ -1895,6 +1888,30 @@ class TestScreen(BaseTest):
         selected = text(s)
         s.find_clear()
         self.ae(text(s), selected)
+
+        # the selection is find's by how it was made, not by its cells: one the user makes over
+        # the same cells, or extends, is theirs; one whose match eviction ended is still find's
+        s = self.create_screen(cols=5, lines=2, scrollback=2)
+        s.draw('ab'), s.carriage_return(), s.linefeed()
+        s.find_set_query('ab', False)
+        s.find_set_current(s.find_matches()[0])
+        finds = s.current_selections()
+        s.start_selection(0, 0)
+        s.update_selection(1, 0)
+        self.ae(s.current_selections(), finds)
+        s.find_clear()
+        self.assertTrue(s.has_selection())
+        s.find_set_query('ab', False)
+        s.find_set_current(s.find_matches()[0])
+        s.update_selection(0, 1)
+        s.find_clear()
+        self.assertTrue(s.has_selection())
+        s.find_set_query('ab', False)
+        s.find_set_current(s.find_matches()[0])
+        while s.find_matches():
+            s.draw('qq'), s.carriage_return(), s.linefeed()
+        s.find_clear()
+        self.assertFalse(s.has_selection())
 
     def test_user_marking(self):
 

@@ -4532,7 +4532,7 @@ match_as_selection(FindMatch m, uint64_t abs_row0) {
     return (Selection){
         .start = start, .end = end, .input_start = start, .input_current = end,
         .start_scrolled_by = MAX(-start_row, 0), .end_scrolled_by = MAX(-end_row, 0),
-        .last_rendered = {.y = INT_MAX},
+        .last_rendered = {.y = INT_MAX}, .is_find_match = true,
     };
 }
 
@@ -6856,6 +6856,8 @@ screen_update_selection(Screen *self, index_type x, index_type y, bool in_left_h
     if (!self->selections.count) return;
     self->selections.in_progress = !upd.ended;
     Selection *s = self->selections.items;
+    // extending a selection find made makes it the user's
+    s->is_find_match = false;
     int delta = clamp_selection_input_to_multicell(self, s, x, y, in_left_half_of_cell);
     index_type orig = self->scrolled_by;
     if (delta) {
@@ -7060,27 +7062,11 @@ screen_find_clear(Screen *self) {
     kitty_rs_find_set_query(self->find_engine, (const uint8_t*)"", 0, false, err, sizeof(err));
 }
 
-static bool
-same_extent(const Selection *a, const Selection *b) {
-#define S(s, which) s->which.x, (int)s->which.y - (int)s->which##_scrolled_by, s->which.in_left_half_of_cell
-    const int ea[] = {S(a, start), S(a, end), a->rectangle_select}, eb[] = {S(b, start), S(b, end), b->rectangle_select};
-#undef S
-    return memcmp(ea, eb, sizeof(ea)) == 0;
-}
-
-// Every change of query ends the current match, so it ends the selection that showed it.
-// Like starting a selection, a find action is the user's and ends paused rendering, so the
-// frame shows what it did.
+// Every change of query ends the current match, so it ends the selection that showed it;
+// one the user has made or changed since is theirs, not find's to clear.
 static void
 release_find_selection(Screen *self) {
-    screen_pause_rendering(self, false, 0);
-    FindMatch current;
-    if (kitty_rs_find_current(screen_find_engine(self), &current) && self->selections.count == 1) {
-        // a selection's extent counts from screen row 0, so it stays comparable as output
-        // scrolls the screen; a selection the user has made since is not find's to clear
-        const Selection mine = match_as_selection(current, main_buffer_view(self).abs_row0);
-        if (same_extent(self->selections.items, &mine)) clear_selection(&self->selections);
-    }
+    if (self->selections.count && self->selections.items->is_find_match) clear_selection(&self->selections);
 }
 
 static PyObject *
@@ -7106,7 +7092,6 @@ find_set_current(Screen *self, PyObject *args) {
         PyErr_Format(PyExc_LookupError, "There is no find match %R", PyTuple_GET_ITEM(args, 0));
         return NULL;
     }
-    screen_pause_rendering(self, false, 0);
     ensure_space_for(&self->selections, items, Selection, 1, capacity, 1, false);
     clear_selection(&self->selections);
     self->selections.items[0] = match_as_selection(m, view.abs_row0);
