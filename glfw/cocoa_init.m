@@ -812,30 +812,6 @@ glfwCocoaNativeViewHasFocus(void) {
     return [fr isKindOfClass:[NSView class]] && fr != kw.contentView;
 }
 
-// The key a Command shortcut is matched on: the typed character when it is
-// ASCII, otherwise the key at that position on a US layout, as AppKit's menu
-// matching does on Cyrillic, Greek and other non-Latin layouts.
-static unichar
-command_shortcut_key(NSEvent *event) {
-    NSString *chars = [event characters];
-    if ([chars length] == 1 && [chars characterAtIndex:0] < 0x80) return [[chars lowercaseString] characterAtIndex:0];
-    return vk_code_to_unicode([event keyCode]);
-}
-
-// The standard text editing action kitty has no menu item for, or NULL. Copy
-// and Paste are menu items; their actions follow focus (kitty/cocoa_window.m).
-static SEL
-standard_edit_action(unichar key, NSEventModifierFlags mods) {
-    const bool cmd = mods == NSEventModifierFlagCommand;
-    const bool cmd_shift = mods == (NSEventModifierFlagCommand | NSEventModifierFlagShift);
-    switch (key) {
-        case 'x': return cmd ? @selector(cut:) : NULL;
-        case 'a': return cmd ? @selector(selectAll:) : NULL;
-        case 'z': return cmd ? @selector(undo:) : cmd_shift ? @selector(redo:) : NULL;
-    }
-    return NULL;
-}
-
 // key_destination.h spells these out so kitty's tests can include it without AppKit.
 _Static_assert(kVK_Shift == 0x38 && kVK_RightShift == 0x3C && kVK_Control == 0x3B && kVK_RightControl == 0x3E &&
                kVK_Option == 0x3A && kVK_RightOption == 0x3D && kVK_Command == 0x37 && kVK_RightCommand == 0x36 &&
@@ -846,21 +822,18 @@ _Static_assert(NX_DEVICELSHIFTKEYMASK == 0x2 && NX_DEVICERSHIFTKEYMASK == 0x4 &&
                NX_SHIFTMASK == 0x20000 && NX_CONTROLMASK == 0x40000 && NX_ALTERNATEMASK == 0x80000 && NX_COMMANDMASK == 0x100000,
                "key_destination.h modifier masks");
 
-// The responder that would take a nil-targeted action and says it can perform
-// it now, asked the way AppKit asks before enabling a menu item, or nil.
-static id
-valid_target_for_action(SEL action) {
-    id target = [NSApp targetForAction:action to:nil from:nil];
-    if (!target) return nil;
-    NSMenuItem *probe = [[[NSMenuItem alloc] initWithTitle:@"" action:action keyEquivalent:@""] autorelease];
-    if ([target respondsToSelector:@selector(validateMenuItem:)]) return [target validateMenuItem:probe] ? target : nil;
-    if ([target respondsToSelector:@selector(validateUserInterfaceItem:)]) return [target validateUserInterfaceItem:probe] ? target : nil;
-    return target;
+GLFWAPI GLFWcocoanativeviewshortcutfun
+glfwSetCocoaNativeViewShortcutCallback(GLFWcocoanativeviewshortcutfun callback) {
+    GLFWcocoanativeviewshortcutfun previous = _glfw.ns.native_view_shortcut_callback;
+    _glfw.ns.native_view_shortcut_callback = callback;
+    return previous;
 }
 
-GLFWAPI bool
-glfwCocoaNativeViewCanPerform(const char *action) {
-    return valid_target_for_action(NSSelectorFromString(@(action))) != nil;
+GLFWAPI GLFWcocoakeyequivalentfocusfun
+glfwSetCocoaKeyEquivalentFocusCallback(GLFWcocoakeyequivalentfocusfun callback) {
+    GLFWcocoakeyequivalentfocusfun previous = _glfw.ns.key_equivalent_focus_callback;
+    _glfw.ns.key_equivalent_focus_callback = callback;
+    return previous;
 }
 
 GLFWAPI GLFWapplicationshouldhandlereopenfun
@@ -950,17 +923,11 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
           debug_input("%s\n", [[event description] UTF8String]);
           const bool native_focus = glfwCocoaNativeViewHasFocus();
           if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed) {
+              // the menu's edit shortcuts depend on focus, so settle them before matching
+              if (_glfw.ns.key_equivalent_focus_callback) _glfw.ns.key_equivalent_focus_callback(native_focus);
               // first check if there is a global menu bar shortcut
               if ([[NSApp mainMenu] performKeyEquivalent:event]) {
                   debug_input("keyDown triggered global menu bar action ignoring\n");
-                  record_shortcut_keydown(event, 0);
-                  return nil;
-              }
-              // the edit shortcuts kitty's menu lacks, for a focused native view
-              SEL edit_action = native_focus ? standard_edit_action(command_shortcut_key(event), USEFUL_MODS([event modifierFlags])) : NULL;
-              id edit_target = edit_action ? valid_target_for_action(edit_action) : nil;
-              if (edit_target && [NSApp sendAction:edit_action to:edit_target from:nil]) {
-                  debug_input("keyDown sent a standard edit action to the focused native view\n");
                   record_shortcut_keydown(event, 0);
                   return nil;
               }

@@ -497,8 +497,11 @@ load_glfw(const char* path) {
     *(void **) (&glfwCocoaNativeViewHasFocus_impl) = dlsym(handle, "glfwCocoaNativeViewHasFocus");
     if (glfwCocoaNativeViewHasFocus_impl == NULL) dlerror(); // clear error indicator
 
-    *(void **) (&glfwCocoaNativeViewCanPerform_impl) = dlsym(handle, "glfwCocoaNativeViewCanPerform");
-    if (glfwCocoaNativeViewCanPerform_impl == NULL) dlerror(); // clear error indicator
+    *(void **) (&glfwSetCocoaNativeViewShortcutCallback_impl) = dlsym(handle, "glfwSetCocoaNativeViewShortcutCallback");
+    if (glfwSetCocoaNativeViewShortcutCallback_impl == NULL) dlerror(); // clear error indicator
+
+    *(void **) (&glfwSetCocoaKeyEquivalentFocusCallback_impl) = dlsym(handle, "glfwSetCocoaKeyEquivalentFocusCallback");
+    if (glfwSetCocoaKeyEquivalentFocusCallback_impl == NULL) dlerror(); // clear error indicator
 
     *(void **) (&glfwCocoaSetWindowResizeCallback_impl) = dlsym(handle, "glfwCocoaSetWindowResizeCallback");
     if (glfwCocoaSetWindowResizeCallback_impl == NULL) dlerror(); // clear error indicator

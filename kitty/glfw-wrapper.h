@@ -1948,6 +1948,8 @@ typedef bool (* GLFWhandleurlopen)(const char*);
 typedef void (* GLFWapplicationwillfinishlaunchingfun)(bool);
 typedef bool (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
 typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
+typedef bool (* GLFWcocoanativeviewshortcutfun)(GLFWwindow*, GLFWkeyevent*);
+typedef void (* GLFWcocoakeyequivalentfocusfun)(bool);
 typedef void (*GLFWwaylandframecallbackfunc)(unsigned long long id);
 typedef void (*GLFWDBusnotificationcreatedfun)(unsigned long long, uint32_t, void*);
 typedef void (*GLFWDBusnotificationactivatedfun)(uint32_t, int, const char*);
@@ -2592,9 +2594,13 @@ typedef bool (*glfwCocoaNativeViewHasFocus_func)(void);
 GFW_EXTERN glfwCocoaNativeViewHasFocus_func glfwCocoaNativeViewHasFocus_impl;
 #define glfwCocoaNativeViewHasFocus glfwCocoaNativeViewHasFocus_impl
 
-typedef bool (*glfwCocoaNativeViewCanPerform_func)(const char*);
-GFW_EXTERN glfwCocoaNativeViewCanPerform_func glfwCocoaNativeViewCanPerform_impl;
-#define glfwCocoaNativeViewCanPerform glfwCocoaNativeViewCanPerform_impl
+typedef GLFWcocoanativeviewshortcutfun (*glfwSetCocoaNativeViewShortcutCallback_func)(GLFWcocoanativeviewshortcutfun);
+GFW_EXTERN glfwSetCocoaNativeViewShortcutCallback_func glfwSetCocoaNativeViewShortcutCallback_impl;
+#define glfwSetCocoaNativeViewShortcutCallback glfwSetCocoaNativeViewShortcutCallback_impl
+
+typedef GLFWcocoakeyequivalentfocusfun (*glfwSetCocoaKeyEquivalentFocusCallback_func)(GLFWcocoakeyequivalentfocusfun);
+GFW_EXTERN glfwSetCocoaKeyEquivalentFocusCallback_func glfwSetCocoaKeyEquivalentFocusCallback_impl;
+#define glfwSetCocoaKeyEquivalentFocusCallback glfwSetCocoaKeyEquivalentFocusCallback_impl
 
 typedef GLFWcocoarenderframefun (*glfwCocoaSetWindowResizeCallback_func)(GLFWwindow*, GLFWcocoarenderframefun);
 GFW_EXTERN glfwCocoaSetWindowResizeCallback_func glfwCocoaSetWindowResizeCallback_impl;

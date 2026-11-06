@@ -241,7 +241,7 @@ update_secure_input_menu_bar_indicator(BOOL enabled) {
 @end
 
 
-@interface GlobalMenuTarget : NSObject
+@interface GlobalMenuTarget : NSObject <NSMenuDelegate>
 + (GlobalMenuTarget *)shared_instance;
 @end
 
@@ -286,24 +286,16 @@ PENDING(hide_macos_app, HIDE)
 PENDING(hide_macos_other_apps, HIDE_OTHERS)
 PENDING(minimize_macos_window, MINIMIZE)
 PENDING(quit, QUIT)
+PENDING(paste_from_clipboard, PASTE_FROM_CLIPBOARD)
+PENDING(copy_or_noop, COPY_OR_NOOP)
 
-// Edit > Copy and Paste act on whichever view has keyboard focus: the terminal,
-// or a native view through the standard copy: and paste: actions. AppKit's
-// menu matching picks the item, so layouts and remapped shortcuts just work.
-- (void)paste_from_clipboard:(id)sender {
-    if (glfwCocoaNativeViewHasFocus()) [NSApp sendAction:@selector(paste:) to:nil from:sender];
-    else set_cocoa_pending_action(PASTE_FROM_CLIPBOARD, NULL);
-}
-
-- (void)copy_or_noop:(id)sender {
-    if (glfwCocoaNativeViewHasFocus()) [NSApp sendAction:@selector(copy:) to:nil from:sender];
-    else set_cocoa_pending_action(COPY_OR_NOOP, NULL);
+// The Edit menu is drawn for whichever view has keyboard focus when it opens.
+- (void)menuNeedsUpdate:(NSMenu *)menu {
+    (void)menu;
+    cocoa_set_edit_menu_focus(glfwCocoaNativeViewHasFocus());
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
-    if ((item.action == @selector(paste_from_clipboard:) || item.action == @selector(copy_or_noop:)) && glfwCocoaNativeViewHasFocus()) {
-        return glfwCocoaNativeViewCanPerform(item.action == @selector(paste_from_clipboard:) ? "paste:" : "copy:");
-    }
     if (item.action == @selector(toggle_macos_secure_keyboard_entry:)) {
         item.state = [SecureKeyboardEntryController sharedInstance].isDesired ? NSControlStateValueOn : NSControlStateValueOff;
     } else if (item.action == @selector(toggle_fullscreen:)) {
@@ -874,8 +866,6 @@ global_shortcut_for_action(GlobalShortcuts *shortcuts, SEL action) {
     Q(search_scrollback);
     Q(macos_cycle_through_os_windows);
     Q(macos_cycle_through_os_windows_backwards);
-    Q(paste_from_clipboard);
-    Q(copy_or_noop);
 #undef Q
     return NULL;
 }
@@ -884,6 +874,48 @@ global_shortcut_for_action(GlobalShortcuts *shortcuts, SEL action) {
 // that were applied to them.
 static NSMutableArray<NSMenuItem *> *global_shortcut_menu_items = nil;
 static GlobalShortcuts applied_global_shortcuts;
+
+// The standard Edit items. While a native view has focus each carries its
+// standard action, nil-targeted so AppKit routes and validates it, and its
+// standard shortcut whatever kitty maps. While the terminal has focus Copy and
+// Paste are kitty's actions on kitty's shortcuts, and the rest have no
+// shortcut at all: a disabled item still takes its key from kitty's mappings.
+typedef struct {
+    const char *title, *key;
+    const char *native_action;
+    NSEventModifierFlags mods;
+    const char *terminal_action;
+    const GlobalShortcut *terminal_shortcut;
+    NSMenuItem *item;
+} EditMenuItem;
+#define CMD NSEventModifierFlagCommand
+static EditMenuItem edit_menu_items[] = {
+    {"Undo", "z", "undo:", CMD},
+    {"Redo", "z", "redo:", CMD | NSEventModifierFlagShift},
+    {NULL},
+    {"Cut", "x", "cut:", CMD},
+    {"Copy", "c", "copy:", CMD, "copy_or_noop:", &global_shortcuts.copy_or_noop},
+    {"Paste", "v", "paste:", CMD, "paste_from_clipboard:", &global_shortcuts.paste_from_clipboard},
+    {"Paste and Match Style", "v", "pasteAsPlainText:", CMD | NSEventModifierFlagOption | NSEventModifierFlagShift},
+    {"Delete", "", "delete:", 0},
+    {"Select All", "a", "selectAll:", CMD},
+};
+#undef CMD
+
+void
+cocoa_set_edit_menu_focus(bool native_view_has_focus) {
+    GlobalMenuTarget *kitty = [GlobalMenuTarget shared_instance];
+    for (size_t i = 0; i < arraysz(edit_menu_items); i++) {
+        const EditMenuItem *e = edit_menu_items + i;
+        if (!e->item) continue;
+        const bool native = native_view_has_focus || !e->terminal_action;
+        [e->item setAction:sel_registerName(native ? e->native_action : e->terminal_action)];
+        [e->item setTarget:native ? nil : kitty];
+        const char *key = native_view_has_focus ? e->key : native ? "" : e->terminal_shortcut->key;
+        [e->item setKeyEquivalent:@(key)];
+        [e->item setKeyEquivalentModifierMask:native_view_has_focus ? e->mods : native ? 0 : e->terminal_shortcut->mods];
+    }
+}
 
 static bool
 menu_item_has_shortcut(NSMenuItem *item, const GlobalShortcut *gs) {
@@ -914,6 +946,7 @@ update_global_shortcuts_in_menu(void) {
         [target_item setKeyEquivalentModifierMask:gs->mods];
     }
     applied_global_shortcuts = global_shortcuts;
+    cocoa_set_edit_menu_focus(glfwCocoaNativeViewHasFocus());
 }
 
 static void
@@ -976,14 +1009,19 @@ cocoa_create_global_menu(void) {
     NSMenuItem *editMenuItem = [bar addItemWithTitle:@"Edit" action:NULL keyEquivalent:@""];
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
     [editMenuItem setSubmenu:editMenu];
+    editMenu.delegate = global_menu_target;
+    for (size_t i = 0; i < arraysz(edit_menu_items); i++) {
+        EditMenuItem *e = edit_menu_items + i;
+        e->item = e->title ? [editMenu addItemWithTitle:@(e->title) action:sel_registerName(e->native_action) keyEquivalent:@""] : nil;
+        if (!e->title) [editMenu addItem:[NSMenuItem separatorItem]];
+    }
+    cocoa_set_edit_menu_focus(glfwCocoaNativeViewHasFocus());
+    [editMenu addItem:[NSMenuItem separatorItem]];
     MENU_ITEM(editMenu, @"Clear to Start", clear_terminal_and_scrollback);
     MENU_ITEM(editMenu, @"Clear Scrollback", clear_scrollback);
     MENU_ITEM(editMenu, @"Clear Screen", clear_screen);
     MENU_ITEM(editMenu, @"Clear Last Command", clear_last_command);
     MENU_ITEM(editMenu, @"Find", search_scrollback);
-    [editMenu addItem:[NSMenuItem separatorItem]];
-    MENU_ITEM(editMenu, @"Copy", copy_or_noop);
-    MENU_ITEM(editMenu, @"Paste", paste_from_clipboard);
     [editMenu release];
 
     NSMenuItem *windowMenuItem = [bar addItemWithTitle:@"Window" action:NULL keyEquivalent:@""];
