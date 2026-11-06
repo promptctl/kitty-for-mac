@@ -127,6 +127,10 @@ new_screen_object(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
 
     self = (Screen *)type->tp_alloc(type, 0);
     if (self != NULL) {
+#ifdef __APPLE__
+        // first, so every failure path below reaches dealloc with an engine to free
+        self->find_engine = kitty_rs_find_engine_new();
+#endif
         if ((ret = pthread_mutex_init(&self->write_buf_lock, NULL)) != 0) {
             Py_CLEAR(self);
             PyErr_Format(PyExc_RuntimeError, "Failed to create Screen write_buf_lock mutex: %s", strerror(ret));
@@ -801,6 +805,9 @@ dealloc(Screen *self) {
     Py_CLEAR(self->historybuf);
     Py_CLEAR(self->color_profile);
     Py_CLEAR(self->marker);
+#ifdef __APPLE__
+    kitty_rs_find_engine_free(self->find_engine);
+#endif
     PyMem_Free(self->overlay_line.cpu_cells);
     PyMem_Free(self->overlay_line.gpu_cells);
     PyMem_Free(self->overlay_line.original_line.cpu_cells);
@@ -6952,6 +6959,72 @@ find_logical_lines(Screen *self, PyObject *o UNUSED) {
     return NULL;
 }
 
+#ifdef __APPLE__
+static bool
+feed_find_engine(void *engine, const FindLogicalLine *l) {
+    kitty_rs_find_feed_line(engine, l);
+    return true;
+}
+
+// [LAW:single-enforcer] every read of the match list goes through here, so no reader sees a
+// match whose line has left the history ring: the ring's own counter decides what is gone
+static const FindMatch*
+screen_find_matches(Screen *self, size_t *count) {
+    kitty_rs_find_evict_before(self->find_engine, self->historybuf->abs_oldest_line);
+    return kitty_rs_find_matches(self->find_engine, count);
+}
+
+static PyObject *
+find_count(Screen *self, PyObject *o UNUSED) {
+    size_t count;
+    screen_find_matches(self, &count);
+    return PyLong_FromSize_t(count);
+}
+
+static PyObject *
+find_clear(Screen *self, PyObject *o UNUSED) {
+    kitty_rs_find_set_query(self->find_engine, (const uint8_t*)"", 0, false);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+find_set_query(Screen *self, PyObject *args) {
+    const char *query; Py_ssize_t len; int case_insensitive;
+    if (!PyArg_ParseTuple(args, "s#p", &query, &len, &case_insensitive)) return NULL;
+    if (!kitty_rs_find_set_query(self->find_engine, (const uint8_t*)query, len, case_insensitive)) {
+        PyErr_Format(PyExc_ValueError, "Cannot search for the query: %s", query);
+        return NULL;
+    }
+    // the sink never stops the walk, so running out of memory is its only failure
+    if (find_walk_main_buffer(self, feed_find_engine, self->find_engine) == FIND_WALK_OUT_OF_MEMORY) {
+        // a part-walked buffer is not an answer
+        find_clear(self, NULL);
+        return PyErr_NoMemory();
+    }
+    return find_count(self, NULL);
+}
+
+static PyObject *
+find_matches(Screen *self, PyObject *o UNUSED) {
+    size_t count;
+    const FindMatch *m = screen_find_matches(self, &count);
+    RAII_PyObject(ans, PyTuple_New(count));
+    if (!ans) return NULL;
+    for (size_t i = 0; i < count; i++) {
+        PyObject *t = Py_BuildValue("KIKI", (unsigned long long)m[i].abs_start_line, m[i].start_x, (unsigned long long)m[i].abs_end_line, m[i].end_x);
+        if (!t) return NULL;
+        PyTuple_SET_ITEM(ans, i, t);
+    }
+    return Py_NewRef(ans);
+}
+#endif
+
+// viewport row y shows main buffer line abs_line_at_viewport_top() + y
+static PyObject *
+abs_line_at_viewport_top(Screen *self, PyObject *o UNUSED) {
+    return PyLong_FromUnsignedLongLong(self->historybuf->abs_oldest_line + self->historybuf->count - self->scrolled_by);
+}
+
 static PyObject *
 marked_cells(Screen *self, PyObject *o UNUSED) {
     RAII_PyObject(ans, PyList_New(0));
@@ -7447,6 +7520,10 @@ static PyMethodDef methods[] = {
                                         MND(bell, METH_NOARGS) MND(current_selections, METH_NOARGS) MND(is_selection_dirty, METH_NOARGS){
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
     MND(find_logical_lines, METH_NOARGS)
+#ifdef __APPLE__
+    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
+#endif
+    MND(abs_line_at_viewport_top, METH_NOARGS)
 
     {NULL} /* Sentinel */
 };

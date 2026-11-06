@@ -403,9 +403,6 @@ def user_cache_dir() -> str:
 def process_group_map() -> Tuple[Tuple[int, int], ...]:
     pass
 
-def rust_count_codepoints(text: str) -> int:
-    pass
-
 def environ_of_process(pid: int) -> str:
     pass
 
@@ -1259,6 +1256,29 @@ class Screen:
     def find_logical_lines(self) -> list[tuple[int, str, list[tuple[int, int, int]]]]:
         """Test only: every logical line of the main buffer as (abs_first_line, text, cells),
         one (row, x, x_last) per codepoint, row relative to abs_first_line."""
+        pass
+
+    def find_set_query(self, text: str, case_insensitive: bool) -> int:
+        """Search the main buffer for the literal text, replacing the previous search; returns
+        the number of matches. The empty text is no search. macOS only."""
+        pass
+
+    def find_clear(self) -> None:
+        """End the search: no matches until the next find_set_query. macOS only."""
+        pass
+
+    def find_count(self) -> int:
+        """The number of matches still in the buffer. macOS only."""
+        pass
+
+    def find_matches(self) -> tuple[tuple[int, int, int, int], ...]:
+        """Test only: every match still in the buffer, in buffer order, as
+        (abs_start_line, start_x, abs_end_line, end_x), both cells included. macOS only."""
+        pass
+
+    def abs_line_at_viewport_top(self) -> int:
+        """The absolute line number shown on viewport row 0 of the main buffer: row y
+        shows abs_line_at_viewport_top() + y."""
         pass
 
     def scroll_to_prompt(self, num_of_prompts: int = -1, scroll_offset: int = 0) -> bool:

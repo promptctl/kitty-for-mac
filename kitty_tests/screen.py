@@ -1643,6 +1643,77 @@ class TestScreen(BaseTest):
         s.clear_scrollback()
         self.ae(written(s), [(8, '8'), (9, '9')])
 
+    def test_find(self):
+        from kitty.constants import is_macos
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+
+        def find(s, query, case_insensitive=False):
+            self.ae(s.find_set_query(query, case_insensitive), s.find_count())
+            return list(s.find_matches())
+
+        # every match inside one physical line, both cells included
+        s = self.create_screen(cols=10, lines=2)
+        s.draw('abxab')
+        self.ae(find(s, 'ab'), [(0, 0, 0, 1), (0, 3, 0, 4)])
+
+        # across a wrapped line: the match ends on the later row
+        s = self.create_screen(cols=5, lines=3)
+        s.draw('abcdefg')
+        self.ae(find(s, 'def'), [(0, 3, 1, 0)])
+
+        # across the history-to-screen boundary, in absolute lines that viewport rows translate
+        s = self.create_screen(cols=5, lines=2)
+        s.draw('abcdefgh')
+        s.carriage_return(), s.linefeed()
+        self.ae(s.historybuf.count, 1)
+        self.ae(find(s, 'def'), [(0, 3, 1, 0)])
+        self.ae(s.abs_line_at_viewport_top(), 1)
+        s.scroll(1, True)
+        self.ae(s.abs_line_at_viewport_top(), 0)
+
+        # wide chars before and inside a match
+        s = self.create_screen(cols=10, lines=1)
+        s.draw('a中b中c')
+        self.ae(find(s, 'b中c'), [(0, 3, 0, 6)])
+        self.ae(find(s, '中'), [(0, 1, 0, 2), (0, 4, 0, 5)])
+
+        # a tab before and inside a match
+        s = self.create_screen(cols=20, lines=1)
+        s.draw('\tab\tc')
+        self.ae(find(s, 'b\tc'), [(0, 9, 0, 16)])
+        self.ae(find(s, 'ab'), [(0, 8, 0, 9)])
+
+        # a never-written gap is matched by one space
+        s = self.create_screen(cols=10, lines=1)
+        s.draw('x'), s.cursor_forward(1), s.draw('y')
+        self.ae(find(s, 'x y'), [(0, 0, 0, 2)])
+
+        # case: ASCII and non-ASCII letters fold one to one, ß does not become SS
+        s = self.create_screen(cols=20, lines=1)
+        s.draw('Café STRASSE')
+        self.ae(find(s, 'CAFÉ'), [])
+        self.ae(find(s, 'CAFÉ', True), [(0, 0, 0, 3)])
+        self.ae(find(s, 'straße', True), [])
+
+        # history ring full: surviving matches keep their absolute coordinates, evicted ones go
+        s = self.create_screen(cols=5, lines=2, scrollback=3)
+        for i in range(6):
+            s.draw(f'x{i}')
+            s.carriage_return(), s.linefeed()
+        self.ae(find(s, 'x'), [(i, 0, i, 0) for i in range(2, 6)])
+        for i in range(6, 8):
+            s.draw(f'y{i}')
+            s.carriage_return(), s.linefeed()
+        self.ae(list(s.find_matches()), [(i, 0, i, 0) for i in range(4, 6)])
+        self.ae(s.find_count(), 2)
+
+        # the empty query and find_clear both end the search
+        self.ae(find(s, ''), [])
+        find(s, 'x')
+        s.find_clear()
+        self.ae((s.find_count(), s.find_matches()), (0, ()))
+
     def test_user_marking(self):
 
         def cells(*a, y=0, mark=3):
