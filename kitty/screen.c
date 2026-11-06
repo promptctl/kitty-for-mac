@@ -6970,7 +6970,8 @@ feed_find_engine(void *engine, const FindLogicalLine *l) {
 }
 
 // [LAW:single-enforcer] every read of the match list goes through here, so no reader sees a
-// match whose line has left the history ring: the ring's own counter decides what is gone
+// match whose line has left the history ring: the ring's own counter decides what is gone.
+// Eviction can move the list, so the returned pointer is good only until the next call.
 static const FindMatch*
 screen_find_matches(Screen *self, size_t *count) {
     kitty_rs_find_evict_before(self->find_engine, self->historybuf->abs_oldest_line);

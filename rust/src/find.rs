@@ -58,7 +58,8 @@ impl FindEngine {
             self.matches.last().is_none_or(|m| m.abs_end_line < abs_first_line),
             "lines are fed in buffer order"
         );
-        let found = self.regex.iter().flat_map(|re| re.find_iter(text)).filter(|m| !m.is_empty());
+        // a non-empty literal never matches empty, so every match has a last byte
+        let found = self.regex.iter().flat_map(|re| re.find_iter(text));
         self.matches.extend(found.map(|m| {
             let (first, last) = (cells[m.start()], cells[m.end() - 1]);
             FindMatch {
