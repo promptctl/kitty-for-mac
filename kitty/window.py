@@ -26,6 +26,7 @@ from typing import (
 )
 
 from .child import ProcessDesc
+from .claude_find import ClaudeFind, ClaudeFindFailure, ClaudeFindState, ClaudeHost, ClaudePane, NotClaude, recognise
 from .cli_stub import CLIOptions, SaveAsSessionOptions
 from .clipboard import ClipboardRequestManager, set_clipboard_string
 from .colors import ColorSchemes, SessionColorSchemes, parse_color_scheme_variants
@@ -105,7 +106,7 @@ from .fast_data_types import (
     update_window_visibility,
     wakeup_main_loop,
 )
-from .find_backends import EngineFind, FindBackend
+from .find_backends import EngineFind, FindBackend, FindStatus
 from .keys import keyboard_mode_name, mod_mask
 from .notifications import NotificationManager
 from .options.types import Options
@@ -114,7 +115,7 @@ from .program_status import ProgramStatus
 from .progress import Progress
 from .rgb import to_color
 from .terminfo import get_capabilities
-from .tmux_find import TmuxFind, TmuxFindState, tmux_client_of
+from .tmux_find import CLIENT_FORMAT, TmuxClient, TmuxError, TmuxFind, TmuxFindState, TmuxOperation, parse_pane, tmux_client_of
 from .types import MouseEvent, NeighborsMap, OverlayType, WindowGeometry, ac, run_once
 from .typing_compat import BossType, ChildType, EdgeLiteral, TabType, TypedDict
 from .utils import (
@@ -823,6 +824,10 @@ class Window:
         self.find_query = ''
         self.engine_find = EngineFind(self)
         self.tmux_find_state = TmuxFindState()
+        self.claude_find_state = ClaudeFindState()
+        self.claude_host = ClaudeHost()
+        # the kind of backend the last find operation ran in: the one the bar reports when more than one holds a search
+        self.find_reporting: type | None = None
         self.kitten_result_processors: list[Callable[['Window', Any], None]] = []
         self.child_is_launched = False
         self.restored_scrollback = b''
@@ -2250,10 +2255,9 @@ class Window:
         from .remote_control import abort_active_streams_from
 
         # [LAW:no-ambient-temporal-coupling] the one place every closing window passes: the pane it put
-        # in copy mode lives in a tmux that outlives it, and nothing after this can reach it. The
-        # engine's search dies with the screen.
-        if tmux := TmuxFind.holding(self.tmux_find_state):
-            tmux.clear()
+        # in copy mode or in Claude's transcript view lives in a tmux that outlives it, and nothing after
+        # this can reach it. The engine's search dies with the screen.
+        self.end_pane_finds(TmuxOperation())
         self.call_watchers(self.watchers.on_close, {})
         self.destroyed = True
         abort_active_streams_from(window_id=self.id)
@@ -3017,36 +3021,67 @@ class Window:
     def scroll_to_mark(self, prev: bool = True, mark: int = 0) -> None:
         self.screen.scroll_to_next_mark(mark, prev)
 
+    def tmux_client(self) -> TmuxClient | None:
+        return tmux_client_of(self.child.foreground_processes)
+
     def find_backend(self) -> FindBackend:
-        "The backend that starts or steps a search now: the one that sees what the user is looking at"
+        "The kind of backend that starts or steps a search now: the one that sees what the user is looking at. Asks nothing of tmux."
         # a tmux client draws on the alternate screen, where the engine sees only what is visible; the
-        # pane's history is in tmux
-        if client := tmux_client_of(self.child.foreground_processes):
-            return TmuxFind(client, self.tmux_find_state)
+        # pane's history is in tmux, and which of tmux's two ways of searching it is decided when a
+        # search starts (find_pane_backend)
+        if client := self.tmux_client():
+            return TmuxFind(client, self.tmux_find_state, TmuxOperation())
         return self.engine_find
 
-    def find_holder(self) -> FindBackend:
-        "The backend whose search the bar reports: the engine while it searches, else the tmux pane this window put in copy mode"
-        tmux = TmuxFind.holding(self.tmux_find_state)
-        return tmux if tmux is not None and not self.engine_find.searching() else self.engine_find
+    def find_pane_backend(self, client: TmuxClient, op: TmuxOperation) -> FindBackend:
+        "[LAW:single-enforcer] the one place a tmux window's search goes to Claude Code's transcript search or to tmux's history search"
+        try:
+            pane = parse_pane(op.tmux(client, 'list-clients', '-F', CLIENT_FORMAT), client.pid)
+        except TmuxError:  # TmuxFind meets the same failure and reports it
+            return TmuxFind(client, self.tmux_find_state, op)
+        kind: ClaudePane | NotClaude | ClaudeFindFailure
+        try:
+            kind = recognise(pane, self.claude_host, op)
+        except ClaudeFindFailure as failure:  # could not tell: reported by Claude's find, never answered as another program
+            kind = failure
+        if isinstance(kind, NotClaude):
+            return TmuxFind(client, self.tmux_find_state, op)
+        return ClaudeFind(client, self.claude_find_state, op, self.claude_host, kind)
 
-    def end_finds(self, keep: FindBackend | None = None) -> None:
-        # [LAW:one-source-of-truth] a window never holds two searches, and whatever the foreground is
-        # now, ending a search ends the one that is on screen. Each clear does nothing for a backend
-        # that holds nothing.
-        for backend in (self.engine_find, TmuxFind.holding(self.tmux_find_state)):
+    def find_holder(self) -> FindBackend:
+        "The backend whose search is on screen: the engine while it searches, else the pane this window put in copy mode or in Claude's transcript view"
+        op = TmuxOperation()  # these only read the window's own state
+        for backend in (self.engine_find, TmuxFind.holding(self.tmux_find_state, op), ClaudeFind.holding(self.claude_find_state, op, self.claude_host)):
+            if backend is not None and backend.searching():
+                return backend
+        return self.engine_find
+
+    def end_pane_finds(self, op: TmuxOperation, keep: FindBackend | None = None) -> None:
+        for backend in (TmuxFind.holding(self.tmux_find_state, op), ClaudeFind.holding(self.claude_find_state, op, self.claude_host)):
             if backend is not None and type(backend) is not type(keep):
                 backend.clear()
-        # a tmux search that failed before it reached a pane holds nothing to clear, but is still reported
+        # a search that failed before it reached a pane holds nothing to clear, but is still reported
         if type(keep) is not TmuxFind and self.tmux_find_state.held is None:
             self.tmux_find_state.rest()
+        if type(keep) is not ClaudeFind and self.claude_find_state.held is None:
+            self.claude_find_state.rest()
 
-    def find_backend_to_search(self) -> FindBackend | None:
-        "The backend a search runs in now, with the other one's search ended; None when the window has nothing to search"
-        backend = self.find_backend()
+    def end_finds(self, op: TmuxOperation, keep: FindBackend | None = None) -> None:
+        # [LAW:one-source-of-truth] a window never holds two searches, and whatever the foreground is
+        # now, ending a search ends the one that is on screen. Each clear does nothing for a backend
+        # that holds nothing. op is the budget of the user's action: every clear spends from it.
+        if type(keep) is not EngineFind:
+            self.engine_find.clear()
+        self.end_pane_finds(op, keep)
+
+    def find_backend_to_search(self, op: TmuxOperation) -> FindBackend | None:
+        "The backend a search runs in now, with the other ones' searches ended; None when the window has nothing to search"
+        client = self.tmux_client()
+        backend = self.engine_find if client is None else self.find_pane_backend(client, op)
         if not backend.can_search():
             return None
-        self.end_finds(backend)
+        self.end_finds(op, backend)
+        self.find_reporting = type(backend)
         return backend
 
     # [LAW:single-enforcer] the find actions are what the user does, so they and only they end
@@ -3054,15 +3089,15 @@ class Window:
     # would otherwise hide the match they moved to. The Screen find_* primitives do not, since
     # automatic callers reach them too and must not tear a paused frame.
     def find_step(self, backwards: bool) -> bool | None:
-        if (backend := self.find_backend_to_search()) is None:
+        if (backend := self.find_backend_to_search(TmuxOperation())) is None:
             return True
         backend.step(self.find_query, backwards)
         self.push_find_bar()
         return None
 
-    def set_find_query(self, text: str) -> None:
-        "Bring the search in line with text, without stepping"
-        if (backend := self.find_backend_to_search()) is None:
+    def set_find_query(self, text: str, op: TmuxOperation) -> None:
+        "Bring the search in line with text, without stepping, on the budget of the action that asked"
+        if (backend := self.find_backend_to_search(op)) is None:
             return
         backend.restore(text)
         # the backend took it: a query it rejects never becomes the one the bar shows and stepping repeats
@@ -3070,7 +3105,7 @@ class Window:
 
     def find(self, text: str) -> None:
         "Search the whole buffer for text and step to the first match"
-        if (backend := self.find_backend_to_search()) is None:
+        if (backend := self.find_backend_to_search(TmuxOperation())) is None:
             return
         backend.find(text)
         self.find_query = text
@@ -3096,12 +3131,20 @@ class Window:
     # frame stops reporting a change this window has handled.
     # The holder of the search is read from the backends' own state, never from the foreground
     # process: this runs every frame while a search streams, and a bare window pays nothing for tmux.
+    def find_status(self) -> FindStatus:
+        "What the bar is told: the search of the kind that last ran here when it reports, else the first that does, else the engine's"
+        reporting = [
+            (EngineFind, self.engine_find.searching(), self.engine_find.status()),
+            (TmuxFind, self.tmux_find_state.reporting(), self.tmux_find_state.status),
+            (ClaudeFind, self.claude_find_state.reporting(), self.claude_find_state.status),
+        ]
+        by_recency = sorted((r for r in reporting if r[1]), key=lambda r: r[0] is not self.find_reporting)
+        return by_recency[0][2] if by_recency else self.engine_find.status()
+
     def push_find_bar(self) -> None:
         if not is_macos:
             return
-        engine = self.engine_find.status()
-        tmux = self.tmux_find_state
-        status = tmux.status if tmux.reporting() and not self.engine_find.searching() else engine
+        status = self.find_status()
         if (tm := get_boss().os_window_map.get(self.os_window_id)) and tm.active_window is self:
             cocoa_update_find_bar(self.os_window_id, self.find_query, status.current, status.total, int(status.count))
 
@@ -3115,11 +3158,13 @@ class Window:
     def follow_find_bar(self) -> None:
         if not is_macos or not (tm := get_boss().os_window_map.get(self.os_window_id)) or tm.active_window is not self:
             return
+        # one budget for the whole switch: the other windows' clears and this window's search spend from it
+        op = TmuxOperation()
         # the Screen primitive, not the find_clear action: this is no user ending a paused render
         for tab in tm:
             for w in tab:
                 if w is not self:
-                    w.end_finds()
+                    w.end_finds(op)
         if (bar := cocoa_find_bar_state(self.os_window_id)) is None:
             return
         shown, query = bar
@@ -3128,7 +3173,7 @@ class Window:
         # full-screen program takes no search, so the bar reports its 0 matches for the query
         self.find_query = query
         if shown and not searching:
-            self.set_find_query(query)
+            self.set_find_query(query, op)
         self.push_find_bar()
 
     @ac('sc', 'Make the next match of the find query, later in the buffer, the current match and the selection, scrolling it into view and wrapping at the end, on macOS')
@@ -3151,7 +3196,7 @@ class Window:
     @ac('sc', 'End the find: clear the match highlights and the selection find made, on macOS')
     def find_clear(self) -> None:
         self.screen.pause_rendering(False)
-        self.end_finds()
+        self.end_finds(TmuxOperation())
         self.push_find_bar()
 
     @ac(
