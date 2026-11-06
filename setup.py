@@ -240,7 +240,6 @@ class CompilationDatabase:
         if self.needs_build(command, self.db):
             run_tool(cmd, desc)
             on_success()
-        # Recorded only once its outputs match it: a failed run leaves no record, so the next build runs it again
         self.built_now.append(command)
 
     def needs_build(self, command: Command, database: Dict[CompileKey, Sequence[str]]) -> bool:
@@ -291,7 +290,10 @@ class CompilationDatabase:
         self.linkdb = {CompileKey(*k['output']): k['arguments'] for k in link_database}
         return self
 
-    def __exit__(self, *a: object) -> None:
+    def __exit__(self, exc_type: Optional[type], *a: object) -> None:
+        if exc_type is not None:
+            # The queues hold only the commands added before the failure; saving them would forget the rest
+            return
         cdb = self.db
         for key in set(cdb) - self.all_keys:
             del cdb[key]
@@ -1237,38 +1239,33 @@ swift_src_dir = 'kitty/swift'
 
 def build_swift_module(args: Options, kenv: Env) -> SwiftModule:
     """Compile kitty/swift into one object for the kitty extension, before any C compile that #includes its header."""
-    swiftc = shutil.which('swiftc')
-    if swiftc is None:
-        raise SystemExit('swiftc not found: building kitty on macOS needs a Swift 6 toolchain (Xcode or the Command Line Tools)')
+    # xcrun, as /usr/bin/clang does: the active developer directory's toolchain and SDK, not whichever swiftc is first on PATH
+    swiftc = ['xcrun', 'swiftc']
     out_dir = os.path.join(build_dir, 'swift')
     os.makedirs(out_dir, exist_ok=True)
     obj = os.path.join(out_dir, 'KittySwift.o')
     header = os.path.join(out_dir, 'KittySwift-Swift.h')
-    staged_header = f'{header}.staged'
     # Every file in the directory is an input: the .swift sources, module.modulemap and the C header it maps
     inputs = sorted(os.path.join(swift_src_dir, x) for x in os.listdir(swift_src_dir))
     triple = cc_target_triple(kenv)
     unoptimized = args.debug or args.sanitize
-    cmd = [swiftc, '-parse-as-library', '-wmo', '-emit-object', '-module-name', 'KittySwift', '-swift-version', '6', '-target', triple]
+    cmd = swiftc + ['-parse-as-library', '-wmo', '-emit-object', '-module-name', 'KittySwift', '-swift-version', '6', '-target', triple]
     cmd += ['-Onone', '-g'] if unoptimized else ['-O'] + (['-g'] if args.profile else [])
     cmd += ['-sanitize=address,undefined'] if args.sanitize else []
     cmd += [] if args.ignore_compiler_warnings else ['-warnings-as-errors']
-    cmd += ['-I', swift_src_dir, '-emit-objc-header-path', staged_header, '-o', obj]
+    cmd += ['-I', swift_src_dir, '-emit-objc-header-path', header, '-o', obj]
     cmd += [x for x in inputs if x.endswith('.swift')]
-
-    def publish_header() -> None:
-        # Rewritten only when the @objc API changed, so a body-only Swift edit does not recompile the Objective-C including it
-        with open(staged_header) as f:
-            update_if_changed(header, f.read())
 
     args.compilation_database.build_now(
         f'Compiling {emphasis("Swift module KittySwift")} ...',
         cmd,
-        lambda: any(newer(output, *inputs) for output in (obj, header)),
+        # swiftc leaves an output untouched when its bytes are unchanged: the header keeps its date when the @objc API
+        # is unchanged, so its includers do not recompile, and only the object, touched once swiftc succeeds, dates the build
+        lambda: newer(obj, *inputs) or not os.path.exists(header),
         CompileKey(swift_src_dir, os.path.basename(obj)),
-        on_success=publish_header,
+        on_success=lambda: os.utime(obj),
     )
-    target_info = json.loads(subprocess.check_output([swiftc, '-print-target-info', '-target', triple]))
+    target_info = json.loads(subprocess.check_output(swiftc + ['-print-target-info', '-target', triple]))
     return SwiftModule(obj, out_dir, tuple(target_info['paths']['runtimeLibraryPaths']))
 
 
