@@ -279,4 +279,3 @@ void _glfwCocoaPostEmptyEvent(void);
 
 uint32_t vk_to_unicode_key_with_current_layout(uint16_t keycode);
 uint32_t vk_code_to_unicode(uint8_t key_code);
-bool _glfwCocoaWindowHoldsKey(id nswindow, uint32_t keycode);

@@ -2592,6 +2592,10 @@ typedef bool (*glfwCocoaNativeViewHasFocus_func)(void);
 GFW_EXTERN glfwCocoaNativeViewHasFocus_func glfwCocoaNativeViewHasFocus_impl;
 #define glfwCocoaNativeViewHasFocus glfwCocoaNativeViewHasFocus_impl
 
+typedef bool (*glfwCocoaNativeViewCanPerform_func)(const char*);
+GFW_EXTERN glfwCocoaNativeViewCanPerform_func glfwCocoaNativeViewCanPerform_impl;
+#define glfwCocoaNativeViewCanPerform glfwCocoaNativeViewCanPerform_impl
+
 typedef GLFWcocoarenderframefun (*glfwCocoaSetWindowResizeCallback_func)(GLFWwindow*, GLFWcocoarenderframefun);
 GFW_EXTERN glfwCocoaSetWindowResizeCallback_func glfwCocoaSetWindowResizeCallback_impl;
 #define glfwCocoaSetWindowResizeCallback glfwCocoaSetWindowResizeCallback_impl

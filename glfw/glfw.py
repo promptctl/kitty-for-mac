@@ -89,6 +89,7 @@ def generate_wrappers(glfw_header: str) -> None:
     void glfwCocoaRequestRenderFrame(GLFWwindow *w, GLFWcocoarenderframefun callback)
     bool glfwCocoaRecreateGLDrawable(GLFWwindow *w)
     bool glfwCocoaNativeViewHasFocus(void)
+    bool glfwCocoaNativeViewCanPerform(const char *action)
     GLFWcocoarenderframefun glfwCocoaSetWindowResizeCallback(GLFWwindow *w, GLFWcocoarenderframefun callback)
     void* glfwGetX11Display(void)
     unsigned long glfwGetX11Window(GLFWwindow* window)

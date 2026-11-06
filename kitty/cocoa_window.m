@@ -302,7 +302,7 @@ PENDING(quit, QUIT)
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if ((item.action == @selector(paste_from_clipboard:) || item.action == @selector(copy_or_noop:)) && glfwCocoaNativeViewHasFocus()) {
-        return [NSApp targetForAction:(item.action == @selector(paste_from_clipboard:) ? @selector(paste:) : @selector(copy:)) to:nil from:item] != nil;
+        return glfwCocoaNativeViewCanPerform(item.action == @selector(paste_from_clipboard:) ? "paste:" : "copy:");
     }
     if (item.action == @selector(toggle_macos_secure_keyboard_entry:)) {
         item.state = [SecureKeyboardEntryController sharedInstance].isDesired ? NSControlStateValueOn : NSControlStateValueOff;

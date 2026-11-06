@@ -186,21 +186,6 @@ vk_code_to_functional_key_code(uint8_t key_code) { // {{{
     }
 } // }}}
 
-// Whether the terminal in this NSWindow saw the key with this keycode go down
-// and not yet come up
-bool
-_glfwCocoaWindowHoldsKey(id nswindow, uint32_t keycode) {
-    for (_GLFWwindow *w = _glfw.windowListHead; w; w = w->next) {
-        if (w->ns.object != nswindow) continue;
-        for (unsigned i = 0; i < arraysz(w->activated_keys); i++) {
-            const GLFWkeyevent *k = w->activated_keys + i;
-            if (k->native_key_id == keycode && (k->action == GLFW_PRESS || k->action == GLFW_REPEAT)) return true;
-        }
-        return false;
-    }
-    return false;
-}
-
 uint32_t
 vk_code_to_unicode(uint8_t key_code) { // {{{
     switch (key_code) {
