@@ -7,10 +7,10 @@ import tempfile
 
 from kitty.fast_data_types import DECAWM, DECCOLM, DECOM, IRM, VT_PARSER_BUFFER_SIZE, Color, ColorProfile, Cursor
 from kitty.marks import marker_from_function, marker_from_regex, marker_from_text
+from kitty.tmux_find import TmuxOperation
 from kitty.window import pagerhist
 
 from .base import BaseTest, draw_multicell, parse_bytes
-
 
 # the bits of the per-cell selection byte screen_apply_selection writes
 SELECTION_BIT, FIND_MATCH_BIT = 1, 32
@@ -2055,13 +2055,16 @@ class TestScreen(BaseTest):
         Attributes in attrs replace the method of that name."""
         from types import SimpleNamespace
 
+        from kitty.claude_find import ClaudeFindState, ClaudeHost
         from kitty.find_backends import EngineFind
         from kitty.tmux_find import TmuxFindState
         from kitty.window import Window
         w = SimpleNamespace(screen=s, find_query='', os_window_id=1, finish_scroll_animation=lambda: None, find_bar_top_inset=lambda: 0,
-                            child=SimpleNamespace(foreground_processes=[]), tmux_find_state=TmuxFindState(), **attrs)
+                            child=SimpleNamespace(foreground_processes=[]), tmux_find_state=TmuxFindState(), claude_find_state=ClaudeFindState(),
+                            claude_host=ClaudeHost(), find_reporting=None, **attrs)
         w.engine_find = EngineFind(w)
-        for name in ('find_backend', 'find_holder', 'end_finds', 'find_backend_to_search', 'find_step', 'set_find_query', 'find', 'find_clear',
+        for name in ('tmux_client', 'find_pane_backend', 'find_status', 'end_pane_finds', 'find_backend', 'find_holder', 'end_finds',
+                     'find_backend_to_search', 'find_step', 'set_find_query', 'find', 'find_clear',
                      *bound):
             if name not in attrs:
                 setattr(w, name, getattr(Window, name).__get__(w))
@@ -2155,7 +2158,7 @@ class TestScreen(BaseTest):
             follow(b)
             self.ae(b.screen.find_status(), current)
             # a window in another tab that was left searching is dropped as well
-            other_tab.set_find_query('b')
+            other_tab.set_find_query('b', TmuxOperation())
             follow(a)
             self.ae(other_tab.screen.find_status()[1], 0)
             self.ae(b.screen.find_status()[1], 0)
@@ -2165,11 +2168,11 @@ class TestScreen(BaseTest):
             self.ae((a.screen.find_status()[1], b.screen.find_status()[1], b.find_query), (0, 0, 'zz'))
             # a window with no bar at all keeps what it has, other windows still drop their search
             bar[0] = None
-            a.set_find_query('b')
+            a.set_find_query('b', TmuxOperation())
             follow(b)
             self.ae((a.screen.find_status()[1], b.find_query), (0, 'zz'))
             # a window that is not the active one is not followed
-            a.set_find_query('b')
+            a.set_find_query('b', TmuxOperation())
             a.follow_find_bar()
             self.ae(a.screen.find_status()[1], 10)
             # a full-screen program takes no search, and the bar still reports it for the bar's query
@@ -2180,7 +2183,7 @@ class TestScreen(BaseTest):
             b.screen.toggle_alt_screen()
             # closing the bar ends the search in every window of its OS window, whichever tab it is in
             for w in (a, other_tab):
-                w.set_find_query('b')
+                w.set_find_query('b', TmuxOperation())
             Boss.find_bar_closed(boss, 1)
             self.ae([w.screen.find_status()[1] for w in (a, b, other_tab)], [0, 0, 0])
 

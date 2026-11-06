@@ -2,6 +2,7 @@
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import fcntl
+import json
 import os
 import pty
 import shutil
@@ -22,20 +23,23 @@ from kitty import tmux_find as tf
 from kitty import window as window_module
 from kitty.boss import Boss
 from kitty.child import ProcessDesc
+from kitty.claude_find import ClaudeFind, ClaudeFindState, ClaudeHost
 from kitty.constants import is_macos
 from kitty.find_backends import EngineFind, FindCount, FindStatus
 from kitty.tmux_find import (
-    TMUX_DEADLINE,
+    FIND_DEADLINE,
     Counted,
     PaneRef,
     TmuxClient,
     TmuxError,
     TmuxFind,
     TmuxFindState,
+    TmuxOperation,
     batch,
     cancel_batch,
     find_command,
     parse_count,
+    parse_displayed_pane,
     parse_pane,
     parse_selection,
     query_argument,
@@ -56,7 +60,7 @@ def proc(pid: int, *cmdline: str) -> ProcessDesc:
 
 
 def holding(state: TmuxFindState) -> TmuxFind:
-    f = TmuxFind.holding(state)
+    f = TmuxFind.holding(state, TmuxOperation())
     assert f is not None, 'the window holds no tmux search'
     return f
 
@@ -103,9 +107,16 @@ class TmuxFindPureTest(BaseTest):
         self.ae(tmux_client_of([proc(5, 'tmux')], boom), TmuxClient(5, 'tmux', (), None, None))
 
     def test_parsing(self):
-        out = '12 %3 0\n99 %7 1\n'
-        self.ae(parse_pane(out, 99), PaneRef('%7', True))
-        self.ae(parse_pane(out, 12), PaneRef('%3', False))
+        out = '12 %3 0 0 400 w:@1.%3\n99 %7 1 1 500 a session:@4.%7\n'
+        self.ae(parse_pane(out, 99), PaneRef('%7', True, True, 500, 'a session:@4.%7'))
+        self.ae(parse_pane(out, 12), PaneRef('%3', False, False, 400, 'w:@1.%3'))
+        self.ae(parse_displayed_pane('%3 0 1 400 w:@1.%3\n'), PaneRef('%3', False, True, 400, 'w:@1.%3'))
+        for bad in ('', '12 %3 0 0 400', '12 %3 2 0 400 w:@1.%3', '12 %3 0 0 x w:@1.%3'):
+            with self.assertRaises(TmuxError, msg=bad):
+                parse_pane(bad, 12)
+        for bad in ('', '%3 0 1 400', '%3 0 1 x w:@1.%3', '%3 2 1 400 w:@1.%3'):
+            with self.assertRaises(TmuxError, msg=bad):
+                parse_displayed_pane(bad)
         with self.assertRaises(TmuxError):
             parse_pane(out, 5)
         with self.assertRaises(TmuxError):
@@ -197,8 +208,8 @@ class PrivateTmux:
         assert self.client_proc is not None
         return TmuxClient(self.client_proc.pid, self.exe, ('-S', self.socket), None, os.environ.get('PATH'))
 
-    def finder(self, state: TmuxFindState, **kw: Any) -> TmuxFind:
-        return TmuxFind(self.client(), state, **kw)
+    def finder(self, state: TmuxFindState, op: TmuxOperation | None = None) -> TmuxFind:
+        return TmuxFind(self.client(), state, op or TmuxOperation())
 
 
 @contextmanager
@@ -257,7 +268,7 @@ class TmuxFindIntegrationTest(BaseTest):
             self.assertFalse(self.in_mode(t))
             self.assertIsNone(state.held)
             self.ae(state.status, FindStatus(0, 0, FindCount.exact))
-            self.assertIsNone(TmuxFind.holding(state))
+            self.assertIsNone(TmuxFind.holding(state, TmuxOperation()))
 
     def test_no_match_is_zero_not_unavailable(self):
         with private_tmux(NEEDLES) as t:
@@ -374,7 +385,7 @@ class TmuxFindIntegrationTest(BaseTest):
             # nothing was written for the terminal's clipboard either: tmux does that as an OSC 52 to the client
             time.sleep(0.2)
             self.assertNotIn(b'\x1b]52', bytes(t.output))
-            self.assertIsNone(TmuxFind.holding(state), 'reading a selection holds no search')
+            self.assertIsNone(TmuxFind.holding(state, TmuxOperation()), 'reading a selection holds no search')
 
     def test_selection_text_of_wide_characters(self):
         with private_tmux(AWKWARD) as t:
@@ -422,10 +433,10 @@ class TmuxFindIntegrationTest(BaseTest):
                 argv = [a.replace('wait-for -S', 'display-message -p') if 'wait-for -S' in a else a for a in argv]
                 return tf.run_tmux(argv, env, timeout)
 
-            f = TmuxFind(client, state, run=run)
+            f = TmuxFind(client, state, TmuxOperation(run))
             start = time.monotonic()
             self.assertIsNone(f.program_selection_text())
-            self.assertLess(time.monotonic() - start, TMUX_DEADLINE + 1)
+            self.assertLess(time.monotonic() - start, FIND_DEADLINE + 1)
             # and the next read works
             self.ae(t.finder(TmuxFindState()).program_selection_text(), 'needle')
             del bad
@@ -440,7 +451,7 @@ class TmuxFindIntegrationTest(BaseTest):
                 start = time.monotonic()
                 t.finder(state).step('needle-5', False)
                 took = time.monotonic() - start
-                self.assertLess(took, TMUX_DEADLINE + 1)
+                self.assertLess(took, FIND_DEADLINE + 1)
                 self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
                 self.assertIsNotNone(state.held, 'the pane is on record')
                 holding(state).clear()
@@ -457,7 +468,7 @@ class TmuxFindIntegrationTest(BaseTest):
             state = TmuxFindState()
             client = t.client()
             dead = TmuxClient(2**22 + 5, client.exe, client.server_args, None, client.path)
-            TmuxFind(dead, state).find('needle')
+            TmuxFind(dead, state, TmuxOperation()).find('needle')
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
             self.assertIsNone(state.held, 'no pane was reached')
 
@@ -471,13 +482,15 @@ class FakeTmux:
         self.client_pid = 77
         self.timeout_cancel = False
         self.unreachable = False
+        # how list-clients describes the pane: in copy mode, on the main screen, its process
+        self.in_mode, self.alternate, self.pane_pid = '1', '0', 4242
 
     def __call__(self, argv: Any, env: Any, timeout: float) -> str:
         self.calls.append(list(argv))
         if self.unreachable:
             raise TmuxError('no server running')
         if 'list-clients' in argv:
-            return f'{self.client_pid} {self.pane} 1\n'
+            return f'{self.client_pid} {self.pane} {self.in_mode} {self.alternate} {self.pane_pid} s:@1.{self.pane}\n'
         if 'display-message' in argv:
             return self.counted + '\n'
         if 'copy-pipe-no-clear' in argv:
@@ -510,13 +523,15 @@ class TmuxFindWindowTest(BaseTest):
         foreground: list[dict[str, Any]] = []
         w: Any = SimpleNamespace(
             screen=s, find_query='', os_window_id=1, text_for_selection=lambda: s.callbacks.kitty_selection, geometry=None,
-            child=SimpleNamespace(foreground_processes=foreground), tmux_find_state=TmuxFindState(),
+            child=SimpleNamespace(foreground_processes=foreground), tmux_find_state=TmuxFindState(), claude_find_state=ClaudeFindState(),
+            claude_host=ClaudeHost(), find_reporting=None,
             finish_scroll_animation=lambda: None, find_bar_top_inset=lambda: 0,
         )
         w.foreground = foreground
         w.engine_find = EngineFind(w)
         for name in (
-            'find_backend', 'find_holder', 'end_finds', 'find_backend_to_search', 'find_step', 'set_find_query', 'find', 'push_find_bar',
+            'tmux_client', 'find_pane_backend', 'find_status', 'end_pane_finds', 'find_backend', 'find_holder', 'end_finds', 'find_backend_to_search',
+            'find_step', 'set_find_query', 'find', 'push_find_bar',
             'find_selection_text', 'find_clear', 'find_status_changed', 'use_selection_for_find',
         ):
             setattr(w, name, getattr(Window, name).__get__(w))
@@ -630,9 +645,11 @@ class TmuxFindWindowTest(BaseTest):
         self.run_in_tmux(w)
         w.find('x')
         closing: Any = SimpleNamespace(
-            tmux_find_state=w.tmux_find_state, call_watchers=lambda *a: None, watchers=SimpleNamespace(on_close=None), id=1,
+            tmux_find_state=w.tmux_find_state, claude_find_state=w.claude_find_state, claude_host=w.claude_host,
+            call_watchers=lambda *a: None, watchers=SimpleNamespace(on_close=None), id=1,
             clear_progress_timer=0, clipboard_request_manager=SimpleNamespace(close=lambda: None), kitten_result_processors=[],
         )
+        closing.end_pane_finds = Window.end_pane_finds.__get__(closing)
         Window.destroy(closing)
         self.ae(len(fake.cancelled()), 1)
         self.assertIsNone(w.tmux_find_state.held)
@@ -671,3 +688,76 @@ class TmuxFindWindowTest(BaseTest):
         self.assertIsNone(w.find_step(False))
         self.assertTrue(Boss.find_has_selection.__get__(w.boss)(1))
         self.assertIsNone(w.use_selection_for_find(), 'the selection seeds the search')
+
+    # Which backend a tmux window's search goes to: Claude Code's transcript search or tmux's history search
+
+    def claude_host_with(self, ps: str, session: dict[str, Any] | None = None) -> ClaudeHost:
+        config = os.path.join(self.dir.name, 'claude')
+        os.makedirs(os.path.join(config, 'sessions'), exist_ok=True)
+        if session is not None:
+            with open(os.path.join(config, 'sessions', 'one.json'), 'w') as f:
+                json.dump(session, f)
+        return ClaudeHost(config, ps=lambda: ps)
+
+    def routed(self, fake: FakeTmux, host: ClaudeHost) -> tuple[SimpleNamespace, Any]:
+        w = self.make_window(self.screen_with_matches(), fake)
+        w.claude_host = host
+        self.run_in_tmux(w)
+        return w, w.find_backend_to_search(TmuxOperation())
+
+    def test_a_claude_pane_goes_to_claude_and_everything_else_to_tmux(self):
+        claude = '4242 1 /Users/x/.local/bin/claude\n'
+        session = {'pid': 4242, 'sessionId': 'sid', 'tmux': 's:@1.%1'}
+        fake = FakeTmux()
+        fake.in_mode, fake.alternate = '0', '1'
+        w, backend = self.routed(fake, self.claude_host_with(claude, session))
+        self.assertIsInstance(backend, ClaudeFind)
+        self.ae(backend.pane.session_id, 'sid')
+        for name, tweak, ps in (
+            ('a pane in copy mode', lambda f: setattr(f, 'in_mode', '1'), claude),
+            ('a main-screen pane', lambda f: setattr(f, 'alternate', '0'), claude),
+            ('another full-screen program', lambda f: None, '4242 1 vim\n'),
+            ('a tmux that cannot be asked', lambda f: setattr(f, 'unreachable', True), claude),
+        ):
+            fake = FakeTmux()
+            fake.in_mode, fake.alternate = '0', '1'
+            tweak(fake)
+            _, backend = self.routed(fake, self.claude_host_with(ps, session))
+            self.assertIsInstance(backend, TmuxFind, name)
+
+    def test_a_claude_pane_that_cannot_be_told_is_unavailable_and_never_searched_as_tmux(self):
+        fake = FakeTmux()
+        fake.in_mode, fake.alternate = '0', '1'
+        w, backend = self.routed(fake, self.claude_host_with('4242 1 /x/claude\n', None))  # claude runs, no session file names it
+        self.assertIsInstance(backend, ClaudeFind)
+        w.find('x')
+        self.ae(w.pushed[-1][3:5], (0, int(FindCount.unavailable)))
+        self.assertFalse([c for c in fake.calls if 'copy-mode' in c], 'the visible rows of a full-screen program are not an answer')
+        self.assertTrue(w.claude_find_state.reporting())
+
+    def test_asking_whether_a_window_can_search_asks_tmux_nothing(self):
+        fake = FakeTmux()
+        w = self.make_window(self.screen_with_matches(), fake)
+        self.run_in_tmux(w)
+        self.assertTrue(Boss.find_can_search.__get__(w.boss)(1))
+        self.assertIsInstance(w.find_backend(), TmuxFind)
+        self.ae(fake.calls, [])
+
+    def test_the_lookup_the_clears_and_the_search_spend_one_budget(self):
+        fake = FakeTmux()
+        w = self.make_window(self.screen_with_matches(), fake)
+        self.run_in_tmux(w)
+        clock = [0.0]
+        at: list[float] = []
+
+        def run(argv, env, timeout):
+            at.append(clock[0])
+            clock[0] += FIND_DEADLINE / 3 + 0.01
+            return fake(argv, env, timeout)
+
+        op = TmuxOperation(run, now=lambda: clock[0], sleep=lambda s: None)
+        backend = w.find_backend_to_search(op)
+        backend.find('x')
+        self.assertGreater(len(at), 1)
+        self.assertTrue(all(t < FIND_DEADLINE for t in at), f'a command started after the budget was spent: {at}')
+        self.assertLessEqual(len(at), 4, 'the budget ended the operation; it did not start a second one')
