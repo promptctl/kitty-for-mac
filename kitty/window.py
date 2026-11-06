@@ -65,11 +65,11 @@ from .fast_data_types import (
     base64_decode,
     base64_encode,
     buffer_keys_in_window,
-    cocoa_find_bar_covered_pixels,
-    cocoa_update_find_bar,
     cell_size_for_window,
     click_mouse_cmd_output,
     click_mouse_url,
+    cocoa_find_bar_covered_pixels,
+    cocoa_update_find_bar,
     current_focused_os_window_id,
     draw_single_line_of_text,
     encode_key_for_tty,
@@ -1614,6 +1614,8 @@ class Window:
                 traceback.print_exc()
         self.screen.focus_changed(focused)
         if focused:
+            # the bar shows the search of the window it steers, which this one now is
+            self.push_find_bar()
             self.last_focused_at = monotonic()
             update_ime_position_for_window(self.id, False, 1)
             self.program_status_seen_by_user()
@@ -3002,21 +3004,29 @@ class Window:
     def find_step(self, backwards: bool) -> bool | None:
         if not self.screen.is_main_linebuf():
             return True
-        self.finish_scroll_animation()
         # Esc ended the engine's search but not the query: stepping searches for it again
         if self.find_query and not self.screen.find_status()[1]:
-            self.screen.find_set_query(self.find_query, self.find_query == self.find_query.lower())
+            self.set_find_query(self.find_query)
+        self.step_to_match(backwards)
+        return None
+
+    def set_find_query(self, text: str) -> None:
+        "Search the whole buffer for text, case-insensitively unless it has an uppercase letter"
+        self.screen.find_set_query(text, text == text.lower())
+        # the engine took it: a query it rejects never becomes the one the bar shows and stepping repeats
+        self.find_query = text
+
+    def step_to_match(self, backwards: bool) -> None:
+        self.finish_scroll_animation()
         # with nothing to move to there is nothing new to show, so a paused frame stays paused
         if self.screen.find_step(backwards, self.find_bar_top_inset()) is not None:
             self.screen.pause_rendering(False)
         self.push_find_bar()
-        return None
 
     def find(self, text: str) -> None:
-        "Search the whole buffer for text, case-insensitively unless it has an uppercase letter, and step to the first match"
-        self.find_query = text
-        self.screen.find_set_query(text, text == text.lower())
-        self.find_step(False)
+        "Search the whole buffer for text and step to the first match"
+        self.set_find_query(text)
+        self.step_to_match(False)
 
     def find_bar_top_inset(self) -> int:
         "The rows at the top of this window the find bar covers: a match is revealed below them"

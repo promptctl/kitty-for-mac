@@ -2038,7 +2038,8 @@ class TestScreen(BaseTest):
         pushes = []
         w = SimpleNamespace(screen=s, find_query='', finish_scroll_animation=lambda: None, find_bar_top_inset=lambda: 0,
                             push_find_bar=lambda: pushes.append(s.find_status()))
-        w.find_step = lambda backwards: Window.find_step(w, backwards)
+        for name in ('find_step', 'set_find_query', 'step_to_match'):
+            setattr(w, name, getattr(Window, name).__get__(w))
         Window.find(w, 'x')
         self.ae(w.find_query, 'x')
         self.ae(pushes[-1][1], 20, 'the bar is told how many matches there are')
@@ -2049,6 +2050,17 @@ class TestScreen(BaseTest):
         Window.find_step(w, False)
         self.ae(s.find_status()[1], 20)
         self.assertGreater(pushes[-1][0], 0, 'and steps to a match')
+        # a query with no matches is searched once per keystroke, not again by the step that follows it
+        walks = []
+        find_set_query = s.find_set_query
+        w.screen = SimpleNamespace(**{n: getattr(s, n) for n in ('find_status', 'find_step', 'is_main_linebuf', 'pause_rendering')},
+                                   find_set_query=lambda *a: walks.append(a) or find_set_query(*a))
+        Window.find(w, 'nomatch')
+        self.ae(len(walks), 1)
+        # a query the engine rejects is not the one the bar shows and stepping repeats
+        w.screen.find_set_query = lambda *a: (_ for _ in ()).throw(ValueError('rejected'))
+        self.assertRaises(ValueError, Window.find, w, 'bad')
+        self.ae(w.find_query, 'nomatch')
 
     def test_user_marking(self):
 

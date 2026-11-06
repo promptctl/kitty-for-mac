@@ -135,12 +135,12 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
     public override func scrollWheel(with event: NSEvent) {}
 
     @objc private func queryChanged() {
-        Self.delegate?.findBar(window!, queryChanged: field.stringValue)
+        Self.delegate.findBar(window!, queryChanged: field.stringValue)
     }
 
     // 0 is the previous match, 1 the next
     @objc private func stepPressed(_ sender: NSSegmentedControl) {
-        Self.delegate?.findBar(window!, step: sender.selectedSegment == 1)
+        Self.delegate.findBar(window!, step: sender.selectedSegment == 1)
     }
 
     // Esc in the field closes the bar; handling it here also stops NSSearchField's default of
@@ -150,7 +150,7 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         case #selector(cancelOperation(_:)):
             dismiss()
         case #selector(insertNewline(_:)):
-            Self.delegate?.findBar(window!, step: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false))
+            Self.delegate.findBar(window!, step: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false))
         default:
             return false
         }
@@ -162,6 +162,6 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         let window = window!
         window.makeFirstResponder(window.contentView)
         isHidden = true
-        Self.delegate?.findBarClosed(window)
+        Self.delegate.findBarClosed(window)
     }
 }
