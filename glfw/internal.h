@@ -473,6 +473,7 @@ struct _GLFWwindow {
         GLFWtouchfun touch;
         GLFWkeyboardfun keyboard;
         GLFWliveresizefun liveResize;
+        GLFWnativeviewfocusfun nativeViewFocus;
 
         GLFWdragsourcefun drag_source;
         GLFWdropeventfun drop_event;
@@ -730,6 +731,7 @@ void _glfwPlatformSetWindowAspectRatio(_GLFWwindow *window, int numer, int denom
 void _glfwPlatformSetWindowSizeIncrements(_GLFWwindow *window, int widthincr, int heightincr);
 void _glfwPlatformGetFramebufferSize(_GLFWwindow *window, int *width, int *height);
 void _glfwInputLiveResize(_GLFWwindow *window, bool started);
+void _glfwInputNativeViewFocus(_GLFWwindow *window, bool native_view_has_focus);
 void _glfwPlatformGetWindowFrameSize(_GLFWwindow *window, int *left, int *top, int *right, int *bottom);
 void _glfwPlatformGetWindowContentScale(_GLFWwindow *window, float *xscale, float *yscale);
 monotonic_t _glfwPlatformGetDoubleClickInterval(_GLFWwindow *window);

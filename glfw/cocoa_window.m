@@ -2560,6 +2560,10 @@ focus_owner_of(NSResponder *responder) {
     if (!owner || owner == focus_owner) return ok;
     [focus_owner release];
     focus_owner = [owner retain];
+    // [LAW:single-enforcer] The one report of focus moving between the terminal and a native
+    // view. GLFW's window focus means the window is key; the terminal's own focus (what a
+    // program that asked for focus reports sees) also ends when a native view takes the keys.
+    if (glfw_window) _glfwInputNativeViewFocus(glfw_window, owner != terminal);
     return ok;
 }
 

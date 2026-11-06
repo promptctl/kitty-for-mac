@@ -143,6 +143,13 @@ _glfwInputLiveResize(_GLFWwindow *window, bool started) {
     if (window && window->callbacks.liveResize) window->callbacks.liveResize((GLFWwindow *)window, started);
 }
 
+// Notifies shared code that keyboard focus moved between the terminal and a native view of the window
+//
+void
+_glfwInputNativeViewFocus(_GLFWwindow *window, bool native_view_has_focus) {
+    if (window && window->callbacks.nativeViewFocus) window->callbacks.nativeViewFocus((GLFWwindow *)window, native_view_has_focus);
+}
+
 // Notifies shared code that a window content scale has changed
 // The scale is specified as the ratio between the current and default DPI
 //
@@ -999,6 +1006,16 @@ glfwSetLiveResizeCallback(GLFWwindow *handle, GLFWliveresizefun cbfun) {
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
     _GLFW_SWAP_POINTERS(window->callbacks.liveResize, cbfun);
+    return cbfun;
+}
+
+GLFWAPI GLFWnativeviewfocusfun
+glfwSetNativeViewFocusCallback(GLFWwindow *handle, GLFWnativeviewfocusfun cbfun) {
+    _GLFWwindow *window = (_GLFWwindow *)handle;
+    assert(window != NULL);
+
+    _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
+    _GLFW_SWAP_POINTERS(window->callbacks.nativeViewFocus, cbfun);
     return cbfun;
 }
 

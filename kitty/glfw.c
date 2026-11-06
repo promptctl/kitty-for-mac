@@ -1004,7 +1004,7 @@ window_focus_callback(GLFWwindow *w, int focused) {
             osw = os_window_for_id(wid);
         }
         if (osw) {
-            WINDOW_CALLBACK(on_focus, "O", focused ? Py_True : Py_False);
+            WINDOW_CALLBACK(on_focus, "O", terminal_has_focus(osw) ? Py_True : Py_False);
             if (!osw || osw->id != wid) osw = os_window_for_id(wid);
         }
         if (osw && focused) {
@@ -1022,6 +1022,28 @@ window_focus_callback(GLFWwindow *w, int focused) {
     }
     osw = NULL;
 #undef osw
+}
+
+// The find bar's field took the keys from the terminal, or gave them back: the program sees a focus
+// change, though the window stayed key
+static void
+native_view_focus_callback(GLFWwindow *w, bool native_view_has_focus) {
+    // The first responder changes from inside other callbacks (a key action that shows the bar), so
+    // the callback window of the outer one is put back. on_focus runs Python, which can open or
+    // close OS windows and move them in memory, so the outer window is kept by id and looked up again.
+    const id_type outer_id = global_state.callback_os_window ? global_state.callback_os_window->id : 0;
+    if (set_callback_window(w)) {
+        OSWindow *osw = global_state.callback_os_window;
+        if (osw->native_view_focused != native_view_has_focus) {
+            osw->native_view_focused = native_view_has_focus;
+            osw->cursor_blink_zero_time = monotonic();
+            if (osw->is_focused && is_window_ready_for_callbacks()) {
+                WINDOW_CALLBACK(on_focus, "O", terminal_has_focus(osw) ? Py_True : Py_False);
+            }
+            request_tick_callback();
+        }
+    }
+    global_state.callback_os_window = outer_id ? os_window_for_id(outer_id) : NULL;
 }
 
 #define TAB_DRAG_MIME_NUMBER 400
@@ -2590,6 +2612,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     // missing maximize/restore callback
     glfwSetFramebufferSizeCallback(glfw_window, framebuffer_size_callback);
     glfwSetLiveResizeCallback(glfw_window, live_resize_callback);
+    glfwSetNativeViewFocusCallback(glfw_window, native_view_focus_callback);
     glfwSetWindowContentScaleCallback(glfw_window, dpi_change_callback);
     glfwSetMouseButtonCallback(glfw_window, mouse_button_callback);
     glfwSetCursorPosCallback(glfw_window, cursor_pos_callback);
