@@ -837,8 +837,7 @@ static void flush_focus_loss_text(_GLFWwindow *window);
                   [nswindow setStyleMask:savedMask];
                   [nswindow setFrame:savedFrame display:YES];
                   update_titlebar_button_visibility_after_fullscreen_transition(w, true, false);
-                  restore_focus_owner(w);
-                  NSNotification *resize = [NSNotification notificationWithName:NSWindowDidResizeNotification object:nswindow];
+                                    NSNotification *resize = [NSNotification notificationWithName:NSWindowDidResizeNotification object:nswindow];
                   [w->ns.delegate performSelector:@selector(windowDidResize:) withObject:resize afterDelay:0];
               }
               // Lift the constraint guard after a delay, even if the window
@@ -926,6 +925,7 @@ static void flush_focus_loss_text(_GLFWwindow *window);
 - (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow;
 - (GLFWDraggingSource *)draggingSource;
 - (void)setPreEditCursorInEvent:(GLFWkeyevent *)ev;
+- (void)commitMarkedText;
 @end
 
 @implementation GLFWContentView
@@ -2513,32 +2513,46 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     [super dealloc];
 }
 
-// [LAW:single-enforcer] The one writer of focus_owner. Only the outermost call
-// counts: a text field's becomeFirstResponder makes its field editor first
-// responder in a nested call, and the owner is the field, not its editor. A nil
-// or window responder is AppKit clearing focus, the loss restoreFocusOwner repairs.
+// The view that owns responder: a field editor belongs to the text field it edits.
+static NSView *
+focus_owner_of(NSResponder *responder) {
+    if ([responder isKindOfClass:[NSText class]] && [(NSText *)responder isFieldEditor] && [[(NSText *)responder delegate] isKindOfClass:[NSView class]])
+        return (NSView *)[(NSText *)responder delegate];
+    return [responder isKindOfClass:[NSView class]] ? (NSView *)responder : nil;
+}
+
+// [LAW:single-enforcer] The one writer of focus_owner. After the outermost call
+// it records the owner of the actual first responder, so nested calls (a text
+// field installing its field editor, a delegate moving focus while editing ends)
+// are covered too. No view owning focus is AppKit clearing it, the loss
+// restoreFocusOwner repairs.
 - (BOOL)makeFirstResponder:(nullable NSResponder *)responder {
     make_first_responder_depth++;
     const BOOL ok = [super makeFirstResponder:responder];
     make_first_responder_depth--;
-    if (!ok || make_first_responder_depth || ![responder isKindOfClass:[NSView class]] || responder == focus_owner) return ok;
-    if (glfw_window && focus_owner == glfw_window->ns.view) {
-        // Focus leaves the terminal: drop its IME composition rather than leave it pending there.
-        [[focus_owner inputContext] discardMarkedText];
-        [glfw_window->ns.view unmarkText];
-    }
+    if (make_first_responder_depth) return ok;
+    NSView *owner = focus_owner_of(self.firstResponder);
+    if (!owner || owner == focus_owner) return ok;
+    // Focus leaves the terminal: commit its IME composition, as native text views do.
+    if (glfw_window && focus_owner == glfw_window->ns.view) [glfw_window->ns.view commitMarkedText];
     [focus_owner release];
-    focus_owner = [(NSView *)responder retain];
+    focus_owner = [owner retain];
     return ok;
 }
 
 // Focus goes back to its owner, unless it is still there: re-making a text field
 // first responder would end and restart its editing session and select all its text.
+// An owner that is gone, hidden or refuses focus yields to the terminal.
 - (void)restoreFocusOwner {
-    NSResponder *fr = self.firstResponder;
-    const bool still_focused = fr == focus_owner || ([fr isKindOfClass:[NSText class]] && [(NSText *)fr isFieldEditor] && [(NSText *)fr delegate] == (id)focus_owner);
-    NSResponder *target = still_focused ? fr : (focus_owner.window == self ? focus_owner : self.contentView);
-    [self makeFirstResponder:target];
+    if (focus_owner && focus_owner_of(self.firstResponder) == focus_owner) return;
+    if (focus_owner.window == self && !focus_owner.isHiddenOrHasHiddenAncestor && [self makeFirstResponder:focus_owner]) return;
+    [self makeFirstResponder:self.contentView];
+}
+
+// AppKit clears the first responder on style mask changes, so every one restores it.
+- (void)setStyleMask:(NSWindowStyleMask)style {
+    [super setStyleMask:style];
+    [self restoreFocusOwner];
 }
 
 - (instancetype)initWithGlfwWindow:(NSRect)contentRect
@@ -2562,6 +2576,8 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
 
 - (void)removeGLFWWindow {
     glfw_window = NULL;
+    [focus_owner release];
+    focus_owner = nil;
     // Remove only our own observation, a blanket removeObserver: would also
     // remove any observations Cocoa has registered with this window as the
     // observer.
@@ -3024,8 +3040,7 @@ _glfwPlatformSetLayerShellConfig(_GLFWwindow *window, const GLFWLayerShellConfig
     [[nswindow standardWindowButton:NSWindowMiniaturizeButton] setHidden:true];
     [[nswindow standardWindowButton:NSWindowZoomButton] setHidden:true];
     [nswindow setStyleMask:NSWindowStyleMaskBorderless];
-    restore_focus_owner(window);
-    NSScreen *screen = screen_for_window_center(window);
+        NSScreen *screen = screen_for_window_center(window);
     if (config.output_name[0]) {
         NSScreen *q = screen_for_name(config.output_name);
         if (q) screen = q;
@@ -3374,7 +3389,6 @@ _glfwPlatformSetWindowMonitor(_GLFWwindow *window, _GLFWmonitor *monitor, int xp
 
     const NSUInteger styleMask = getStyleMask(window);
     [window->ns.object setStyleMask:styleMask];
-    restore_focus_owner(window);
 
     if (window->monitor) {
         [window->ns.object setLevel:NSMainMenuWindowLevel + 1];
@@ -3450,13 +3464,11 @@ _glfwPlatformFramebufferTransparent(_GLFWwindow *window) {
 void
 _glfwPlatformSetWindowResizable(_GLFWwindow *window, bool enabled UNUSED) {
     [window->ns.object setStyleMask:getStyleMask(window)];
-    restore_focus_owner(window);
 }
 
 void
 _glfwPlatformSetWindowDecorated(_GLFWwindow *window, bool enabled UNUSED) {
     [window->ns.object setStyleMask:getStyleMask(window)];
-    restore_focus_owner(window);
 }
 
 void
@@ -3879,8 +3891,7 @@ _glfwPlatformToggleFullscreen(_GLFWwindow *w, unsigned int flags) {
             }
             [window setStyleMask:sm];
         }
-        restore_focus_owner(w);
-        // If the dock and menubar are hidden going from maximized to fullscreen doesn't change the window size
+                // If the dock and menubar are hidden going from maximized to fullscreen doesn't change the window size
         // and macOS forgets to trigger windowDidResize, so call it ourselves
         NSNotification *notification = [NSNotification notificationWithName:NSWindowDidResizeNotification object:window];
         [w->ns.delegate performSelector:@selector(windowDidResize:) withObject:notification afterDelay:0];
@@ -4429,9 +4440,7 @@ glfwCocoaSetWindowChrome(
         if (desired_mask != current_style_mask) { [nsw setStyleMask:desired_mask]; }
 #undef tc
         apply_titlebar_color_settings(window);
-
-        restore_focus_owner(window);
-        window->ns.notch_cover_color = color;
+                window->ns.notch_cover_color = color;
         window->ns.notch_cover_opacity = background_opacity;
         if (window->ns.notch_cover_window) _glfwUpdateNotchCover(window);
     }
