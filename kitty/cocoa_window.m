@@ -272,6 +272,13 @@ key_window_screen(void) {
     return tab->num_windows > tab->active_window ? tab->windows[tab->active_window].render_data.screen : NULL;
 }
 
+// [LAW:single-enforcer] A call into Boss made from AppKit can run outside GLFW's input
+// callbacks and pending actions, both of which request the tick a frame is drawn on, so this
+// requests it: whatever the call changed on screen is drawn now, not on the next unrelated
+// wakeup. A tick is cheap, so it is requested unconditionally. Boss calls from AppKit use
+// this; notification events get the same from do_notification_callback.
+#define call_boss_from_appkit(name, ...) do { call_boss(name, __VA_ARGS__); request_tick_callback(); } while (0)
+
 // The find bar's events, run on the main thread as plain calls into Boss: they must not
 // reorder behind keystrokes typed after them, which a pending action would.
 @interface FindBarBridge : NSObject <KittyFindBarDelegate>
@@ -279,13 +286,13 @@ key_window_screen(void) {
 
 @implementation FindBarBridge
 - (void)findBar:(NSWindow *)window queryChanged:(NSString *)text {
-    call_boss(find_bar_query_changed, "Ks", cocoa_os_window_id_for_window(window), [text UTF8String]);
+    call_boss_from_appkit(find_bar_query_changed, "Ks", cocoa_os_window_id_for_window(window), [text UTF8String]);
 }
 - (void)findBar:(NSWindow *)window step:(BOOL)forward {
-    call_boss(find_bar_step, "KO", cocoa_os_window_id_for_window(window), forward ? Py_True : Py_False);
+    call_boss_from_appkit(find_bar_step, "KO", cocoa_os_window_id_for_window(window), forward ? Py_True : Py_False);
 }
 - (void)findBarClosed:(NSWindow *)window {
-    call_boss(find_bar_closed, "K", cocoa_os_window_id_for_window(window));
+    call_boss_from_appkit(find_bar_closed, "K", cocoa_os_window_id_for_window(window));
 }
 @end
 
@@ -478,6 +485,8 @@ do_notification_callback(const char *identifier, const char *event, const char *
             PyObject_CallFunction(notification_activated_callback, "sss", event, identifier ? identifier : "", action_identifer ? action_identifer : "");
         if (ret) Py_DECREF(ret);
         else PyErr_Print();
+        // Notification events arrive on the main queue, outside the tick: see call_boss_from_appkit
+        request_tick_callback();
     }
 }
 
@@ -833,7 +842,7 @@ cocoa_send_notification(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
 - (void)quickAccessTerminal:(NSPasteboard *)pboard userData:(NSString *)userData error:(NSString **)error {
     // we ignore event during application launch as it will cause the window to be shown and hidden
     static bool is_first_event = true;
-    if (!is_first_event || monotonic() >= s_double_to_monotonic_t(2.0)) { call_boss(quick_access_terminal_invoked, NULL); }
+    if (!is_first_event || monotonic() >= s_double_to_monotonic_t(2.0)) { call_boss_from_appkit(quick_access_terminal_invoked, NULL); }
     is_first_event = false;
 }
 @end
