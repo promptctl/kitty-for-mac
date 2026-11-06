@@ -1818,6 +1818,18 @@ class TestScreen(BaseTest):
         self.assertTrue(s.pause_rendering(False))
         self.ae(highlighted(s), [(0, 1), (1, 1)])
 
+        # a margin scroll that pushes the current match out of its region ends it, and the
+        # first paint after shows no selection where the match was
+        s = self.create_screen(cols=5, lines=3)
+        s.draw('x\r\n'), s.draw('aa\r\n'), s.draw('c')
+        self.ae(search(s, 'aa'), [(0, 1), (1, 1)])
+        s.find_set_current((1, 0, 1, 1))
+        self.ae(cells_with(s, SELECTION_BIT), [(0, 1), (1, 1)])
+        s.set_margins(1, 2)
+        s.cursor_position(1, 1), s.reverse_index()
+        self.ae(cells_with(s, SELECTION_BIT), [])
+        self.ae(s.find_status(), (0, 0, False))
+
         # the alternate screen shows no main buffer line, so no main buffer match
         s = self.create_screen(cols=10, lines=2)
         s.draw('abc')

@@ -3956,12 +3956,13 @@ screen_pause_rendering(Screen *self, bool pause, int for_in_ms) {
             self->paused_rendering.linebuf->line_attrs[y] = src->attrs;
         } else linebuf_clear_line(self->paused_rendering.linebuf, y, true);
     }
-    copy_selections(&self->paused_rendering.selections, &self->selections);
-    copy_selections(&self->paused_rendering.url_ranges, &self->url_ranges);
     self->paused_rendering.main_buffer_view = main_buffer_view(self);
 #ifdef __APPLE__
+    // before the selections are copied: reading the engine can release find's selection
     pause_find_matches(self);
 #endif
+    copy_selections(&self->paused_rendering.selections, &self->selections);
+    copy_selections(&self->paused_rendering.url_ranges, &self->url_ranges);
     if (self->extra_cursors.count) {
         self->paused_rendering.extra_cursors.locations = calloc(self->extra_cursors.count, sizeof(self->extra_cursors.locations[0]));
         if (self->paused_rendering.extra_cursors.locations) {
@@ -4705,6 +4706,11 @@ screen_apply_selection(Screen *self, void *address_, size_t size) {
     memset(address, 0, size);
     const unsigned offset = pixel_scroll_enabled(self);
     const unsigned scrolled_by = self->paused_rendering.expires_at ? self->paused_rendering.scrolled_by : self->scrolled_by;
+#ifdef __APPLE__
+    // [LAW:no-ambient-temporal-coupling] first: reading the engine can release find's
+    // selection, which the selections painted below must then not include
+    apply_find_matches(self, address, offset, scrolled_by);
+#endif
     Selections *sel = self->paused_rendering.expires_at ? &self->paused_rendering.selections : &self->selections;
     for (size_t i = 0; i < sel->count; i++) apply_selection(self, address, sel->items + i, 1, offset, scrolled_by);
     sel->last_rendered_count = sel->count;
@@ -4715,10 +4721,7 @@ screen_apply_selection(Screen *self, void *address_, size_t size) {
         apply_selection(self, address, s, 2, offset, scrolled_by);
     }
     sel->last_rendered_count = sel->count;
-#ifdef __APPLE__
-    apply_find_matches(self, address, offset, scrolled_by);
-#endif
-    address += (size_t)offset * self->columns;
+    address +=(size_t)offset * self->columns;
     size -= (size_t)offset * self->columns;
     ExtraCursors *ec = self->paused_rendering.expires_at ? &self->paused_rendering.extra_cursors : &self->extra_cursors;
     for (unsigned i = 0; i < ec->count; i++) {
@@ -7305,8 +7308,8 @@ find_set_query(Screen *self, PyObject *args) {
         return NULL;
     }
     // a query's matches are kept up to date, so the buffer they came from is recorded; the
-    // empty query has none and records nothing
-    if (!refeed_find_engine(self, find_onward_range(self, self->historybuf->abs_oldest_line)) || (len && !record_fed_buffer(self))) {
+    // empty query has none, so there is nothing to walk or record
+    if (len && (!refeed_find_engine(self, find_onward_range(self, self->historybuf->abs_oldest_line)) || !record_fed_buffer(self))) {
         // a part-walked buffer is not an answer
         screen_find_clear(self);
         return PyErr_NoMemory();
