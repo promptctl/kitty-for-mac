@@ -4,7 +4,7 @@
  * the same place whatever focus or the key window does in between.
  *
  * Pure C with no AppKit, so kitty's test suite can drive it
- * (test_key_destination in kitty/keys.c). The key codes and modifier masks are
+ * (kitty/keys.c). The key codes and modifier masks are
  * the macOS virtual key codes and NX_DEVICE* masks; glfw/cocoa_init.m checks
  * them against the system headers.
  */
@@ -16,18 +16,16 @@
 
 typedef enum { KEY_DEST_NONE, KEY_DEST_TERMINAL, KEY_DEST_APPKIT } KeyDestinationKind;
 
-// TERMINAL: id is the windowNumber of the terminal's window. APPKIT: id is the
-// address of the first responder that took the press, compared and never
-// dereferenced. NONE: nowhere to send it (no key window), or, in the table,
-// not held.
+// TERMINAL: id is the windowNumber of the terminal's window. APPKIT: id is 0;
+// every native responder is one destination, so a key whose press AppKit took
+// keeps going to AppKit, which routes it as it does in any Cocoa app (a held Tab
+// keeps moving focus). NONE: nowhere to send it (no key window), or, in the
+// table, not held.
 typedef struct { KeyDestinationKind kind; uintptr_t id; } KeyDestination;
 
 typedef struct { KeyDestination held[128]; } KeyDestinationTable;
 
 static const KeyDestination KEY_DEST_NOT_HELD = {KEY_DEST_NONE, 0};
-
-static inline bool
-key_destination_equal(KeyDestination a, KeyDestination b) { return a.kind == b.kind && a.id == b.id; }
 
 // The modifier keys that are held, each with the device-dependent flag that is
 // set while it is down, so the two keys of a pair are told apart. CapsLock is

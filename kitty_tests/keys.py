@@ -947,8 +947,8 @@ class TestKeys(BaseTest):
 
     def test_key_destination(self):
         from kitty.fast_data_types import test_key_destination
-        # destinations as (kind, id): kind 1 is a terminal window, 2 a native view
-        term, field, other = (1, 7), (2, 0xf1e1d), (2, 0x0e1)
+        # destinations as (kind, id): kind 1 is a terminal window, 2 AppKit
+        term, other, field = (1, 7), (1, 9), (2, 0)
         a, ret, lshift, rshift, cmd, caps = 0x00, 0x24, 0x38, 0x3C, 0x37, 0x39
         LSHIFT, RSHIFT, SHIFT, CMD, LCMD, CAPS = 0x2, 0x4, 0x20000, 0x100000, 0x8, 0x10000
 
