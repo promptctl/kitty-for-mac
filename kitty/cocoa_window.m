@@ -272,26 +272,26 @@ key_window_screen(void) {
     return tab->num_windows > tab->active_window ? tab->windows[tab->active_window].render_data.screen : NULL;
 }
 
+// [LAW:single-enforcer] A call into Boss made straight from AppKit runs outside GLFW's input
+// callbacks and pending actions, both of which request the tick a frame is drawn on, so this
+// requests it: whatever the call changed on screen is drawn now, not on the next unrelated
+// wakeup. A tick with nothing to draw costs nothing, so it is requested unconditionally.
+#define call_boss_from_appkit(name, ...) do { call_boss(name, __VA_ARGS__); request_tick_callback(); } while (0)
+
 // The find bar's events, run on the main thread as plain calls into Boss: they must not
 // reorder behind keystrokes typed after them, which a pending action would.
-// [LAW:single-enforcer] They reach kitty through AppKit, not GLFW's input callbacks, which
-// request the tick a frame is drawn on, so the bridge requests it: each event changes the
-// matches, the current match or the selection, and the next tick's frame shows the change.
 @interface FindBarBridge : NSObject <KittyFindBarDelegate>
 @end
 
 @implementation FindBarBridge
 - (void)findBar:(NSWindow *)window queryChanged:(NSString *)text {
-    call_boss(find_bar_query_changed, "Ks", cocoa_os_window_id_for_window(window), [text UTF8String]);
-    request_tick_callback();
+    call_boss_from_appkit(find_bar_query_changed, "Ks", cocoa_os_window_id_for_window(window), [text UTF8String]);
 }
 - (void)findBar:(NSWindow *)window step:(BOOL)forward {
-    call_boss(find_bar_step, "KO", cocoa_os_window_id_for_window(window), forward ? Py_True : Py_False);
-    request_tick_callback();
+    call_boss_from_appkit(find_bar_step, "KO", cocoa_os_window_id_for_window(window), forward ? Py_True : Py_False);
 }
 - (void)findBarClosed:(NSWindow *)window {
-    call_boss(find_bar_closed, "K", cocoa_os_window_id_for_window(window));
-    request_tick_callback();
+    call_boss_from_appkit(find_bar_closed, "K", cocoa_os_window_id_for_window(window));
 }
 @end
 
@@ -839,7 +839,7 @@ cocoa_send_notification(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
 - (void)quickAccessTerminal:(NSPasteboard *)pboard userData:(NSString *)userData error:(NSString **)error {
     // we ignore event during application launch as it will cause the window to be shown and hidden
     static bool is_first_event = true;
-    if (!is_first_event || monotonic() >= s_double_to_monotonic_t(2.0)) { call_boss(quick_access_terminal_invoked, NULL); }
+    if (!is_first_event || monotonic() >= s_double_to_monotonic_t(2.0)) { call_boss_from_appkit(quick_access_terminal_invoked, NULL); }
     is_first_event = false;
 }
 @end
