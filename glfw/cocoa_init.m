@@ -967,14 +967,14 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               return nil;
           }
           const KeyDestination current = current_key_destination();
-          return deliver_key_event(event, key_destination_for_key_down(&key_destinations, [event keyCode], [event isARepeat], current), current, @selector(keyDown:));
+          return deliver_key_event(event, key_destination_for_key_down(&key_destinations, [event keyCode], [event isARepeat], current), current, @selector(terminalKeyDown:));
         };
 
         NSEvent * (^keyup_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("----------------- key up --------------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
           const KeyDestination current = current_key_destination();
-          return deliver_key_event(event, key_destination_for_key_up(&key_destinations, [event keyCode], current), current, @selector(keyUp:));
+          return deliver_key_event(event, key_destination_for_key_up(&key_destinations, [event keyCode], current), current, @selector(terminalKeyUp:));
         };
 
         NSEvent * (^flags_changed_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
@@ -993,7 +993,7 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               if (!([event modifierFlags] & input_source_switch_modifiers)) input_source_switch_modifiers = 0;
               return event;
           }
-          return deliver_key_event(event, dest, current, @selector(flagsChanged:));
+          return deliver_key_event(event, dest, current, @selector(terminalFlagsChanged:));
         };
 
         _glfw.ns.keyUpMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyUp handler:keyup_block];

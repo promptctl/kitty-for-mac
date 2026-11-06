@@ -905,7 +905,7 @@ static void flush_focus_loss_text(_GLFWwindow *window);
 
 // Content view class for the GLFW window {{{
 
-@interface GLFWContentView : NSView <NSTextInputClient> {
+@interface GLFWContentView : NSView <NSTextInputClient, GLFWTerminalKeyInput> {
     _GLFWwindow *window;
     NSTrackingArea *trackingArea;
     GLFWTextInputContext *input_context;
@@ -1256,7 +1256,7 @@ is_ascii_control_char(char x) {
     return x == 0 || (1 <= x && x <= 31) || x == 127;
 }
 
-- (void)keyDown:(NSEvent *)event {
+- (void)terminalKeyDown:(NSEvent *)event {
 #define CLEAR_PRE_EDIT_TEXT                             \
     glfw_keyevent.text = NULL;                          \
     glfw_keyevent.ime_state = GLFW_IME_PREEDIT_CHANGED; \
@@ -1378,7 +1378,7 @@ is_ascii_control_char(char x) {
     }
 }
 
-- (void)flagsChanged:(NSEvent *)event {
+- (void)terminalFlagsChanged:(NSEvent *)event {
     int action = GLFW_RELEASE;
     const char old_first_char = _glfw.ns.text[0];
     _glfw.ns.text[0] = 0;
@@ -1437,7 +1437,7 @@ is_ascii_control_char(char x) {
     _glfwInputKeyboard(window, &glfw_keyevent);
 }
 
-- (void)keyUp:(NSEvent *)event {
+- (void)terminalKeyUp:(NSEvent *)event {
     const uint32_t keycode = [event keyCode];
     const uint32_t key = translateKey(keycode, true);
     const int mods = translateFlags(remap_cocoa_flags([event modifierFlags]));
@@ -1450,6 +1450,25 @@ is_ascii_control_char(char x) {
 
 #undef CLEAR_PRE_EDIT_TEXT
 #undef UPDATE_PRE_EDIT_TEXT
+
+// AppKit sends these the keys the monitors handed back to it. While the terminal
+// has focus they are its own (a macOS global shortcut, the fn key). While a native
+// view has focus they are ones that view left unhandled, passed up the responder
+// chain, and they go on up as in any Mac app: the terminal's keys never come this way.
+- (void)keyDown:(NSEvent *)event {
+    if (glfwCocoaNativeViewHasFocus()) [super keyDown:event];
+    else [self terminalKeyDown:event];
+}
+
+- (void)keyUp:(NSEvent *)event {
+    if (glfwCocoaNativeViewHasFocus()) [super keyUp:event];
+    else [self terminalKeyUp:event];
+}
+
+- (void)flagsChanged:(NSEvent *)event {
+    if (glfwCocoaNativeViewHasFocus()) [super flagsChanged:event];
+    else [self terminalFlagsChanged:event];
+}
 
 - (void)scrollWheel:(NSEvent *)event {
     GLFWScrollEvent ev = {
