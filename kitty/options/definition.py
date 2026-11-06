@@ -925,6 +925,25 @@ opt(
 )
 
 opt(
+    'find_match_foreground',
+    '#000000',
+    option_type='to_color',
+    ctype='color_as_int',
+    long_text="""
+The foreground and background colors of every match of the find bar's query.
+The current match is the selection, so it shows in the selection colors
+instead.
+""",
+)
+
+opt(
+    'find_match_background',
+    '#ffff00',
+    option_type='to_color',
+    ctype='color_as_int',
+)
+
+opt(
     'open_url_with',
     'default',
     option_type='to_cmdline',

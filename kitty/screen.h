@@ -48,6 +48,13 @@ typedef struct {
     index_type x, x_limit;
 } XRange;
 
+// Where the main buffer sits on the screen: row 0 of the screen shows absolute line abs_row0.
+// While the alternate screen is up the screen shows no main buffer line at all.
+typedef struct {
+    uint64_t abs_row0;
+    bool shows_main_buffer;
+} MainBufferView;
+
 typedef struct {
     int y, y_limit;
     XRange first, body, last;
@@ -176,6 +183,11 @@ typedef struct {
 #ifdef __APPLE__
     // owned, never NULL; the empty query is "no search"
     struct FindEngine *find_engine;
+    // what screen_apply_selection last painted the find highlights from
+    struct {
+        uint64_t generation;
+        MainBufferView view;
+    } find_last_rendered;
 #endif
     bool has_focus;
     uint8_t visibility_state; // 0 = unknown, 1 = potentially visible, 2 = not visible
@@ -232,6 +244,7 @@ typedef struct {
         GraphicsManager *grman;
         Selections selections, url_ranges;
         ExtraCursors extra_cursors;
+        MainBufferView main_buffer_view;
     } paused_rendering;
     CharsetState charset;
     ListOfChars *lc;

@@ -1264,7 +1264,13 @@ class Screen:
         pass
 
     def find_clear(self) -> None:
-        """End the search: no matches until the next find_set_query. macOS only."""
+        """End the search: no matches until the next find_set_query. Clears the selection
+        too while it is still the current match find_set_current made. macOS only."""
+        pass
+
+    def find_set_current(self, index: int) -> None:
+        """Make match index (in find_matches order) the current match and the selection;
+        IndexError when there is no such match. macOS only."""
         pass
 
     def find_count(self) -> int:

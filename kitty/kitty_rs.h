@@ -37,3 +37,13 @@ void kitty_rs_find_drop_lines_from(FindEngine *engine, uint64_t abs_line);
 void kitty_rs_find_evict_before(FindEngine *engine, uint64_t abs_line);
 // The matches in buffer order, *count of them, valid until the engine next changes.
 const FindMatch* kitty_rs_find_matches(const FindEngine *engine, size_t *count);
+// The matches covering any of the lines [first, limit), *count of them, valid until the
+// engine next changes.
+const FindMatch* kitty_rs_find_matches_in_lines(const FindEngine *engine, uint64_t first, uint64_t limit, size_t *count);
+// Counts the changes to the match list: equal generations mean the same matches.
+uint64_t kitty_rs_find_generation(const FindEngine *engine);
+// The current match, always one of the matches: set_query and the cuts that drop it end it.
+// Sets match index current, returning false and changing nothing when there is no such match.
+bool kitty_rs_find_set_current(FindEngine *engine, size_t index);
+// Writes the current match to *out, returning false and writing nothing when there is none.
+bool kitty_rs_find_current(const FindEngine *engine, FindMatch *out);

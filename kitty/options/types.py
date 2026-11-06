@@ -368,6 +368,8 @@ option_names = (
     'exe_search_path',
     'file_transfer_confirmation_bypass',
     'filter_notification',
+    'find_match_background',
+    'find_match_foreground',
     'focus_follows_mouse',
     'font_family',
     'font_features',
@@ -595,6 +597,8 @@ class Options:
     enable_audio_bell: bool = True
     enabled_layouts: list[str] = ['fat', 'grid', 'horizontal', 'splits', 'stack', 'tall', 'vertical']
     file_transfer_confirmation_bypass: str = ''
+    find_match_background: Color = Color(255, 255, 0)
+    find_match_foreground: Color = Color(0, 0, 0)
     focus_follows_mouse: choices_for_focus_follows_mouse = 'no'
     font_family: FontSpec = FontSpec(family=None, style=None, postscript_name=None, full_name=None, system='monospace', axes=(), variable_name=None, features=(), created_from_string='monospace')
     font_size: float = 11.0
@@ -1447,6 +1451,8 @@ all_colors = frozenset({
     'scrollbar_handle_color',
     'scrollbar_track_color',
     'url_color',
+    'find_match_foreground',
+    'find_match_background',
     'visual_bell_color',
     'active_border_color',
     'inactive_border_color',

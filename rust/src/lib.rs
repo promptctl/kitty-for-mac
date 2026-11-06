@@ -101,6 +101,54 @@ pub unsafe extern "C" fn kitty_rs_find_matches(engine: *const FindEngine, count:
     matches.as_ptr()
 }
 
+/// The matches covering any of the lines `first..limit`, `*count` of them, valid until the
+/// engine next changes.
+///
+/// # Safety
+/// `engine` is live and `count` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_matches_in_lines(
+    engine: *const FindEngine,
+    first: u64,
+    limit: u64,
+    count: *mut usize,
+) -> *const FindMatch {
+    // SAFETY: the caller's contract above.
+    let matches = unsafe { &*engine }.matches_in_lines(first, limit);
+    unsafe { *count = matches.len() };
+    matches.as_ptr()
+}
+
+/// Counts the changes to the match list.
+///
+/// # Safety
+/// `engine` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_generation(engine: *const FindEngine) -> u64 {
+    // SAFETY: the caller's contract above.
+    unsafe { &*engine }.generation()
+}
+
+/// Makes match `index` current; false, changing nothing, when there is no such match.
+///
+/// # Safety
+/// `engine` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_set_current(engine: *mut FindEngine, index: usize) -> bool {
+    // SAFETY: the caller's contract above.
+    unsafe { &mut *engine }.set_current(index)
+}
+
+/// Writes the current match to `out`; false, writing nothing, when there is none.
+///
+/// # Safety
+/// `engine` is live and `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_current(engine: *const FindEngine, out: *mut FindMatch) -> bool {
+    // SAFETY: the caller's contract above.
+    unsafe { &*engine }.current().map(|m| unsafe { *out = m }).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

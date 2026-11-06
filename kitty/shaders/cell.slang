@@ -176,6 +176,10 @@ vertex_main(
         // Selection
         float3 selection_color = if_one_then(crd.use_cell_bg_for_selection_fg, bo.bg, crd.highlight_fg_lin.rgb);
         selection_color = if_one_then(crd.use_cell_fg_for_selection_fg, foreground, selection_color);
+        // a find match takes its own colors and the selection, set next, wins over them
+        float in_find_match = float((is_selected >> FIND_MATCH_SHIFT) & BIT_MASK);
+        foreground = if_one_then(in_find_match, crd.find_match_fg_lin.rgb, foreground);
+        vo.decoration_fg = if_one_then(in_find_match, crd.find_match_fg_lin.rgb, vo.decoration_fg);
         foreground = if_one_then(float(is_selected & BIT_MASK), selection_color, foreground);
         vo.decoration_fg = if_one_then(float(is_selected & BIT_MASK), selection_color, vo.decoration_fg);
         // Underline and strike through (rendered via sprites)
