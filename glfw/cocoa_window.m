@@ -2494,6 +2494,8 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     // puts focus back here instead of always on the terminal.
     NSView *focus_owner;
     unsigned make_first_responder_depth;
+    // Nonzero while AppKit changes the style mask, when it clears focus on its own.
+    unsigned style_change_depth;
 }
 
 - (instancetype)initWithGlfwWindow:(NSRect)contentRect
@@ -2523,17 +2525,24 @@ focus_owner_of(NSResponder *responder) {
 // [LAW:single-enforcer] The one writer of focus_owner. After the outermost call
 // it records the owner of the actual first responder, so nested calls (a text
 // field installing its field editor, a delegate moving focus while editing ends)
-// are covered too. No view owning focus is AppKit clearing it, the loss
-// restoreFocusOwner repairs.
+// are covered too. The window itself as first responder sends keys to the
+// terminal, so a deliberate blur records the terminal; during a style change it
+// is AppKit clearing focus, the loss restoreFocusOwner repairs.
 - (BOOL)makeFirstResponder:(nullable NSResponder *)responder {
+    NSView *terminal = glfw_window ? glfw_window->ns.view : nil;
+    // Focus leaves the terminal for a native view: commit its IME composition, as
+    // native text views do, while its input context is still the active one.
+    if (!make_first_responder_depth && terminal && focus_owner == terminal && [terminal hasMarkedText]) {
+        NSView *next = focus_owner_of(responder);
+        if (next && next != terminal) [terminal commitMarkedText];
+    }
     make_first_responder_depth++;
     const BOOL ok = [super makeFirstResponder:responder];
     make_first_responder_depth--;
     if (make_first_responder_depth) return ok;
     NSView *owner = focus_owner_of(self.firstResponder);
+    if (!owner && !style_change_depth) owner = terminal;
     if (!owner || owner == focus_owner) return ok;
-    // Focus leaves the terminal: commit its IME composition, as native text views do.
-    if (glfw_window && focus_owner == glfw_window->ns.view && [glfw_window->ns.view hasMarkedText]) [glfw_window->ns.view commitMarkedText];
     [focus_owner release];
     focus_owner = [owner retain];
     return ok;
@@ -2551,7 +2560,9 @@ focus_owner_of(NSResponder *responder) {
 // AppKit clears the first responder on style mask changes, so every one restores
 // it, except before the GLFW window is attached (NSWindow init) or after it is removed.
 - (void)setStyleMask:(NSWindowStyleMask)style {
+    style_change_depth++;
     [super setStyleMask:style];
+    style_change_depth--;
     if (glfw_window) [self restoreFocusOwner];
 }
 
@@ -2658,7 +2669,9 @@ update_titlebar_button_visibility_after_fullscreen_transition(_GLFWwindow *w, bo
     // When resizeIncrements is set, Cocoa cannot restore the original window size after returning from fullscreen.
     const NSSize original = [self resizeIncrements];
     [self setResizeIncrements:NSMakeSize(1.0, 1.0)];
+    style_change_depth++;
     [super toggleFullScreen:sender];
+    style_change_depth--;
     [self setResizeIncrements:original];
     // When the window decoration is hidden, toggling fullscreen changes the style mask, which clears the first responder.
     if (glfw_window && !glfw_window->decorated) [self restoreFocusOwner];
@@ -4436,6 +4449,8 @@ glfwCocoaSetWindowChrome(
         if (desired_mask != current_style_mask) { [nsw setStyleMask:desired_mask]; }
 #undef tc
         apply_titlebar_color_settings(window);
+        // Rebuilding the titlebar can displace the first responder even when the mask is unchanged.
+        [nsw restoreFocusOwner];
         window->ns.notch_cover_color = color;
         window->ns.notch_cover_opacity = background_opacity;
         if (window->ns.notch_cover_window) _glfwUpdateNotchCover(window);
