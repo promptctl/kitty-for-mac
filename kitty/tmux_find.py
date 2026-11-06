@@ -26,7 +26,6 @@ from .utils import log_error
 # One bound for everything a find operation asks of tmux, the pane lookup and the command together.
 # A healthy tmux answers in about 5 ms; a wedged one costs the person typing in the bar this much.
 TMUX_DEADLINE = 0.5
-TMUX_ARGV0 = ('tmux', 'tmux: client')
 IDLE = FindStatus(0, 0, FindCount.exact)
 UNAVAILABLE = FindStatus(0, 0, FindCount.unavailable)
 
@@ -76,8 +75,8 @@ class Held(NamedTuple):
 # Parsing at the border: text the foreground processes and tmux gave us becomes a typed value or a TmuxError
 
 
-def server_args_of(args: Sequence[str]) -> tuple[str, ...]:
-    "The -L or -S option naming the server, from the client's arguments before its command"
+def server_args_of(args: Sequence[str], cwd: str | None) -> tuple[str, ...]:
+    "The -L or -S option naming the server, from the client's arguments before its command. A socket path is the client's cwd's."
     ans: tuple[str, ...] = ()
     it = iter(args)
     for arg in it:
@@ -87,7 +86,7 @@ def server_args_of(args: Sequence[str]) -> tuple[str, ...]:
             if flag in 'LSfcT':  # options that take a value, attached or as the next argument
                 value = arg[i + 1:] or next(it, '')
                 if flag in 'LS':
-                    ans = (f'-{flag}', value)
+                    ans = (f'-{flag}', os.path.join(cwd or '', value) if flag == 'S' else value)
                 break
     return ans
 
@@ -98,13 +97,13 @@ def tmux_client_of(
     "The tmux client among a window's foreground processes, None when it runs something else"
     for p in sorted(processes, key=lambda p: p['pid']):
         argv = list(p['cmdline'] or ())
-        if argv and os.path.basename(argv[0]) in TMUX_ARGV0:
+        if argv and os.path.basename(argv[0]) == 'tmux':
             env: Mapping[str, str] = {}
             # a client we cannot read the environment of has not changed where its server is; if it
             # has, the lookup of its pid among the server's clients fails loudly
             with suppress(Exception):
                 env = environ_of(p['pid'])
-            return TmuxClient(p['pid'], argv[0], server_args_of(argv[1:]), env.get('TMUX_TMPDIR'), env.get('PATH'))
+            return TmuxClient(p['pid'], argv[0], server_args_of(argv[1:], p['cwd']), env.get('TMUX_TMPDIR'), env.get('PATH'))
     return None
 
 
@@ -220,6 +219,16 @@ class TmuxFindState:
         # unchanged query cannot change: (pane, query, total)
         self.counted: tuple[str, str, int] | None = None
 
+    def reporting(self) -> bool:
+        "Whether the bar is told this state's status: a search holds a pane, or failed before it reached one"
+        return self.held is not None or self.status.count is FindCount.unavailable
+
+    def rest(self) -> None:
+        "Hold nothing and report nothing"
+        self.held = None
+        self.status = IDLE
+        self.counted = None
+
 
 class TmuxFind:
     "Find through the tmux client in a window's foreground. A value built for one operation, which has the deadline of it."
@@ -298,18 +307,14 @@ class TmuxFind:
         return FindStatus(0, total, FindCount.partial if counted.partial else FindCount.exact)
 
     def clear(self) -> None:
-        held = self.state.held
-        if held is None:
-            return
-        try:
-            self.tmux(held.client, *cancel_batch(held.pane))
-        except TmuxError as e:
-            log_error(f'Find in tmux: could not leave copy mode of {held.pane}: {e}')
-            if e.timed_out:
-                return  # tmux may still do it when it answers; the pair stays so the next clear tries again
-        self.state.held = None
-        self.state.status = IDLE
-        self.state.counted = None
+        if (held := self.state.held) is not None:
+            try:
+                self.tmux(held.client, *cancel_batch(held.pane))
+            except TmuxError as e:
+                log_error(f'Find in tmux: could not leave copy mode of {held.pane}: {e}')
+                if e.timed_out:
+                    return  # tmux may still do it when it answers; the pair stays so the next clear tries again
+        self.state.rest()
 
     def searching(self) -> bool:
         return self.state.held is not None

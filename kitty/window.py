@@ -3037,6 +3037,9 @@ class Window:
         for backend in (self.engine_find, TmuxFind.holding(self.tmux_find_state)):
             if backend is not None and type(backend) is not type(keep):
                 backend.clear()
+        # a tmux search that failed before it reached a pane holds nothing to clear, but is still reported
+        if type(keep) is not TmuxFind and self.tmux_find_state.held is None:
+            self.tmux_find_state.rest()
 
     def find_backend_to_search(self) -> FindBackend | None:
         "The backend a search runs in now, with the other one's search ended; None when the window has nothing to search"
@@ -3097,8 +3100,8 @@ class Window:
         if not is_macos:
             return
         engine = self.engine_find.status()
-        holder = self.find_holder()
-        status = engine if holder is self.engine_find else holder.status()
+        tmux = self.tmux_find_state
+        status = tmux.status if tmux.reporting() and not self.engine_find.searching() else engine
         if (tm := get_boss().os_window_map.get(self.os_window_id)) and tm.active_window is self:
             cocoa_update_find_bar(self.os_window_id, self.find_query, status.current, status.total, int(status.count))
 

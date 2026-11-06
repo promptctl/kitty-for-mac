@@ -78,9 +78,10 @@ class TmuxFindPureTest(BaseTest):
             ('-S', '/tmp/sock', 'attach', '-L', 'ignored'): ('-S', '/tmp/sock'),
             ('-2u', '-f', '/my/tmux.conf', '-L', 'a'): ('-L', 'a'),
             ('-f', '-L', 'a'): (),  # -L is the value of -f
-            ('-uSpath', 'a'): ('-S', 'path'),
+            ('-uSpath', 'a'): ('-S', '/work/path'),
+            ('-S', './sock', 'attach'): ('-S', '/work/./sock'),  # the client's cwd, not kitty's, is what a relative socket is relative to
         }.items():
-            self.ae(server_args_of(args), expected, args)
+            self.ae(server_args_of(args, '/work'), expected, args)
 
     def test_tmux_client_of(self):
         env = {'TMUX_TMPDIR': '/var/t', 'PATH': '/opt/bin'}
@@ -90,7 +91,6 @@ class TmuxFindPureTest(BaseTest):
 
         self.ae(of(proc(5, 'tmux', 'attach')), TmuxClient(5, 'tmux', (), '/var/t', '/opt/bin'))
         self.ae(of(proc(5, '/opt/homebrew/bin/tmux', '-L', 'w', 'a')), TmuxClient(5, '/opt/homebrew/bin/tmux', ('-L', 'w'), '/var/t', '/opt/bin'))
-        self.ae(of(proc(5, 'tmux: client')).exe, 'tmux: client')
         for not_tmux in (proc(5, 'vim', 'tmux'), proc(5, 'zsh'), proc(5, '/usr/bin/tmuxinator', 'start'), proc(5)):
             self.assertIsNone(of(not_tmux), not_tmux)
         self.assertIsNone(of())
@@ -470,9 +470,12 @@ class FakeTmux:
         self.calls: list[list[str]] = []
         self.client_pid = 77
         self.timeout_cancel = False
+        self.unreachable = False
 
     def __call__(self, argv: Any, env: Any, timeout: float) -> str:
         self.calls.append(list(argv))
+        if self.unreachable:
+            raise TmuxError('no server running')
         if 'list-clients' in argv:
             return f'{self.client_pid} {self.pane} 1\n'
         if 'display-message' in argv:
@@ -606,6 +609,19 @@ class TmuxFindWindowTest(BaseTest):
         self.ae(s.find_status()[1], 5)
         self.assertIs(w.find_holder(), w.engine_find)
         self.ae(w.pushed[-1][1:5], ('x', s.find_status()[0], 5, 0), 'the engine\'s matches are painted, so the bar says so')
+
+    def test_a_search_that_never_reached_a_pane_tells_the_bar_it_is_unavailable_until_it_ends(self):
+        s = self.screen_with_matches()
+        fake = FakeTmux()
+        fake.unreachable = True
+        w = self.make_window(s, fake)
+        self.run_in_tmux(w)
+        w.find('x')
+        self.assertIsNone(w.tmux_find_state.held, 'no pane was reached')
+        self.ae(w.pushed[-1][1:5], ('x', 0, 0, int(FindCount.unavailable)), 'not 0 matches: the search could not be made')
+        w.find_clear()
+        self.ae(w.pushed[-1][3:5], (0, int(FindCount.exact)))
+        self.ae(w.tmux_find_state.status, FindStatus(0, 0, FindCount.exact))
 
     def test_closing_a_window_that_holds_a_tmux_search_cancels_it(self):
         s = self.screen_with_matches()
