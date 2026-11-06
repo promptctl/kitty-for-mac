@@ -72,11 +72,11 @@ class TestExternalOutput(BaseTest):
         self.ae(unplaced, 'orphaned\nnever finished\n')
 
     def test_go_text_outside_json(self) -> None:
-        _, unplaced = parse(GoJsonParser(), 'go: downloading x\n' + go_events({'Action': 'pass', 'Package': 'p', 'Test': 'TestA'}))
-        self.ae(unplaced, 'go: downloading x\n')
+        _, unplaced = parse(GoJsonParser(), 'go: downloading x\n1\n' + go_events({'Action': 'pass', 'Package': 'p', 'Test': 'TestA'}))
+        self.ae(unplaced, 'go: downloading x\n1\n')
 
     def test_cargo_test_results(self) -> None:
-        records, _ = parse(
+        records, unplaced = parse(
             CargoTextParser(),
             """\
    Compiling kitty_rs v0.1.0
@@ -118,6 +118,8 @@ error: test failed, to rerun pass `--lib`
                 TestRecord(f'{target}::t::p', Outcome.failed, None, 'note: test did not panic as expected at src/lib.rs:14:8\n\n'),
             ],
         )
+        # the build before the first binary succeeded, so it is not an error to show
+        self.ae(unplaced, '')
 
     def test_cargo_binary_that_crashes_after_a_failure(self) -> None:
         # libtest prints failure output only at the end, so a crash leaves just the FAILED line

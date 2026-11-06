@@ -713,10 +713,11 @@ def run_tests(report_env: bool = False) -> None:
     os.environ['ASAN_OPTIONS'] = 'detect_leaks=0'
 
     # Validate filters before doing any work
-    if args.module and not tests_list and not has_go and not has_rust:
-        raise SystemExit('No test module named %s found' % args.module)
-    if args.name and not tests_list and not has_go and not has_rust:
-        raise SystemExit('No test named %s found' % ' '.join(args.name))
+    if not tests_list and not has_go and not has_rust:
+        if args.name:
+            raise SystemExit(f'No test named {" ".join(args.name)} found' + (f' in module {args.module}' if args.module else ''))
+        if args.module:
+            raise SystemExit(f'No test module named {args.module} found')
 
     if report_env:
         report_test_env()

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -68,8 +69,11 @@ class GoJsonParser:
         if not line:
             return []
         try:
-            evt: dict[str, Any] = json.loads(line)
+            evt: Any = json.loads(line)
         except json.JSONDecodeError:
+            evt = None
+        # a test2json event is a JSON object; any other line is text a program wrote around them
+        if not isinstance(evt, dict):
             self.unplaced.append(line + '\n')
             return []
         action = evt.get('Action', '')
@@ -170,7 +174,8 @@ class CargoTextParser:
     def finish(self) -> tuple[list[Record], str]:
         preamble = ''.join(self.preamble)
         if self.section is not None:
-            return self.section.close(), preamble
+            # cargo reached a test binary, so the preamble is a build that succeeded
+            return self.section.close(), ''
         # A built crate always has its unittests binary to run, so a stream that never
         # reached one is cargo failing before any test: the build, usually.
         return [UnitFailure('cargo build', preamble)], ''
@@ -258,8 +263,12 @@ class ExternalTestProc:
         shutil.rmtree(self.tdir, ignore_errors=True)
 
     def kill(self) -> None:
-        self.proc.kill()
-        self.finish()
+        # The process leads its own group (start_new_session), so this also kills the test
+        # binaries go and cargo spawned. A process whose output ended was reaped by read_available.
+        if self.active:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+            self.active = False
+            self.finish()
 
 
 # go {{{
@@ -273,6 +282,8 @@ def find_testable_go_packages() -> tuple[set[str], dict[str, list[str]]]:
     for dirpath, dirnames, filenames in os.walk(base):
         if 'b' in dirnames and os.path.basename(dirpath) == 'bypy':
             dirnames.remove('b')
+        if dirpath == base and 'build' in dirnames:
+            dirnames.remove('build')
         for f in filenames:
             if f.endswith('_test.go'):
                 q = os.path.relpath(dirpath, base)
@@ -343,7 +354,7 @@ def cargo_test_cmd() -> list[str]:
     # rust-toolchain.toml at the repo root pins the toolchain; it is found from the
     # current directory, which is the repo root like it is for go. CargoTextParser reads
     # uncoloured text, whatever colour the user's cargo config asks for.
-    return [cargo, 'test', '--locked', '--color', 'never', '--manifest-path', 'rust/Cargo.toml', '--target-dir', 'build/rust']
+    return [cargo, 'test', '--locked', '--color', 'never', '--manifest-path', 'rust/Cargo.toml', '--target-dir', 'build/rust/test']
 
 
 def cargo_env() -> dict[str, str]:
