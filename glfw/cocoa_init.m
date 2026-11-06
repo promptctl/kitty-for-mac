@@ -28,6 +28,7 @@
 
 #include "internal.h"
 #include "../kitty/monotonic.h"
+#include "key_destination.h"
 #include <sys/param.h> // For MAXPATHLEN
 #include <sys/sysctl.h>
 #include <stdatomic.h>
@@ -835,22 +836,15 @@ standard_edit_action(unichar key, NSEventModifierFlags mods) {
     return NULL;
 }
 
-// Whether a flagsChanged event leaves its modifier key's flag set. With both
-// keys of a pair held, releasing one still reads as down; the record for it
-// is then cleared by the release of the other.
-static bool
-modifier_key_is_down(NSEvent *event) {
-    NSEventModifierFlags flag = 0;
-    switch ([event keyCode]) {
-        case kVK_Shift: case kVK_RightShift: flag = NSEventModifierFlagShift; break;
-        case kVK_Control: case kVK_RightControl: flag = NSEventModifierFlagControl; break;
-        case kVK_Option: case kVK_RightOption: flag = NSEventModifierFlagOption; break;
-        case kVK_Command: case kVK_RightCommand: flag = NSEventModifierFlagCommand; break;
-        case kVK_CapsLock: flag = NSEventModifierFlagCapsLock; break;
-        case kVK_Function: flag = NSEventModifierFlagFunction; break;
-    }
-    return ([event modifierFlags] & flag) != 0;
-}
+// key_destination.h spells these out so kitty's tests can include it without AppKit.
+_Static_assert(kVK_Shift == 0x38 && kVK_RightShift == 0x3C && kVK_Control == 0x3B && kVK_RightControl == 0x3E &&
+               kVK_Option == 0x3A && kVK_RightOption == 0x3D && kVK_Command == 0x37 && kVK_RightCommand == 0x36 &&
+               kVK_Function == 0x3F, "key_destination.h key codes");
+_Static_assert(NX_DEVICELSHIFTKEYMASK == 0x2 && NX_DEVICERSHIFTKEYMASK == 0x4 && NX_DEVICELCTLKEYMASK == 0x1 &&
+               NX_DEVICERCTLKEYMASK == 0x2000 && NX_DEVICELALTKEYMASK == 0x20 && NX_DEVICERALTKEYMASK == 0x40 &&
+               NX_DEVICELCMDKEYMASK == 0x8 && NX_DEVICERCMDKEYMASK == 0x10 && NSEventModifierFlagFunction == 0x800000 &&
+               NX_SHIFTMASK == 0x20000 && NX_CONTROLMASK == 0x40000 && NX_ALTERNATEMASK == 0x80000 && NX_COMMANDMASK == 0x100000,
+               "key_destination.h modifier masks");
 
 // The responder that would take a nil-targeted action and says it can perform
 // it now, asked the way AppKit asks before enabling a menu item, or nil.
@@ -906,39 +900,48 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                                                                selector:@selector(applicationDidActivate:)
                                                                    name:NSWorkspaceDidActivateApplicationNotification
                                                                  object:nil];
-        static struct {
-            unsigned short virtual_key_code;
-            NSEventModifierFlags input_source_switch_modifiers;
-            NSTimeInterval timestamp;
-        } last_keydown_shortcut_event;
-        last_keydown_shortcut_event.virtual_key_code = 0xffff;
-        last_keydown_shortcut_event.input_source_switch_modifiers = 0;
-        void (^record_shortcut_keydown)(NSEvent *, NSEventModifierFlags) = ^(NSEvent *event, NSEventModifierFlags input_source_switch_modifiers) {
-            last_keydown_shortcut_event.virtual_key_code = [event keyCode];
-            last_keydown_shortcut_event.input_source_switch_modifiers = input_source_switch_modifiers;
-            last_keydown_shortcut_event.timestamp = [event timestamp];
+        // the modifiers of a pending switch to the next input source
+        static NSEventModifierFlags input_source_switch_modifiers = 0;
+        static KeyDestinationTable key_destinations;
+        void (^record_shortcut_keydown)(NSEvent *, NSEventModifierFlags) = ^(NSEvent *event, NSEventModifierFlags switch_modifiers) {
+            key_destination_consume(&key_destinations, [event keyCode], [event isARepeat]);
+            input_source_switch_modifiers = switch_modifiers;
         };
-        // Where each held key's press went, by keycode: 0 when not held,
-        // KEY_TO_APPKIT for a native view, otherwise the windowNumber of the
-        // terminal's window. Repeats and the release follow the press,
-        // whatever focus or the key window does in between.
-        enum { KEY_TO_APPKIT = -1 };
-        static NSInteger key_press_destination[128];
-        NSInteger (^current_key_destination)(void) = ^NSInteger(void) {
-            if (glfwCocoaNativeViewHasFocus()) return KEY_TO_APPKIT;
+        // A key window that is not a terminal (an alert, the About panel) is AppKit's.
+        bool (^is_terminal_window)(NSWindow *) = ^bool(NSWindow *w) {
+            for (_GLFWwindow *window = _glfw.windowListHead; window; window = window->next) if (window->ns.object == w) return true;
+            return false;
+        };
+        KeyDestination (^current_key_destination)(void) = ^KeyDestination(void) {
             NSWindow *kw = [NSApp keyWindow];
-            return kw ? [kw windowNumber] : 0;
+            if (!kw) return KEY_DEST_NOT_HELD;
+            if (glfwCocoaNativeViewHasFocus() || !is_terminal_window(kw)) return (KeyDestination){KEY_DEST_APPKIT, 0};
+            return (KeyDestination){KEY_DEST_TERMINAL, (uintptr_t)[kw windowNumber]};
         };
-        // Sends an event to the terminal in the window numbered dest, or
-        // returns it to AppKit, as the monitor's return value.
-        NSEvent * (^deliver_key_event)(NSEvent *, NSInteger, SEL) = ^NSEvent *(NSEvent *event, NSInteger dest, SEL handler) {
-            if (dest == KEY_TO_APPKIT) {
-                debug_input("key event left to AppKit as its press went to a native view\n");
-                return event;
+        // Sends an event to the terminal it is destined for, or returns it to
+        // AppKit, as the monitor's return value. current is the destination the
+        // table was just given. An AppKit event while a terminal has focus is
+        // dropped, so a repeat or release never reaches the terminal; with no
+        // key window it goes back to AppKit.
+        NSEvent * (^deliver_key_event)(NSEvent *, KeyDestination, KeyDestination, SEL) = ^NSEvent *(NSEvent *event, KeyDestination dest, KeyDestination current, SEL handler) {
+            switch (dest.kind) {
+                case KEY_DEST_APPKIT:
+                    if (current.kind != KEY_DEST_TERMINAL) return event;
+                    debug_input("key event dropped as its press went to a native view that no longer has focus\n");
+                    return nil;
+                case KEY_DEST_TERMINAL: {
+                    NSWindow *w = [NSApp windowWithWindowNumber:(NSInteger)dest.id];
+                    if (w && w.contentView) [w.contentView performSelector:handler withObject:event];
+                    else debug_input("key event ignored as the window its press went to is gone\n");
+                    return nil;
+                }
+                case KEY_DEST_CONSUMED:
+                    debug_input("key event ignored as a shortcut took its press\n");
+                    return nil;
+                case KEY_DEST_NONE:
+                    debug_input("key event ignored as no keyWindow present\n");
+                    return nil;
             }
-            NSWindow *w = dest > 0 ? [NSApp windowWithWindowNumber:dest] : nil;
-            if (w && w.contentView) [w.contentView performSelector:handler withObject:event];
-            else debug_input("key event ignored as no keyWindow present\n");
             return nil;
         };
 
@@ -976,52 +979,34 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                   return event;
               }
           }
-          last_keydown_shortcut_event.virtual_key_code = 0xffff;
-          const unsigned short vk = [event keyCode];
-          if (vk >= arraysz(key_press_destination)) return deliver_key_event(event, current_key_destination(), @selector(keyDown:));
-          if (![event isARepeat] || !key_press_destination[vk]) key_press_destination[vk] = current_key_destination();
-          return deliver_key_event(event, key_press_destination[vk], @selector(keyDown:));
+          const KeyDestination current = current_key_destination();
+          return deliver_key_event(event, key_destination_for_key_down(&key_destinations, [event keyCode], [event isARepeat], current), current, @selector(keyDown:));
         };
 
         NSEvent * (^keyup_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("----------------- key up --------------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
-          if (last_keydown_shortcut_event.virtual_key_code != 0xffff && last_keydown_shortcut_event.virtual_key_code == [event keyCode]) {
-              // ignore as the corresponding key down event triggered a menu bar or macOS shortcut
-              last_keydown_shortcut_event.virtual_key_code = 0xffff;
-              debug_input("keyUp ignored as corresponds to previous keyDown that triggered a shortcut\n");
-              return nil;
-          }
-          const unsigned short vk = [event keyCode];
-          if (vk >= arraysz(key_press_destination) || !key_press_destination[vk]) return deliver_key_event(event, current_key_destination(), @selector(keyUp:));
-          const NSInteger dest = key_press_destination[vk];
-          key_press_destination[vk] = 0;
-          return deliver_key_event(event, dest, @selector(keyUp:));
+          const KeyDestination current = current_key_destination();
+          return deliver_key_event(event, key_destination_for_key_up(&key_destinations, [event keyCode], current), current, @selector(keyUp:));
         };
 
         NSEvent * (^flags_changed_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("-------------- flags changed -----------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
-          last_keydown_shortcut_event.virtual_key_code = 0xffff;
-          if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed && is_apple_fn_global_shortcut(event)) {
+          const bool fn_shortcut = !_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed && is_apple_fn_global_shortcut(event);
+          // the table follows every modifier change; one handed to AppKit below is AppKit's
+          const KeyDestination current = fn_shortcut || input_source_switch_modifiers ? (KeyDestination){KEY_DEST_APPKIT, 0} : current_key_destination();
+          const KeyDestination dest = key_destination_for_flags_changed(&key_destinations, [event keyCode], [event modifierFlags], current);
+          if (fn_shortcut) {
               debug_input("flagsChanged triggered global fn shortcut ignoring\n");
               return event;
           }
           // switching to the next input source is only confirmed when all modifier keys are released
-          if (last_keydown_shortcut_event.input_source_switch_modifiers) {
-              if (!([event modifierFlags] & last_keydown_shortcut_event.input_source_switch_modifiers))
-                  last_keydown_shortcut_event.input_source_switch_modifiers = 0;
+          if (input_source_switch_modifiers) {
+              if (!([event modifierFlags] & input_source_switch_modifiers)) input_source_switch_modifiers = 0;
               return event;
           }
-          const unsigned short vk = [event keyCode];
-          if (vk >= arraysz(key_press_destination)) return deliver_key_event(event, current_key_destination(), @selector(flagsChanged:));
-          if (modifier_key_is_down(event)) {
-              if (!key_press_destination[vk]) key_press_destination[vk] = current_key_destination();
-              return deliver_key_event(event, key_press_destination[vk], @selector(flagsChanged:));
-          }
-          const NSInteger dest = key_press_destination[vk] ? key_press_destination[vk] : current_key_destination();
-          key_press_destination[vk] = 0;
-          return deliver_key_event(event, dest, @selector(flagsChanged:));
+          return deliver_key_event(event, dest, current, @selector(flagsChanged:));
         };
 
         _glfw.ns.keyUpMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyUp handler:keyup_block];

@@ -29,6 +29,7 @@
 #include "../kitty/monotonic.h"
 #include "glfw3.h"
 #include "internal.h"
+#include "key_destination.h"
 
 #include <Availability.h>
 #import <CoreServices/CoreServices.h>
@@ -1345,15 +1346,6 @@ is_ascii_control_char(char x) {
     }
 }
 
-static bool
-is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_mask, NSUInteger either_mask) {
-    bool target_pressed = (flags & target_mask) != 0;
-    bool other_pressed = (flags & other_mask) != 0;
-    bool either_pressed = (flags & either_mask) != 0;
-    if (either_pressed != (target_pressed || other_pressed)) return either_pressed;
-    return target_pressed;
-}
-
 - (void)flagsChanged:(NSEvent *)event {
     int action = GLFW_RELEASE;
     const char old_first_char = _glfw.ns.text[0];
@@ -1367,23 +1359,24 @@ is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_m
     const char *mod_name = "unknown";
 
     // Code for handling modifier key events copied form SDL_cocoakeyboard.m, with thanks. See IsModifierKeyPressedFunction()
-#define action_for(modname, target_mask, other_mask, either_mask)                                                          \
-    action = is_modifier_pressed([event modifierFlags], target_mask, other_mask, either_mask) ? GLFW_PRESS : GLFW_RELEASE; \
-    mod_name = #modname;                                                                                                   \
+#define action_for(modname)                                                                                         \
+    if (key_destination_modifier_index(keycode) < 0) return;                                                        \
+    action = key_destination_modifier_down([event modifierFlags], (unsigned)key_destination_modifier_index(keycode)) ? GLFW_PRESS : GLFW_RELEASE; \
+    mod_name = #modname;                                                                                            \
     break;
     switch (key) {
         case GLFW_FKEY_CAPS_LOCK:
             mod_name = "capslock";
             action = modifierFlags & NSEventModifierFlagCapsLock ? GLFW_PRESS : GLFW_RELEASE;
             break;
-        case GLFW_FKEY_LEFT_SUPER: action_for(super, NX_DEVICELCMDKEYMASK, NX_DEVICERCMDKEYMASK, NX_COMMANDMASK);
-        case GLFW_FKEY_RIGHT_SUPER: action_for(super, NX_DEVICERCMDKEYMASK, NX_DEVICELCMDKEYMASK, NX_COMMANDMASK);
-        case GLFW_FKEY_LEFT_CONTROL: action_for(ctrl, NX_DEVICELCTLKEYMASK, NX_DEVICERCTLKEYMASK, NX_CONTROLMASK);
-        case GLFW_FKEY_RIGHT_CONTROL: action_for(ctrl, NX_DEVICERCTLKEYMASK, NX_DEVICELCTLKEYMASK, NX_CONTROLMASK);
-        case GLFW_FKEY_LEFT_ALT: action_for(alt, NX_DEVICELALTKEYMASK, NX_DEVICERALTKEYMASK, NX_ALTERNATEMASK);
-        case GLFW_FKEY_RIGHT_ALT: action_for(alt, NX_DEVICERALTKEYMASK, NX_DEVICELALTKEYMASK, NX_ALTERNATEMASK);
-        case GLFW_FKEY_LEFT_SHIFT: action_for(shift, NX_DEVICELSHIFTKEYMASK, NX_DEVICERSHIFTKEYMASK, NX_SHIFTMASK);
-        case GLFW_FKEY_RIGHT_SHIFT: action_for(shift, NX_DEVICERSHIFTKEYMASK, NX_DEVICELSHIFTKEYMASK, NX_SHIFTMASK);
+        case GLFW_FKEY_LEFT_SUPER: action_for(super);
+        case GLFW_FKEY_RIGHT_SUPER: action_for(super);
+        case GLFW_FKEY_LEFT_CONTROL: action_for(ctrl);
+        case GLFW_FKEY_RIGHT_CONTROL: action_for(ctrl);
+        case GLFW_FKEY_LEFT_ALT: action_for(alt);
+        case GLFW_FKEY_RIGHT_ALT: action_for(alt);
+        case GLFW_FKEY_LEFT_SHIFT: action_for(shift);
+        case GLFW_FKEY_RIGHT_SHIFT: action_for(shift);
         default: return;
     }
 #undef action_for
