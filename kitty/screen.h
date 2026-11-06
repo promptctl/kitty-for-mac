@@ -187,6 +187,7 @@ typedef struct {
     struct {
         uint64_t generation;
         MainBufferView view;
+        size_t painted;
     } find_last_rendered;
 #endif
     bool has_focus;

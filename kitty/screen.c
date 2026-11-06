@@ -4536,23 +4536,29 @@ match_as_selection(FindMatch m, uint64_t abs_row0) {
     };
 }
 
+// The matches on the rows from the pixel scroll row through the last screen row: none while
+// the alternate screen shows, since the engine searches the main buffer.
+static const FindMatch*
+visible_find_matches(Screen *self, MainBufferView view, int extra_leading_rows, int scrolled_by, size_t *count) {
+    const int64_t top = (int64_t)view.abs_row0 - scrolled_by;
+    const uint64_t first = MAX(top - extra_leading_rows, 0), limit = view.shows_main_buffer ? (uint64_t)top + self->lines : first;
+    return kitty_rs_find_matches_in_lines(screen_find_engine(self), first, limit, count);
+}
+
 // [LAW:one-source-of-truth] the highlights are drawn from the engine's match list on every
 // paint and kept nowhere else; find_last_rendered records what they were drawn from.
 static void
 apply_find_matches(Screen *self, uint8_t *data, int extra_leading_rows, int scrolled_by) {
     const MainBufferView view = self->paused_rendering.expires_at ? self->paused_rendering.main_buffer_view : main_buffer_view(self);
-    // the rows from the pixel scroll row through the last screen row, as main buffer lines
-    const int64_t top = (int64_t)view.abs_row0 - scrolled_by;
-    const uint64_t first = MAX(top - extra_leading_rows, 0), limit = view.shows_main_buffer ? (uint64_t)top + self->lines : first;
-    FindEngine *engine = screen_find_engine(self);
     size_t count;
-    const FindMatch *m = kitty_rs_find_matches_in_lines(engine, first, limit, &count);
+    const FindMatch *m = visible_find_matches(self, view, extra_leading_rows, scrolled_by, &count);
     for (size_t i = 0; i < count; i++) {
         Selection s = match_as_selection(m[i], view.abs_row0);
         apply_selection(self, data, &s, FIND_MATCH_MASK, extra_leading_rows, scrolled_by);
     }
-    self->find_last_rendered.generation = kitty_rs_find_generation(engine);
+    self->find_last_rendered.generation = kitty_rs_find_generation(self->find_engine);
     self->find_last_rendered.view = view;
+    self->find_last_rendered.painted = count;
 }
 #endif
 
@@ -6347,9 +6353,13 @@ screen_is_selection_dirty(Screen *self) {
     if (self->paused_rendering.expires_at) return false;
     if (self->scrolled_by != self->last_rendered.scrolled_by) return true;
 #ifdef __APPLE__
+    // a moved view repaints only when it moves highlights: some were drawn or some are due
     const MainBufferView view = main_buffer_view(self);
-    if (kitty_rs_find_generation(screen_find_engine(self)) != self->find_last_rendered.generation ||
-        view.abs_row0 != self->find_last_rendered.view.abs_row0 || view.shows_main_buffer != self->find_last_rendered.view.shows_main_buffer)
+    size_t visible;
+    visible_find_matches(self, view, pixel_scroll_enabled(self), self->scrolled_by, &visible);
+    const bool view_moved = view.abs_row0 != self->find_last_rendered.view.abs_row0 || view.shows_main_buffer != self->find_last_rendered.view.shows_main_buffer;
+    if (kitty_rs_find_generation(self->find_engine) != self->find_last_rendered.generation ||
+        (view_moved && (visible || self->find_last_rendered.painted)))
         return true;
 #endif
     if (self->selections.last_rendered_count != self->selections.count || self->url_ranges.last_rendered_count != self->url_ranges.count ||
@@ -7058,8 +7068,9 @@ same_extent(const Selection *a, const Selection *b) {
     return memcmp(ea, eb, sizeof(ea)) == 0;
 }
 
-static PyObject *
-find_clear(Screen *self, PyObject *o UNUSED) {
+// Every change of query ends the current match, so it ends the selection that showed it.
+static void
+release_find_selection(Screen *self) {
     FindMatch current;
     if (kitty_rs_find_current(screen_find_engine(self), &current) && self->selections.count == 1) {
         // a selection's extent counts from screen row 0, so it stays comparable as output
@@ -7067,24 +7078,34 @@ find_clear(Screen *self, PyObject *o UNUSED) {
         const Selection mine = match_as_selection(current, main_buffer_view(self).abs_row0);
         if (same_extent(self->selections.items, &mine)) clear_selection(&self->selections);
     }
+}
+
+static PyObject *
+find_clear(Screen *self, PyObject *o UNUSED) {
+    release_find_selection(self);
     screen_find_clear(self);
     Py_RETURN_NONE;
 }
 
 static PyObject *
 find_set_current(Screen *self, PyObject *args) {
-    Py_ssize_t index;
-    if (!PyArg_ParseTuple(args, "n", &index)) return NULL;
-    FindEngine *engine = screen_find_engine(self);
-    if (index < 0 || !kitty_rs_find_set_current(engine, index)) {
-        PyErr_Format(PyExc_IndexError, "There is no find match %zd", index);
+    unsigned long long abs_start_line, abs_end_line;
+    FindMatch m;
+    if (!PyArg_ParseTuple(args, "(KIKI)", &abs_start_line, &m.start_x, &abs_end_line, &m.end_x)) return NULL;
+    m.abs_start_line = abs_start_line; m.abs_end_line = abs_end_line;
+    // a selection is made on the cells shown, and the alternate screen shows none of the main buffer's
+    const MainBufferView view = main_buffer_view(self);
+    if (!view.shows_main_buffer) {
+        PyErr_SetString(PyExc_RuntimeError, "A find match cannot be selected while the alternate screen shows");
         return NULL;
     }
-    FindMatch current;
-    kitty_rs_find_current(engine, &current);
+    if (!kitty_rs_find_set_current(screen_find_engine(self), m)) {
+        PyErr_Format(PyExc_LookupError, "There is no find match %R", PyTuple_GET_ITEM(args, 0));
+        return NULL;
+    }
     ensure_space_for(&self->selections, items, Selection, 1, capacity, 1, false);
     clear_selection(&self->selections);
-    self->selections.items[0] = match_as_selection(current, main_buffer_view(self).abs_row0);
+    self->selections.items[0] = match_as_selection(m, view.abs_row0);
     self->selections.count = 1;
     Py_RETURN_NONE;
 }
@@ -7097,6 +7118,7 @@ find_set_query(Screen *self, PyObject *args) {
     Py_ssize_t len;
     const char *query = PyUnicode_AsUTF8AndSize(text, &len);
     if (!query) return NULL;
+    release_find_selection(self);
     char err[512];
     if (!kitty_rs_find_set_query(self->find_engine, (const uint8_t*)query, len, case_insensitive, err, sizeof(err))) {
         PyErr_Format(PyExc_ValueError, "Cannot search for the query: %s", err);

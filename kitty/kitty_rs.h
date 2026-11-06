@@ -43,7 +43,7 @@ const FindMatch* kitty_rs_find_matches_in_lines(const FindEngine *engine, uint64
 // Counts the changes to the match list: equal generations mean the same matches.
 uint64_t kitty_rs_find_generation(const FindEngine *engine);
 // The current match, always one of the matches: set_query and the cuts that drop it end it.
-// Sets match index current, returning false and changing nothing when there is no such match.
-bool kitty_rs_find_set_current(FindEngine *engine, size_t index);
+// Makes m the current match, returning false and changing nothing when it is not one of the matches.
+bool kitty_rs_find_set_current(FindEngine *engine, FindMatch m);
 // Writes the current match to *out, returning false and writing nothing when there is none.
 bool kitty_rs_find_current(const FindEngine *engine, FindMatch *out);

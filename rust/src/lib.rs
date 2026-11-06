@@ -129,14 +129,14 @@ pub unsafe extern "C" fn kitty_rs_find_generation(engine: *const FindEngine) -> 
     unsafe { &*engine }.generation()
 }
 
-/// Makes match `index` current; false, changing nothing, when there is no such match.
+/// Makes `m` the current match; false, changing nothing, when it is not one of the matches.
 ///
 /// # Safety
 /// `engine` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kitty_rs_find_set_current(engine: *mut FindEngine, index: usize) -> bool {
+pub unsafe extern "C" fn kitty_rs_find_set_current(engine: *mut FindEngine, m: FindMatch) -> bool {
     // SAFETY: the caller's contract above.
-    unsafe { &mut *engine }.set_current(index)
+    unsafe { &mut *engine }.set_current(m)
 }
 
 /// Writes the current match to `out`; false, writing nothing, when there is none.

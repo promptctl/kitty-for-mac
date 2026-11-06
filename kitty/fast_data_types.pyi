@@ -1260,7 +1260,8 @@ class Screen:
 
     def find_set_query(self, text: str, case_insensitive: bool) -> int:
         """Search the main buffer for the literal text, replacing the previous search; returns
-        the number of matches. The empty text is no search. macOS only."""
+        the number of matches. The empty text is no search. Ends the current match and, like
+        find_clear, the selection it made. macOS only."""
         pass
 
     def find_clear(self) -> None:
@@ -1268,9 +1269,10 @@ class Screen:
         too while it is still the current match find_set_current made. macOS only."""
         pass
 
-    def find_set_current(self, index: int) -> None:
-        """Make match index (in find_matches order) the current match and the selection;
-        IndexError when there is no such match. macOS only."""
+    def find_set_current(self, match: tuple[int, int, int, int]) -> None:
+        """Make the match, as find_matches gives it, the current match and the selection;
+        LookupError when it is not one of the matches, RuntimeError while the alternate
+        screen shows. macOS only."""
         pass
 
     def find_count(self) -> int:
@@ -1279,7 +1281,7 @@ class Screen:
         pass
 
     def find_matches(self) -> tuple[tuple[int, int, int, int], ...]:
-        """Test only: the matches find_set_query found, less those whose lines have since
+        """The matches find_set_query found, less those whose lines have since
         left the history ring, in buffer order, as
         (abs_start_line, start_x, abs_end_line, end_x), both cells included. macOS only."""
         pass

@@ -1700,9 +1700,13 @@ PYWRAP1(patch_global_colors) {
     P(scrollbar_track_color);
     if (configured) {
         P(background);
-        const color_type prev_url_color = OPT(url_color);
+        // these reach the GPU in the cell uniform block, which is rebuilt only for a dirty profile
+        const color_type prev[] = {OPT(url_color), OPT(find_match_foreground), OPT(find_match_background)};
         P(url_color);
-        if (OPT(url_color) != prev_url_color) mark_all_color_profiles_dirty();
+        P(find_match_foreground);
+        P(find_match_background);
+        const color_type now[] = {OPT(url_color), OPT(find_match_foreground), OPT(find_match_background)};
+        if (memcmp(prev, now, sizeof(prev)) != 0) mark_all_color_profiles_dirty();
     }
     if (PyErr_Occurred()) return NULL;
     Py_RETURN_NONE;

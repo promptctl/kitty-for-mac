@@ -43,10 +43,10 @@ impl FindEngine {
     /// Starts a new search, dropping every match of the previous one. The query is a
     /// literal: `regex::escape` puts it through the regex crate's literal fast path.
     pub fn set_query(&mut self, query: &str, case_insensitive: bool) -> Result<(), regex::Error> {
+        let cleared = self.matches().len();
         self.matches.clear();
         self.evicted = 0;
-        self.current = None;
-        self.generation += 1;
+        self.changed(cleared);
         // a query that fails to build leaves the empty query, never the previous one
         self.regex = None;
         self.regex = (!query.is_empty())
@@ -122,11 +122,12 @@ impl FindEngine {
         self.generation
     }
 
-    /// Makes `matches()[index]` the current match; false, changing nothing, past the end.
-    pub fn set_current(&mut self, index: usize) -> bool {
-        let found = self.matches().get(index).copied();
-        self.current = found.or(self.current);
-        found.is_some()
+    /// Makes `m` the current match; false, changing nothing, when it is not one of `matches()`.
+    /// A match names itself by its absolute coordinates, which eviction does not move.
+    pub fn set_current(&mut self, m: FindMatch) -> bool {
+        let found = self.matches().binary_search(&m).is_ok();
+        self.current = found.then_some(m).or(self.current);
+        found
     }
 
     pub fn current(&self) -> Option<FindMatch> {
@@ -316,6 +317,11 @@ mod tests {
         e.evict_before(0);
         e.drop_lines_from(5);
         assert_eq!(e.generation(), g, "a feed that finds nothing and no-op cuts are not changes");
+        let mut empty = FindEngine::default();
+        let g0 = empty.generation();
+        empty.set_query("x", false).unwrap();
+        empty.set_query("", false).unwrap();
+        assert_eq!(empty.generation(), g0, "a query that leaves the list empty is not a change");
         let changes: [fn(&mut FindEngine); 3] = [|e| e.evict_before(1), |e| e.drop_lines_from(3), |e| e.set_query("x", false).unwrap()];
         for change in changes {
             let g = e.generation();
@@ -327,10 +333,10 @@ mod tests {
     #[test]
     fn the_current_match_is_always_in_the_list() {
         let mut e = engine_with_one_match_per_line(6);
-        assert!(!e.set_current(6));
+        assert!(!e.set_current(m(6, 0, 6, 0)));
         assert_eq!(e.current(), None);
-        assert!(e.set_current(2));
         let current = e.matches()[2];
+        assert!(e.set_current(current));
         assert_eq!(e.current(), Some(current));
         e.evict_before(2);
         e.drop_lines_from(3);
@@ -338,10 +344,11 @@ mod tests {
         e.drop_lines_from(2);
         assert_eq!(e.current(), None, "dropping its line ends it");
         let mut e = engine_with_one_match_per_line(6);
-        e.set_current(1);
+        e.set_current(e.matches()[1]);
         e.evict_before(2);
         assert_eq!(e.current(), None, "evicting its line ends it");
-        e.set_current(0);
+        assert!(!e.set_current(m(1, 0, 1, 0)), "an evicted match cannot become current");
+        e.set_current(e.matches()[0]);
         e.set_query("x", false).unwrap();
         assert_eq!(e.current(), None, "a new query ends it");
     }

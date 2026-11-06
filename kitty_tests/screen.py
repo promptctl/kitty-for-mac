@@ -1783,6 +1783,13 @@ class TestScreen(BaseTest):
         s.find_clear()
         self.assertTrue(s.is_selection_dirty())
         self.ae(highlighted(s), [])
+        # output that moves no highlight repaints nothing, with no query or with no match in view
+        s.draw('y'), s.carriage_return(), s.linefeed()
+        self.assertFalse(s.is_selection_dirty())
+        s.find_set_query('x0', False)
+        self.ae(highlighted(s), [])
+        s.draw('y'), s.carriage_return(), s.linefeed()
+        self.assertFalse(s.is_selection_dirty())
 
         # paused rendering keeps the highlights on the paused snapshot while output arrives
         s = self.create_screen(cols=10, lines=3, scrollback=50)
@@ -1836,26 +1843,46 @@ class TestScreen(BaseTest):
             s.draw(f'ab{i}')
             s.carriage_return(), s.linefeed()
         self.ae(s.find_set_query('ab', False), 4)
+        matches = s.find_matches()
         # the current match is the selection, also when its line is in history
         both = SELECTION_BIT | FIND_MATCH_BIT
-        s.find_set_current(3)
+        s.find_set_current(matches[3])
         self.ae(text(s), 'ab')
         self.ae(cells_with(s, both, all_bits=True), [(0, 0), (1, 0)])
-        s.find_set_current(0)
+        s.find_set_current(matches[0])
         self.ae(text(s), 'ab')
         s.scroll(3, True)
         self.ae(cells_with(s, both, all_bits=True), [(0, 0), (1, 0)])
         s.scroll(3, False)
-        self.assertRaises(IndexError, s.find_set_current, 4)
-        self.assertRaises(IndexError, s.find_set_current, -1)
+        first, *_, last = matches
+        self.assertRaises(LookupError, s.find_set_current, (last[0] + 1, 0, last[0] + 1, 1))
+        self.assertRaises(TypeError, s.find_set_current, 3)
         self.ae(text(s), 'ab')
         # find_clear clears the selection find made, even after output scrolled it
         s.draw('zz'), s.carriage_return(), s.linefeed()
         s.find_clear()
         self.assertFalse(s.has_selection())
-        # but not one the user made since
+        # and so does a new query, which ends the current match whether or not it finds any
         s.find_set_query('ab', False)
-        s.find_set_current(1)
+        s.find_set_current(s.find_matches()[1])
+        self.ae(s.find_set_query('abz', False), 0)
+        self.assertFalse(s.has_selection())
+        # a match names itself, so one still in the list stays selectable after eviction moves the list
+        s.find_set_query('ab', False)
+        kept = s.find_matches()[-1]
+        while first in s.find_matches():
+            s.draw('qq'), s.carriage_return(), s.linefeed()
+        self.assertIn(kept, s.find_matches())
+        self.assertRaises(LookupError, s.find_set_current, first)
+        s.find_set_current(kept)
+        self.ae(text(s), 'ab')
+        # the alternate screen shows none of the main buffer, so nothing there can be selected
+        s.toggle_alt_screen()
+        self.assertRaises(RuntimeError, s.find_set_current, kept)
+        s.toggle_alt_screen()
+        # find_clear leaves alone a selection the user made since
+        s.find_set_query('ab', False)
+        s.find_set_current(s.find_matches()[1])
         s.start_selection(0, 0)
         s.update_selection(1, 0)
         selected = text(s)
