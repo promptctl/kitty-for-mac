@@ -20,3 +20,10 @@ panic = "abort"
 
 [dependencies]
 regex = "1"
+
+# Every line of this crate is ours, so it is held to clippy's strict groups; a plain
+# `cargo clippy --all-targets -- -D warnings` enforces the bar.
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }

@@ -1771,11 +1771,12 @@ class TestScreen(BaseTest):
         s.scroll(3, False)
         self.ae(highlighted(s), [(0, 0)])
 
-        # output that scrolls the screen moves the highlights with the text and marks them dirty
+        # output that scrolls the screen moves the highlights with the text and marks them dirty;
+        # the query is live, so the new output's match is highlighted too
         self.assertFalse(s.is_selection_dirty())
         s.draw('x6'), s.carriage_return(), s.linefeed()
         self.assertTrue(s.is_selection_dirty())
-        self.ae(highlighted(s), [])
+        self.ae(highlighted(s), [(0, 0)])
         self.assertFalse(s.is_selection_dirty())
         s.find_set_query('x6', False)
         self.assertTrue(s.is_selection_dirty())
@@ -1803,6 +1804,31 @@ class TestScreen(BaseTest):
         self.assertTrue(s.pause_rendering(True, 5000))
         s.draw('row0zz'), s.carriage_return(), s.linefeed()
         self.ae(s.current_selections(), before)
+
+        # the matches follow the live buffer while the paused frame keeps those it showed: an
+        # erased match stays lit and a match drawn in the pause is unlit until it ends
+        s = self.create_screen(cols=10, lines=3)
+        s.draw('abc')
+        self.ae(search(s, 'b'), [(1, 0)])
+        self.assertTrue(s.pause_rendering(True, 5000))
+        s.cursor_position(1, 1), s.erase_in_line(2)
+        s.cursor_position(2, 1), s.draw('bb')
+        self.ae(highlighted(s), [(1, 0)])
+        self.ae(s.find_matches(), ((1, 0, 1, 0), (1, 1, 1, 1)))
+        self.assertTrue(s.pause_rendering(False))
+        self.ae(highlighted(s), [(0, 1), (1, 1)])
+
+        # a margin scroll that pushes the current match out of its region ends it, and the
+        # first paint after shows no selection where the match was
+        s = self.create_screen(cols=5, lines=3)
+        s.draw('x\r\n'), s.draw('aa\r\n'), s.draw('c')
+        self.ae(search(s, 'aa'), [(0, 1), (1, 1)])
+        s.find_set_current((1, 0, 1, 1))
+        self.ae(cells_with(s, SELECTION_BIT), [(0, 1), (1, 1)])
+        s.set_margins(1, 2)
+        s.cursor_position(1, 1), s.reverse_index()
+        self.ae(cells_with(s, SELECTION_BIT), [])
+        self.ae(s.find_status(), (0, 0, False))
 
         # the alternate screen shows no main buffer line, so no main buffer match
         s = self.create_screen(cols=10, lines=2)
@@ -2147,6 +2173,193 @@ class TestScreen(BaseTest):
                 w.set_find_query('b')
             Boss.find_bar_closed(boss, 1)
             self.ae([w.screen.find_status()[1] for w in (a, b, other_tab)], [0, 0, 0])
+
+    def test_find_live(self):
+        from kitty.constants import is_macos
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+
+        # the oracle: the live matches, after whatever happened since the query was set with
+        # no read in between, are the matches a fresh search of the buffer finds now
+        def live_is_fresh(s, query):
+            live = s.find_matches()
+            s.find_set_query(query, False)
+            self.ae(live, s.find_matches())
+            return live
+
+        def lines_of(s, *texts):
+            for t in texts:
+                s.draw(t), s.carriage_return(), s.linefeed()
+
+        def mark_prompt(s):
+            parse_bytes(s, b'\033]133;A\007')
+
+        # output appended after the query is found without a new query
+        s = self.create_screen(cols=10, lines=3, scrollback=20)
+        lines_of(s, 'ax')
+        s.find_set_query('x', False)
+        lines_of(s, 'bx', 'cx', 'dx')
+        self.ae(live_is_fresh(s, 'x'), tuple((i, 1, i, 1) for i in range(4)))
+
+        # a match overwritten in place disappears
+        s = self.create_screen(cols=10, lines=3)
+        s.draw('abc')
+        s.find_set_query('b', False)
+        s.cursor_position(1, 2), s.draw('z')
+        self.ae(live_is_fresh(s, 'b'), ())
+
+        # a full small scrollback evicts: the count shrinks, the rest keep their coordinates
+        s = self.create_screen(cols=5, lines=2, scrollback=3)
+        lines_of(s, *(f'x{i}' for i in range(4)))
+        s.find_set_query('x', False)
+        lines_of(s, *(f'y{i}' for i in range(4)))
+        self.ae(live_is_fresh(s, 'x'), ())
+        s.find_set_query('x', False)
+        lines_of(s, 'x4', 'y')
+        self.ae(live_is_fresh(s, 'x'), ((8, 0, 8, 0),))
+
+        def wrapped_history(scrollback=50):
+            s = self.create_screen(cols=6, lines=3, scrollback=scrollback)
+            lines_of(s, *(f'{i}ab cd ef ab' for i in range(8)))
+            s.draw('last ab')
+            return s
+
+        # resizes: other widths rewrap every line, another height moves lines to and from history
+        for lines, cols in ((3, 9), (3, 4), (5, 6), (2, 6)):
+            s = wrapped_history()
+            s.find_set_query('ab', False)
+            s.resize(lines, cols)
+            self.assertTrue(live_is_fresh(s, 'ab'))
+        # narrower then back with the ring full: the column count and row 0's number come back
+        s = wrapped_history(scrollback=8)
+        s.find_set_query('ab', False)
+        s.resize(3, 3), s.resize(3, 6)
+        self.assertTrue(live_is_fresh(s, 'ab'))
+
+        # clear_scrollback and reset
+        s = wrapped_history()
+        s.find_set_query('ab', False)
+        s.clear_scrollback()
+        self.assertTrue(live_is_fresh(s, 'ab'))
+        s.reset()
+        lines_of(s, 'zz ab')
+        # a reset writes new text at the numbers the cleared lines had
+        self.ae(live_is_fresh(s, 'ab'), ((15, 3, 15, 4),))
+
+        # eviction cuts a wrapped line: its rest is a logical line of its own, holding a match the
+        # cut line did not
+        s = self.create_screen(cols=5, lines=2, scrollback=2)
+        s.draw('bbbbaaab'), s.carriage_return(), s.linefeed()
+        self.ae(s.find_set_query('aa', False), 1)
+        lines_of(s, 'c', 'd')
+        self.ae(live_is_fresh(s, 'aa'), ((1, 0, 1, 1),))
+        # and so does clear_scrollback while screen row 0 continues a history line
+        s = self.create_screen(cols=5, lines=2, scrollback=10)
+        s.draw('zz\r\n'), s.draw('bbbbaaab'), s.carriage_return(), s.linefeed()
+        self.ae(s.find_set_query('aa', False), 1)
+        s.clear_scrollback()
+        self.ae(live_is_fresh(s, 'aa'), ((2, 0, 2, 1),))
+
+        # the buffer gets shorter, with a match on what is dropped and nothing output after
+        s = self.create_screen(cols=5, lines=3, scrollback=10)
+        lines_of(s, 'h0', 'h1', 'h2')
+        s.draw('x')
+        self.ae(s.find_set_query('x', False), 1)
+        s.reverse_scroll(1, True)
+        self.ae(live_is_fresh(s, 'x'), ())
+
+        def command_in_history(s, output_lines=6):
+            s.draw('before\r\n')
+            mark_prompt(s), s.draw('$ p1\r\n')
+            lines_of(s, *(f'x{i}' for i in range(output_lines)))
+            mark_prompt(s), s.draw('$ ')
+
+        s = self.create_screen(cols=8, lines=3, scrollback=20)
+        command_in_history(s)
+        self.ae(s.find_set_query('x', False), 6)
+        self.assertTrue(s.erase_last_command())
+        self.ae(live_is_fresh(s, 'x'), ())
+        s = wrapped_history()
+        s.find_set_query('ab', False)
+        last = s.find_matches()[-1]
+        s.resize(3, 12)
+        self.assertNotIn(last, live_is_fresh(s, 'ab'))
+
+        # the history ring rewrites lines between reads, deeper than the rows the record keeps
+        # above screen row 0: pops then pushes write other text at the popped lines' numbers,
+        # and so does output after erase_last_command
+        s = self.create_screen(cols=5, lines=10, scrollback=30)
+        lines_of(s, 'x0', *(f'h{i}' for i in range(18)))
+        self.ae(s.find_set_query('x', False), 1)
+        # x0 is the oldest of the ten history lines: popping them all puts it on screen row 0
+        s.reverse_scroll(10, True)
+        s.cursor_position(1, 1), s.draw('zz')
+        s.cursor_position(10, 1)
+        for i in range(10):
+            s.linefeed()
+        self.ae(live_is_fresh(s, 'x'), ())
+        s = self.create_screen(cols=8, lines=3, scrollback=30)
+        command_in_history(s, output_lines=16)
+        s.find_set_query('x', False)
+        self.assertTrue(s.erase_last_command())
+        lines_of(s, *(f'q{i}' for i in range(18)))
+        self.ae(live_is_fresh(s, 'x'), ())
+
+        # a scaled char whose top row is in history: erasing its bottom row on screen erases
+        # it, and with it the text its top row held
+        s = self.create_screen(cols=8, lines=3, scrollback=10)
+        s.draw('zz\r\n'), draw_multicell(s, 'M', scale=2)
+        s.cursor_position(3, 1), s.linefeed(), s.linefeed()
+        self.ae(s.find_set_query('M', False), 1)
+        s.cursor_position(1, 1), s.erase_in_line(2, False)
+        self.ae(live_is_fresh(s, 'M'), ())
+        # and so does erase_last_command when the command's prompt starts on that bottom row
+        s = self.create_screen(cols=10, lines=10, scrollback=15)
+        draw_multicell(s, 'M', scale=2), s.draw('a\r\n')
+        mark_prompt(s), s.draw('$ p1\r\n')
+        lines_of(s, *(str(i) for i in range(9)))
+        mark_prompt(s), s.draw('$ ')
+        self.ae(s.find_set_query('M', False), 1)
+        self.assertTrue(s.erase_last_command())
+        self.ae(live_is_fresh(s, 'M'), ())
+
+        # a text-cache GC renumbers the text of every cell, the record's copy included: an
+        # overwrite that lands on the index the old text used is still a change
+        s = self.create_screen(cols=5, lines=2, scrollback=1)
+        s.draw('ó\r\n'), s.draw('é')
+        lines_of(s, '', 'p', 'q')
+        lines_of(s, 'é')
+        s.find_set_query('é', False)
+        self.ae(len(s.find_matches()), 1)
+        y = s.find_matches()[0][0] - s.abs_line_at_viewport_top()
+        # no read between the GC and the overwrite: a read would re-record the renumbered cells.
+        # The GC renumbers é to the first index, so á takes the next, which é had before
+        s.garbage_collect_text_cache()
+        s.cursor_position(y + 1, 1), s.draw('á')
+        self.ae(live_is_fresh(s, 'é'), ())
+
+        # a DECSTBM margin scroll moves the current match with no history push: it stays
+        # current, and a step moves past it rather than onto it
+        s = self.create_screen(cols=5, lines=5)
+        for t in ('a', 'x1', 'x2', 'x3'):
+            s.draw(t), s.carriage_return(), s.linefeed()
+        s.draw('b')
+        s.find_set_query('x', False)
+        s.find_set_current((2, 0, 2, 0))
+        s.set_margins(2, 4)
+        s.cursor_position(4, 1), s.index()
+        self.ae(s.find_matches(), ((1, 0, 1, 0), (2, 0, 2, 0)))
+        self.ae(s.find_status(), (1, 2, False))
+        self.ae(s.find_step(False), (2, 0, 2, 0))
+
+        # unrelated output leaves the current match current
+        s = self.create_screen(cols=5, lines=4, scrollback=10)
+        lines_of(s, 'x0', 'x1')
+        s.find_set_query('x', False)
+        s.find_set_current((1, 0, 1, 0))
+        lines_of(s, 'y', 'y', 'y')
+        self.ae(s.find_status(), (2, 2, False))
+        self.ae(s.find_step(False), (0, 0, 0, 0))
 
     def test_user_marking(self):
 

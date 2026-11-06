@@ -184,6 +184,8 @@ typedef struct {
 #ifdef __APPLE__
     // owned, never NULL; the empty query is "no search"
     struct FindEngine *find_engine;
+    // owned; what the engine was last fed (kitty/find.h), NULL while the query is empty
+    struct FindFedRecord *find_record;
     // what screen_apply_selection last painted the find highlights from
     struct {
         uint64_t generation;
@@ -247,6 +249,10 @@ typedef struct {
         Selections selections, url_ranges;
         ExtraCursors extra_cursors;
         MainBufferView main_buffer_view;
+#ifdef __APPLE__
+        // the find matches on the paused rows, as the engine had them when the pause began
+        struct PausedFindMatches { struct FindMatch *items; size_t count, capacity; } find_matches;
+#endif
     } paused_rendering;
     CharsetState charset;
     ListOfChars *lc;

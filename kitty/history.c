@@ -150,6 +150,7 @@ create_historybuf(PyTypeObject *type, unsigned int xnum, unsigned int ynum, unsi
         self->line = alloc_line(self->text_cache);
         self->line->xnum = xnum;
         self->pagerhist = alloc_pagerhist(pagerhist_sz);
+        self->abs_lowest_rewritten_line = UINT64_MAX;
     }
     return self;
 }
@@ -361,6 +362,8 @@ historybuf_pop_line(HistoryBuf *self, Line *line) {
     index_type idx = (self->start_of_data + self->count - 1) % self->ynum;
     init_line(self, idx, line);
     self->count--;
+    // the next push writes other text at the popped line's number
+    self->abs_lowest_rewritten_line = MIN(self->abs_lowest_rewritten_line, self->abs_oldest_line + self->count);
     return true;
 }
 
@@ -374,6 +377,9 @@ historybuf_delete_newest_lines(HistoryBuf *self, index_type count) {
     init_line(self, idx, self->line);
     CPUCell *cells = self->line->cpu_cells;
     self->count--;
+    // the numbers from the first deleted line on are free for other text; the multicell rows
+    // nuked above it lie within find's reach band below this
+    self->abs_lowest_rewritten_line = MIN(self->abs_lowest_rewritten_line, self->abs_oldest_line + self->count);
     for (index_type x = 0; x < self->line->xnum; x++) {
         CPUCell *c = cells + x;
         if (c->is_multicell && c->y) {
@@ -728,6 +734,8 @@ historybuf_alloc_for_rewrap(unsigned int columns, HistoryBuf *self) {
         ans->count = 0;
         ans->start_of_data = 0;
         ans->abs_oldest_line = self->abs_oldest_line;
+        // a rewrap re-cuts, and so renumbers, every line it keeps
+        ans->abs_lowest_rewritten_line = self->abs_oldest_line;
     }
     return ans;
 }

@@ -24,11 +24,47 @@ typedef struct {
     const FindCellSpan *cells;
 } FindLogicalLine;
 
+// The absolute lines a walk and its refeed cover, [from, limit): from is the first line of a
+// logical line, and limit UINT64_MAX is "onward", wherever the buffer now ends. The walker and
+// the engine's splice take the same value, so they agree on which lines were re-fed. Made only
+// by the two constructors below, which are the only code that finds a logical line's bounds.
+typedef struct {
+    uint64_t from, limit;
+} FindRefeedRange;
+
+// From the start of the logical line holding abs_line onward. abs_line is in the buffer or is
+// its end, where the range re-feeds nothing and drops the matches past the end.
+FindRefeedRange find_onward_range(Screen *self, uint64_t abs_line);
+// The logical line that is first in the buffer.
+FindRefeedRange find_first_logical_line_range(Screen *self);
+
 // Receives each logical line in buffer order; returning false stops the walk.
 typedef bool (*FindLineSink)(void *ctx, const FindLogicalLine *line);
 
 typedef enum { FIND_WALK_COMPLETE, FIND_WALK_SINK_STOPPED, FIND_WALK_OUT_OF_MEMORY } FindWalkResult;
 
-// Feeds every logical line of the main buffer, oldest history line through the last screen
-// row, to sink. Sets no Python error: the caller turns FIND_WALK_OUT_OF_MEMORY into one.
-FindWalkResult find_walk_main_buffer(Screen *self, FindLineSink sink, void *ctx);
+// Feeds each logical line of the main buffer in lines, through the last screen row at most,
+// to sink. Sets no Python error: the caller turns FIND_WALK_OUT_OF_MEMORY into one.
+FindWalkResult find_walk_main_buffer(Screen *self, FindRefeedRange lines, FindLineSink sink, void *ctx);
+
+// A multicell char's row index y is SCALE_BITS wide and less than its scale, so an edit made
+// from the screen reaches at most this many rows up into history (nuke_multicell_char_at and
+// halve_multicell_width in kitty/screen.c, through range_line_).
+#define FIND_MULTICELL_REACH ((1u << SCALE_BITS) - 2)
+
+// What the engine was last fed, so the next read can tell which lines' text may have changed:
+// the main buffer's CPU cells (which hold all of a cell's text) from FIND_MULTICELL_REACH
+// history rows above screen row 0 through the last screen row, and the oldest line then.
+typedef struct FindFedRecord {
+    uint64_t first_line, abs_oldest_line;
+    index_type rows, columns;
+    CPUCell *cells;
+} FindFedRecord;
+
+// A new record of the buffer as it is now; NULL when out of memory.
+FindFedRecord* find_record_capture(Screen *self);
+void find_record_free(FindFedRecord *r);
+// The first absolute line whose text may differ from what r recorded, taking the history
+// ring's own rewrites into account: a line in the buffer, or the buffer's end when only
+// recorded lines past it are gone; UINT64_MAX when there is none.
+uint64_t find_changed_from(Screen *self, const FindFedRecord *r);

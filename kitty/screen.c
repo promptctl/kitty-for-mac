@@ -810,6 +810,8 @@ dealloc(Screen *self) {
     Py_CLEAR(self->marker);
 #ifdef __APPLE__
     kitty_rs_find_engine_free(self->find_engine);
+    find_record_free(self->find_record);
+    free(self->paused_rendering.find_matches.items);
 #endif
     PyMem_Free(self->overlay_line.cpu_cells);
     PyMem_Free(self->overlay_line.gpu_cells);
@@ -1121,6 +1123,10 @@ screen_garbage_collect_text_cache(Screen *self) {
     if (self->overlay_line.cpu_cells) text_cache_gc_process_cells(self->text_cache, gc, self->overlay_line.cpu_cells, self->overlay_line.xnum);
     if (self->overlay_line.original_line.cpu_cells)
         text_cache_gc_process_cells(self->text_cache, gc, self->overlay_line.original_line.cpu_cells, self->overlay_line.xnum);
+#ifdef __APPLE__
+    // find's record compares its copied cells with the live ones, so it holds indices too
+    if (self->find_record) text_cache_gc_process_cells(self->text_cache, gc, self->find_record->cells, (size_t)self->find_record->rows * self->find_record->columns);
+#endif
     tc_gc_end(self->text_cache, gc);
     // the GC remaps all cache indices so the memoized tab indices are stale
     memset(&self->tab_cache, 0, sizeof(self->tab_cache));
@@ -3893,6 +3899,10 @@ main_buffer_view(const Screen *self) {
 bool
 screen_shows_main_buffer(const Screen *self) { return main_buffer_view(self).shows_main_buffer; }
 
+#ifdef __APPLE__
+static void pause_find_matches(Screen *self);
+#endif
+
 bool
 screen_pause_rendering(Screen *self, bool pause, int for_in_ms) {
     if (!pause) {
@@ -3946,9 +3956,13 @@ screen_pause_rendering(Screen *self, bool pause, int for_in_ms) {
             self->paused_rendering.linebuf->line_attrs[y] = src->attrs;
         } else linebuf_clear_line(self->paused_rendering.linebuf, y, true);
     }
+    self->paused_rendering.main_buffer_view = main_buffer_view(self);
+#ifdef __APPLE__
+    // before the selections are copied: reading the engine can release find's selection
+    pause_find_matches(self);
+#endif
     copy_selections(&self->paused_rendering.selections, &self->selections);
     copy_selections(&self->paused_rendering.url_ranges, &self->url_ranges);
-    self->paused_rendering.main_buffer_view = main_buffer_view(self);
     if (self->extra_cursors.count) {
         self->paused_rendering.extra_cursors.locations = calloc(self->extra_cursors.count, sizeof(self->extra_cursors.locations[0]));
         if (self->paused_rendering.extra_cursors.locations) {
@@ -4515,16 +4529,109 @@ screen_is_cell_selected(Screen *self, index_type x, index_type y) {
 #define FIND_MATCH_MASK 32
 
 #ifdef __APPLE__
-// [LAW:single-enforcer] every read of the engine goes through here, so no reader sees a
-// match whose line has left the history ring: the ring's own counter decides what is gone.
-// Eviction can move the match list, so a pointer into it is good only until the next call.
-// [LAW:one-source-of-truth] and no reader sees a current match other than the one find's
-// selection shows: once the user changes that selection or anything clears it, find has no
-// current match, so the next step starts from where the user now is.
+static bool
+feed_find_refeed(void *refeed, const FindLogicalLine *l) {
+    kitty_rs_find_refeed_line(refeed, l);
+    return true;
+}
+
+// Searches lines afresh and splices the result in; false when out of memory, leaving the
+// engine as it was.
+static bool
+refeed_find_engine(Screen *self, FindRefeedRange lines) {
+    FindRefeed *refeed = kitty_rs_find_refeed_new(self->find_engine, lines);
+    // the sink never stops the walk, so running out of memory is its only failure
+    if (find_walk_main_buffer(self, lines, feed_find_refeed, refeed) == FIND_WALK_OUT_OF_MEMORY) {
+        kitty_rs_find_refeed_free(refeed);
+        return false;
+    }
+    kitty_rs_find_splice(self->find_engine, refeed);
+    return true;
+}
+
+// Records the buffer the engine now holds the matches of, and that the ring's rewrites so far
+// are accounted for; false when out of memory.
+static bool
+record_fed_buffer(Screen *self) {
+    find_record_free(self->find_record);
+    self->find_record = find_record_capture(self);
+    self->historybuf->abs_lowest_rewritten_line = UINT64_MAX;
+    return self->find_record != NULL;
+}
+
+// the empty query compiles, so this cannot fail
+static void
+screen_find_clear(Screen *self) {
+    char err[1];
+    kitty_rs_find_set_query(self->find_engine, (const uint8_t*)"", 0, false, err, sizeof(err));
+    find_record_free(self->find_record);
+    self->find_record = NULL;
+}
+
+// Every change of query ends the current match, so it ends the selection that showed it;
+// one the user has made or changed since is theirs, not find's to clear.
+static void
+release_find_selection(Screen *self) {
+    if (self->selections.count && self->selections.items->is_find_match) clear_selection(&self->selections);
+}
+
+// Brings the matches up to date with the main buffer: those whose lines left the ring go,
+// and the lines whose text may have changed since the last read are searched again.
+static void
+sync_find_engine(Screen *self) {
+    kitty_rs_find_evict_before(self->find_engine, self->historybuf->abs_oldest_line);
+    const FindFedRecord *r = self->find_record;
+    // the empty query has no matches to keep up to date
+    if (!r) return;
+    const uint64_t changed = find_changed_from(self, r);
+    // eviction or a clear that cut a wrapped line leaves its rest a logical line of its own,
+    // unchanged in its cells but able to hold matches the cut line did not
+    const bool oldest_moved = r->abs_oldest_line != self->historybuf->abs_oldest_line;
+    if (!oldest_moved && changed == UINT64_MAX) return;
+    const bool fed = (!oldest_moved || refeed_find_engine(self, find_first_logical_line_range(self))) &&
+        (changed == UINT64_MAX || refeed_find_engine(self, find_onward_range(self, changed)));
+    if (fed && record_fed_buffer(self)) return;
+    // [LAW:no-silent-failure] a part-fed list is not an answer
+    log_error("Out of memory while keeping find matches up to date, the search was cleared");
+    release_find_selection(self);
+    screen_find_clear(self);
+}
+
+// The cells the selection covers in buffer order, from its first through just past its last
+// (abs_row0 being screen row 0's absolute line), written only when it covers some: the empty
+// selection a click leaves shows nothing and outlives the click.
+static bool
+selection_extent(Screen *self, uint64_t abs_row0, FindPos *start, FindPos *end) {
+    if (!self->selections.count) return false;
+    IterationData idata;
+    iteration_data(self->selections.items, &idata, self->columns, -(int)self->historybuf->count, 0);
+    if (iteration_data_is_empty(self, &idata)) return false;
+    // iteration rows count from screen row 0 with history negative, as match_as_selection's do
+    const index_type last_x_limit = idata.y_limit - 1 == idata.y ? idata.first.x_limit : idata.last.x_limit;
+    *start = (FindPos){.line = abs_row0 + idata.y, .x = idata.first.x};
+    *end = (FindPos){.line = abs_row0 + idata.y_limit - 1, .x = last_x_limit};
+    return true;
+}
+
+// [LAW:single-enforcer] every read of the engine goes through here, so every reader sees the
+// matches of the buffer as it is now. The sync can move the match list, so a pointer into it
+// is good only until the next call.
+// [LAW:one-source-of-truth] the current match is the match find's selection shows. It
+// follows that selection when the text moves (index_selection moves it in a margin scroll and
+// the re-fed match is adopted), and ends with it when the user changes it or anything clears
+// it, so the next step starts from where the user now is. A find selection over cells that no
+// longer hold a match is released.
 static FindEngine*
 screen_find_engine(Screen *self) {
-    kitty_rs_find_evict_before(self->find_engine, self->historybuf->abs_oldest_line);
-    if (!self->selections.count || !self->selections.items->is_find_match) kitty_rs_find_end_current(self->find_engine);
+    sync_find_engine(self);
+    FindPos start, end;
+    const bool shows_match = self->selections.count && self->selections.items->is_find_match &&
+        selection_extent(self, main_buffer_view(self).abs_row0, &start, &end) &&
+        kitty_rs_find_set_current(self->find_engine, (FindMatch){.abs_start_line = start.line, .start_x = start.x, .abs_end_line = end.line, .end_x = end.x - 1});
+    if (!shows_match) {
+        release_find_selection(self);
+        kitty_rs_find_end_current(self->find_engine);
+    }
     return self->find_engine;
 }
 
@@ -4552,13 +4659,37 @@ visible_find_matches(Screen *self, MainBufferView view, int extra_leading_rows, 
     return kitty_rs_find_matches_in_lines(screen_find_engine(self), first, limit, count);
 }
 
+// A paused frame shows the rows as the pause found them, while the engine follows the live
+// buffer, so the frame keeps the matches on its rows as they were then, as it keeps the
+// selections.
+static void
+pause_find_matches(Screen *self) {
+    size_t count;
+    const FindMatch *m = visible_find_matches(self, self->paused_rendering.main_buffer_view, self->paused_rendering.pixel_scroll, self->paused_rendering.scrolled_by, &count);
+    struct PausedFindMatches *p = &self->paused_rendering.find_matches;
+    p->count = 0;
+    if (p->capacity < count) {
+        FindMatch *items = realloc(p->items, count * sizeof(FindMatch));
+        if (!items) {
+            log_error("Out of memory while pausing rendering, the paused frame shows no find matches");
+            return;
+        }
+        p->items = items;
+        p->capacity = count;
+    }
+    if (count) memcpy(p->items, m, count * sizeof(FindMatch));
+    p->count = count;
+}
+
 // [LAW:one-source-of-truth] the highlights are drawn from the engine's match list on every
-// paint and kept nowhere else; find_last_rendered records what they were drawn from.
+// live paint, and from the pause's copy of it on a paused one, and kept nowhere else;
+// find_last_rendered records what they were drawn from.
 static void
 apply_find_matches(Screen *self, uint8_t *data, int extra_leading_rows, int scrolled_by) {
-    const MainBufferView view = self->paused_rendering.expires_at ? self->paused_rendering.main_buffer_view : main_buffer_view(self);
-    size_t count;
-    const FindMatch *m = visible_find_matches(self, view, extra_leading_rows, scrolled_by, &count);
+    const bool paused = self->paused_rendering.expires_at;
+    const MainBufferView view = paused ? self->paused_rendering.main_buffer_view : main_buffer_view(self);
+    size_t count = self->paused_rendering.find_matches.count;
+    const FindMatch *m = paused ? self->paused_rendering.find_matches.items : visible_find_matches(self, view, extra_leading_rows, scrolled_by, &count);
     for (size_t i = 0; i < count; i++) {
         Selection s = match_as_selection(m[i], view.abs_row0);
         apply_selection(self, data, &s, FIND_MATCH_MASK, extra_leading_rows, scrolled_by);
@@ -4575,6 +4706,11 @@ screen_apply_selection(Screen *self, void *address_, size_t size) {
     memset(address, 0, size);
     const unsigned offset = pixel_scroll_enabled(self);
     const unsigned scrolled_by = self->paused_rendering.expires_at ? self->paused_rendering.scrolled_by : self->scrolled_by;
+#ifdef __APPLE__
+    // [LAW:no-ambient-temporal-coupling] first: reading the engine can release find's
+    // selection, which the selections painted below must then not include
+    apply_find_matches(self, address, offset, scrolled_by);
+#endif
     Selections *sel = self->paused_rendering.expires_at ? &self->paused_rendering.selections : &self->selections;
     for (size_t i = 0; i < sel->count; i++) apply_selection(self, address, sel->items + i, 1, offset, scrolled_by);
     sel->last_rendered_count = sel->count;
@@ -4585,10 +4721,7 @@ screen_apply_selection(Screen *self, void *address_, size_t size) {
         apply_selection(self, address, s, 2, offset, scrolled_by);
     }
     sel->last_rendered_count = sel->count;
-#ifdef __APPLE__
-    apply_find_matches(self, address, offset, scrolled_by);
-#endif
-    address += (size_t)offset * self->columns;
+    address +=(size_t)offset * self->columns;
     size -= (size_t)offset * self->columns;
     ExtraCursors *ec = self->paused_rendering.expires_at ? &self->paused_rendering.extra_cursors : &self->extra_cursors;
     for (unsigned i = 0; i < ec->count; i++) {
@@ -7039,7 +7172,7 @@ static PyObject *
 find_logical_lines(Screen *self, PyObject *o UNUSED) {
     RAII_PyObject(ans, PyList_New(0));
     if (!ans) return NULL;
-    switch (find_walk_main_buffer(self, append_logical_line_tuple, ans)) {
+    switch (find_walk_main_buffer(self, find_onward_range(self, self->historybuf->abs_oldest_line), append_logical_line_tuple, ans)) {
         case FIND_WALK_COMPLETE: return Py_NewRef(ans);
         // the sink stops only when a Python call failed, so the error is already set
         case FIND_WALK_SINK_STOPPED: return NULL;
@@ -7049,31 +7182,11 @@ find_logical_lines(Screen *self, PyObject *o UNUSED) {
 }
 
 #ifdef __APPLE__
-static bool
-feed_find_engine(void *engine, const FindLogicalLine *l) {
-    kitty_rs_find_feed_line(engine, l);
-    return true;
-}
-
 static PyObject *
 find_count(Screen *self, PyObject *o UNUSED) {
     size_t count;
     kitty_rs_find_matches(screen_find_engine(self), &count);
     return PyLong_FromSize_t(count);
-}
-
-// the empty query compiles, so this cannot fail
-static void
-screen_find_clear(Screen *self) {
-    char err[1];
-    kitty_rs_find_set_query(self->find_engine, (const uint8_t*)"", 0, false, err, sizeof(err));
-}
-
-// Every change of query ends the current match, so it ends the selection that showed it;
-// one the user has made or changed since is theirs, not find's to clear.
-static void
-release_find_selection(Screen *self) {
-    if (self->selections.count && self->selections.items->is_find_match) clear_selection(&self->selections);
 }
 
 static PyObject *
@@ -7131,13 +7244,7 @@ find_step_origin(Screen *self, MainBufferView view, index_type top_inset, FindPo
     const uint64_t top = view.abs_row0 - self->scrolled_by;
     *start = (FindPos){.line = top + top_inset};
     *end = (FindPos){.line = top + self->lines};
-    IterationData idata;
-    if (self->selections.count) iteration_data(self->selections.items, &idata, self->columns, -(int)self->historybuf->count, 0);
-    if (!self->selections.count || iteration_data_is_empty(self, &idata)) return;
-    // iteration rows count from screen row 0 with history negative, as match_as_selection's do
-    const index_type last_x_limit = idata.y_limit - 1 == idata.y ? idata.first.x_limit : idata.last.x_limit;
-    *start = (FindPos){.line = view.abs_row0 + idata.y, .x = idata.first.x};
-    *end = (FindPos){.line = view.abs_row0 + idata.y_limit - 1, .x = last_x_limit};
+    selection_extent(self, view.abs_row0, start, end);
 }
 
 // Scrolls a match that is not wholly on screen below the top_inset rows something covers to the
@@ -7193,13 +7300,16 @@ find_set_query(Screen *self, PyObject *args) {
     const char *query = PyUnicode_AsUTF8AndSize(text, &len);
     if (!query) return NULL;
     release_find_selection(self);
+    // the previous query's matches and the record of what they were found in go first
+    screen_find_clear(self);
     char err[512];
     if (!kitty_rs_find_set_query(self->find_engine, (const uint8_t*)query, len, case_insensitive, err, sizeof(err))) {
         PyErr_Format(PyExc_ValueError, "Cannot search for the query: %s", err);
         return NULL;
     }
-    // the sink never stops the walk, so running out of memory is its only failure
-    if (find_walk_main_buffer(self, feed_find_engine, self->find_engine) == FIND_WALK_OUT_OF_MEMORY) {
+    // a query's matches are kept up to date, so the buffer they came from is recorded; the
+    // empty query has none, so there is nothing to walk or record
+    if (len && (!refeed_find_engine(self, find_onward_range(self, self->historybuf->abs_oldest_line)) || !record_fed_buffer(self))) {
         // a part-walked buffer is not an answer
         screen_find_clear(self);
         return PyErr_NoMemory();
