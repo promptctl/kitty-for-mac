@@ -30,6 +30,15 @@
 #include <Carbon/Carbon.h>
 #if defined(__OBJC__)
 #import <Cocoa/Cocoa.h>
+// The terminal's key input. The key monitors (cocoa_init.m) deliver the keys the
+// key-destination table gives the terminal by these, never by NSResponder's keyDown:,
+// keyUp: and flagsChanged:, which also carry the keys a native view passes up the
+// responder chain.
+@protocol GLFWTerminalKeyInput
+- (void)terminalKeyDown:(NSEvent *)event;
+- (void)terminalKeyUp:(NSEvent *)event;
+- (void)terminalFlagsChanged:(NSEvent *)event;
+@end
 #else
 typedef void *id;
 #endif
