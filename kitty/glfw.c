@@ -1029,8 +1029,9 @@ window_focus_callback(GLFWwindow *w, int focused) {
 static void
 native_view_focus_callback(GLFWwindow *w, bool native_view_has_focus) {
     // The first responder changes from inside other callbacks (a key action that shows the bar), so
-    // the callback window of the outer one is put back
-    OSWindow *outer = global_state.callback_os_window;
+    // the callback window of the outer one is put back. on_focus runs Python, which can open or
+    // close OS windows and move them in memory, so the outer window is kept by id and looked up again.
+    const id_type outer_id = global_state.callback_os_window ? global_state.callback_os_window->id : 0;
     if (set_callback_window(w)) {
         OSWindow *osw = global_state.callback_os_window;
         if (osw->native_view_focused != native_view_has_focus) {
@@ -1042,7 +1043,7 @@ native_view_focus_callback(GLFWwindow *w, bool native_view_has_focus) {
             request_tick_callback();
         }
     }
-    global_state.callback_os_window = outer;
+    global_state.callback_os_window = outer_id ? os_window_for_id(outer_id) : NULL;
 }
 
 #define TAB_DRAG_MIME_NUMBER 400
