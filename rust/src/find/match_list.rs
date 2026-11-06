@@ -72,21 +72,18 @@ impl MatchList {
     // the blocks non-empty and merged
     /// Replaces the matches at `range` with `found`, in O(found + `BLOCK_CAP` + blocks).
     pub fn replace(&mut self, range: Range<usize>, found: Vec<FindMatch>) {
+        // [LAW:no-silent-failure] a reversed range would insert inside the matches it keeps
+        assert!(range.start <= range.end, "a replaced range is in order");
         let ((first, at), (last, to)) = (self.locate(range.start), self.locate(range.end));
         let n = self.blocks.len();
-        // the kept matches around the range, cut from the blocks at its ends
-        let tail = if last < n {
-            self.blocks[last].split_off(to)
-        } else {
-            Vec::new()
-        };
-        let head = if first < n {
-            let mut head = std::mem::take(&mut self.blocks[first]);
-            head.truncate(at);
-            head
-        } else {
-            Vec::new()
-        };
+        // the kept matches around the range: the head is copied out, and the tail is the end
+        // block itself, trimmed in place, so a cut at the list's front (eviction, a backward
+        // fill's insert) allocates nothing
+        let head = self.blocks.get(first).map_or_else(Vec::new, |b| b[..at].to_vec());
+        let tail = self.blocks.get_mut(last).map_or_else(Vec::new, |b| {
+            b.drain(..to);
+            std::mem::take(b)
+        });
         // a few matches, as streaming output finds, become a block as they are, uncopied
         let found = if found.len() <= BLOCK_CAP {
             vec![found]
