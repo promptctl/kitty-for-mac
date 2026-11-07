@@ -5,12 +5,14 @@ import os
 import signal
 import subprocess
 import tempfile
+from contextlib import redirect_stderr
+from io import StringIO
 from unittest.mock import patch
 
 from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
 from kitty.constants import is_macos, kitty_exe
 
-from .base import BaseTest, Exited, KilledAtDeadline, ReapedElsewhere, await_exit
+from .base import PTY, BaseTest, Exited, KilledAtDeadline, ReapedElsewhere, await_exit
 
 
 def spawn_and_wait_for_ready(code: str, what: str) -> subprocess.Popen:
@@ -305,3 +307,23 @@ class AwaitExitTest(BaseTest):
 
     def test_a_signal_death_names_the_signal(self):
         self.ae(str(Exited(-signal.SIGSEGV)), 'was killed by signal SIGSEGV')
+
+
+class PTYTeardownTest(BaseTest):
+    def _torn_down(self, pty: PTY, *, times: int) -> str:
+        err = StringIO()
+        with redirect_stderr(err):
+            for _ in range(times):
+                pty.__del__()
+        return err.getvalue()
+
+    def test_a_child_reaped_elsewhere_is_named_not_raised(self):
+        pty = PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)'])
+        os.waitpid(pty.child_pid, 0)
+        self.ae(self._torn_down(pty, times=1), f'PTY child {pty.child_pid} {ReapedElsewhere()}\n')
+
+    def test_a_pty_torn_down_twice_reaps_once_and_reports_nothing(self):
+        with PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
+            pass
+        self.ae(self._torn_down(pty, times=1), '')
+        self.assertRaises(ChildProcessError, os.waitpid, pty.child_pid, os.WNOHANG)
