@@ -65,11 +65,13 @@ on_system_color_scheme_change(GLFWColorScheme appearance, bool is_initial_value)
     const char *which = appearance_name(appearance);
     debug("system color-scheme changed to: %s is_initial_value: %d\n", which, is_initial_value);
     call_boss(on_system_color_scheme_change, "sO", which, is_initial_value ? Py_True : Py_False);
+    request_tick_callback();
 }
 
 static void
 on_clipboard_lost(GLFWClipboardType which) {
     call_boss(on_clipboard_lost, "s", which == GLFW_CLIPBOARD ? "clipboard" : "primary");
+    request_tick_callback();
 }
 
 static bool
