@@ -1723,7 +1723,7 @@ process_global_state(void *data) {
 static PyObject *
 main_loop(ChildMonitor *self, PyObject *a UNUSED) {
 #define main_loop_doc "The main thread loop"
-    state_check_timer = add_main_loop_timer(1000, true, do_state_check, self, NULL);
+    state_check_timer = add_main_loop_timer(1000, true, do_state_check, NULL, NULL);
     run_main_loop(process_global_state, self);
 #ifdef __APPLE__
     cocoa_free_actions_data();

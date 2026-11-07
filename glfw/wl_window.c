@@ -1385,7 +1385,7 @@ abortOnFatalError(int last_error) {
     if (!abort_called) {
         abort_called = true;
         _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: fatal display error: %s", strerror(last_error));
-        _glfwDeliver(_glfw.callbacks.application_close, GLFW_APPLICATION_CLOSE_FATAL_ERROR);
+        if (_glfw.callbacks.application_close.fn) _glfwDeliver(_glfw.callbacks.application_close, GLFW_APPLICATION_CLOSE_FATAL_ERROR);
         else {
             _GLFWwindow *window = _glfw.windowListHead;
             while (window) {
@@ -3090,14 +3090,14 @@ glfwRequestWaylandFrameEvent(GLFWwindow *handle, unsigned long long id, GLFWwayl
     _GLFWwindow *window = (_GLFWwindow *)handle;
     static const struct wl_callback_listener frame_listener = {.done = frame_handle_redraw};
     if (window->wl.frameCallbackData.current_wl_callback) wl_callback_destroy(window->wl.frameCallbackData.current_wl_callback);
+    window->wl.frameCallbackData.callback.fn = callback;
     if (window->wl.waiting_for_swap_to_commit) {
-        callback(id);
+        _glfwDeliver(window->wl.frameCallbackData.callback, id);
         window->wl.frameCallbackData.id = 0;
         window->wl.frameCallbackData.callback.fn = NULL;
         window->wl.frameCallbackData.current_wl_callback = NULL;
     } else {
         window->wl.frameCallbackData.id = id;
-        window->wl.frameCallbackData.callback.fn = callback;
         window->wl.frameCallbackData.current_wl_callback = wl_surface_frame(window->wl.surface);
         if (window->wl.frameCallbackData.current_wl_callback) {
             wl_callback_add_listener(window->wl.frameCallbackData.current_wl_callback, &frame_listener, window);

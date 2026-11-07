@@ -158,7 +158,26 @@ def unclassified_glfw_callbacks(glfw_dir: str = GLFW_DIR) -> list[str]:
             for line in src.splitlines():
                 if re.search(r'\.fn\s*\(', line):
                     problems.append(f'{name}: event invoked outside _glfwDeliver: {line.strip()}')
+    # A client callback GLFW is handed as an argument is not storage, so its kind comes from its
+    # type: a type some declaration makes an event is an event wherever its value travels.
+    event_types = set()
+    for src in sources.values():
+        event_types.update(re.findall(r'_GLFW_EVENT\(\s*(\w+)\s*\)', src))
+    for name, src in sources.items():
+        for fn_name, params, body in _function_definitions(src):
+            for p in re.finditer(r'\b(\w+)\s+\**\s*(\w+)\s*(?:,|$)', params):
+                if p.group(1) in event_types and re.search(rf'(?<![\w.>]){p.group(2)}\s*\(', body):
+                    problems.append(f'{name}: {fn_name} calls its {p.group(1)} argument {p.group(2)} outside _glfwDeliver')
     return problems
+
+
+def _function_definitions(src: str):
+    for m in re.finditer(r'\b(\w+)\s*\(([^()]*)\)\s*\{', src):
+        depth, end = 1, m.end()
+        while depth and end < len(src):
+            depth += {'{': 1, '}': -1}.get(src[end], 0)
+            end += 1
+        yield m.group(1), m.group(2), src[m.end():end]
 
 
 class TestGLFWCallbackKinds(BaseTest):
