@@ -40,25 +40,14 @@ append_codepoint(FindLineBuf *b, char_type ch, FindCellSpan span) {
     return true;
 }
 
-// The text rules of unicode_in_range (as line_as_unicode applies them) and apply_mark, with
-// each codepoint's cells recorded: trailing never-written cells are not text.
+// The line's text by line_text_cell, with each codepoint's cells recorded: trailing
+// never-written cells are not text.
 static bool
 append_physical_line(FindLineBuf *b, const Line *line, uint32_t row) {
     RAII_ListOfChars(lc);
     const index_type limit = xlimit_for_line(line);
     for (index_type x = 0; x < limit; x++) {
-        const CPUCell *c = line->cpu_cells + x;
-        // wide-char continuation cells and the lower rows of scaled text carry no text of their own
-        if (c->is_multicell && (c->x || c->y)) continue;
-        text_in_cell(c, line->text_cache, &lc);
-        FindCellSpan span = {.row = row, .x = x, .x_last = x};
-        // a never-written interior cell reads as one space
-        if (!lc.chars[0]) lc.chars[0] = ' ';
-        if (lc.chars[0] == '\t') {
-            span.x_last = tab_padding_end(line->cpu_cells, x, limit, lc.count > 1 ? lc.chars[1] : 0);
-            // the tab's second char is its padding count, not text
-            lc.count = 1;
-        } else if (c->is_multicell) span.x_last = MIN(line->xnum, x + mcd_x_limit(c)) - 1;
+        const FindCellSpan span = {.row = row, .x = x, .x_last = line_text_cell(line, x, limit, &lc)};
         // a grapheme's codepoints (base and combining marks) all map to its one cell
         for (unsigned i = 0; i < lc.count; i++) {
             if (!append_codepoint(b, lc.chars[i], span)) return false;
@@ -115,6 +104,10 @@ find_walk_main_buffer(Screen *self, FindRefeedRange lines, FindLineSink sink, vo
     __attribute__((cleanup(free_find_line_buf))) FindLineBuf b = {0};
     // allocated up front so even an empty first line hands the sink non-NULL pointers
     if (!reserve(&b, 4 * lb->xnum)) return FIND_WALK_OUT_OF_MEMORY;
+    // the character before the oldest line in its logical line, if its evicted head held one;
+    // the array keeps the pointer non-NULL when it is empty
+    char before[4];
+    const size_t before_len = hb->evicted_head_last_char ? encode_utf8(hb->evicted_head_last_char, before) : 0;
     // [LAW:single-enforcer] the range already starts a logical line and ends one or runs onward:
     // the walk feeds exactly its lines, so the refeed it fills covers what its splice replaces
     const index_type start = lines.from - hb->abs_oldest_line;
@@ -131,8 +124,7 @@ find_walk_main_buffer(Screen *self, FindRefeedRange lines, FindLineSink sink, vo
         }
         if (!append_physical_line(&b, line, i - first)) return FIND_WALK_OUT_OF_MEMORY;
         if (!continues(self, hb->abs_oldest_line + i)) {
-            const FindLineStart line_start = first == 0 && hb->oldest_line_continues_evicted ? FIND_LINE_CONTINUES_EVICTED : FIND_LINE_STARTS_LINE;
-            const FindLogicalLine l = {.abs_first_line = hb->abs_oldest_line + first, .start = line_start, .rows = i - first + 1, .text = b.text, .text_len = b.len, .cells = b.cells};
+            const FindLogicalLine l = {.abs_first_line = hb->abs_oldest_line + first, .before = before, .before_len = first == 0 ? before_len : 0, .rows = i - first + 1, .text = b.text, .text_len = b.len, .cells = b.cells};
             if (!sink(ctx, &l)) return FIND_WALK_SINK_STOPPED;
             b.len = 0;
             first = i + 1;
@@ -149,7 +141,7 @@ find_record_capture(Screen *self) {
     const index_type rows = buffer_limit(self) - first_line;
     FindFedRecord *r = malloc(sizeof(FindFedRecord));
     if (!r) return NULL;
-    *r = (FindFedRecord){.first_line = first_line, .abs_oldest_line = hb->abs_oldest_line, .oldest_line_continues_evicted = hb->oldest_line_continues_evicted, .rows = rows, .columns = columns};
+    *r = (FindFedRecord){.first_line = first_line, .abs_oldest_line = hb->abs_oldest_line, .evicted_head_last_char = hb->evicted_head_last_char, .rows = rows, .columns = columns};
     r->cells = malloc((size_t)rows * columns * sizeof(CPUCell));
     if (!r->cells) { free(r); return NULL; }
     for (index_type y = 0; y < rows; y++) memcpy(r->cells + (size_t)y * columns, cells_at(self, first_line + y), columns * sizeof(CPUCell));

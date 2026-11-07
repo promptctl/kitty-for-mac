@@ -4652,8 +4652,9 @@ sync_find_engine(Screen *self) {
     const FindFedRecord *r = self->find_record;
     if (!r) return;
     const uint64_t oldest = self->historybuf->abs_oldest_line, changed = find_changed_from(self, r);
-    // the oldest line moved, or a clear of an empty ring changed how it starts without moving it
-    const bool oldest_line_differs = r->abs_oldest_line != oldest || r->oldest_line_continues_evicted != self->historybuf->oldest_line_continues_evicted;
+    // the oldest line moved, or a clear of an empty ring changed the character before it
+    // without moving it
+    const bool oldest_line_differs = r->abs_oldest_line != oldest || r->evicted_head_last_char != self->historybuf->evicted_head_last_char;
     if (!oldest_line_differs && changed == UINT64_MAX) return;
     // eviction or a clear that cut a wrapped line leaves its rest a logical line of its own,
     // unchanged in its cells but able to hold matches the cut line did not; it needs searching

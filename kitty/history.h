@@ -45,9 +45,13 @@ typedef struct {
     // it: the oldest line then starts mid-line. Eviction sets it from the line it drops; a clear,
     // and a delete of the oldest line, leave the oldest line starting a line.
     bool oldest_line_continues_evicted;
+    // The last character of the text the evicted rows of the oldest line's logical line held
+    // (line_last_text_char), 0 when they held none or the oldest line starts a line: what \b
+    // reads before the oldest line. Every writer of oldest_line_continues_evicted sets it too.
+    char_type evicted_head_last_char;
     // The lowest absolute line this ring's own operations have renumbered or rewritten since
     // find last read it (pop, delete_newest_lines, rewrap), UINT64_MAX for none. Pushes,
-    // eviction and clear move only abs_oldest_line and oldest_line_continues_evicted. Find resets it each time it records the
+    // eviction and clear move only abs_oldest_line and how the oldest line starts. Find resets it each time it records the
     // buffer it fed (kitty/screen.c, record_fed_buffer).
     uint64_t abs_lowest_rewritten_line;
 } HistoryBuf;

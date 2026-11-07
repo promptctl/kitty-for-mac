@@ -513,6 +513,18 @@ line_as_unicode(Line *self, bool skip_zero_cells, ANSIBuf *buf) {
     return ans;
 }
 
+char_type
+line_last_text_char(const Line *line) {
+    RAII_ListOfChars(lc);
+    char_type last = 0;
+    const index_type limit = xlimit_for_line(line);
+    for (index_type x = 0; x < limit; x++) {
+        x = line_text_cell(line, x, limit, &lc);
+        if (lc.count) last = lc.chars[lc.count - 1];
+    }
+    return last;
+}
+
 static PyObject *
 sprite_at(Line *self, PyObject *x) {
 #define sprite_at_doc "[x] -> Return the sprite in the specified cell"
