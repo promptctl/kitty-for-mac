@@ -244,9 +244,10 @@ class FakeClaudeSession:
     def finder(self, state: ClaudeFindState, op: TmuxOperation | None = None) -> ClaudeFind:
         return ClaudeFind(self.t.client(), state, op or patient(), self.host(), self.pane())
 
-    def holding(self, state: ClaudeFindState, op: TmuxOperation | None = None) -> ClaudeFind:
-        f = ClaudeFind.holding(state, op or patient(), self.host())
-        assert f is not None, 'the window holds no Claude search'
+    def holding(self, state: ClaudeFindState, op: TmuxOperation | None = None, host: ClaudeHost | None = None) -> ClaudeFind:
+        f = ClaudeFind.holding(state, op or patient(), host or self.host())
+        if f is None:
+            raise AssertionError('the window holds no Claude search')
         return f
 
 
@@ -256,7 +257,8 @@ FIRST_VIEW = {'': Prompt(), 'sticky': Prompt(), 'dialog': Unrecognised(FAKE_DIAL
 
 @contextmanager
 def fake_claude(*initial: str, mode: str = '', then: str = 'sleep 600') -> Any:
-    assert PYTHON
+    if PYTHON is None:
+        raise AssertionError('python3 is not on PATH')
     with tempfile.TemporaryDirectory(prefix='kitty-claude-find-') as d:
         conversation, keylog = os.path.join(d, 'conversation.txt'), os.path.join(d, 'keys.log')
         with open(conversation, 'w') as f:
@@ -534,8 +536,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             while c.t.fmt('#{alternate_on}') != '0' and time.monotonic() < deadline:
                 time.sleep(0.02)
             keys = len(c.keys())
-            f = ClaudeFind.holding(state, patient(), ClaudeHost(ps=lambda timeout: f'{pane_pid} 1 /bin/sh\n', environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': c.dir}))
-            assert f is not None
+            f = c.holding(state, host=ClaudeHost(ps=lambda timeout: f'{pane_pid} 1 /bin/sh\n', environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': c.dir}))
             f.clear()
             self.assertIsNone(state.held)
             self.ae(len(c.keys()), keys)

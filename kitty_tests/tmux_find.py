@@ -116,12 +116,14 @@ def proc(pid: int, *cmdline: str) -> ProcessDesc:
 
 def holding(state: TmuxFindState, op: TmuxOperation | None = None) -> TmuxFind:
     f = TmuxFind.holding(state, op or patient())
-    assert f is not None, 'the window holds no tmux search'
+    if f is None:
+        raise AssertionError('the window holds no tmux search')
     return f
 
 
 def held_pane(state: TmuxFindState) -> str:
-    assert state.held is not None, 'the window holds no tmux search'
+    if state.held is None:
+        raise AssertionError('the window holds no tmux search')
     return state.held.pane
 
 
@@ -236,7 +238,8 @@ class TmuxFindPureTest(BaseTest):
 # A tmux server of our own with a real client attached on a pty, so that pane lookup runs through list-clients
 class PrivateTmux:
     def __init__(self, directory: str) -> None:
-        assert TMUX
+        if TMUX is None:
+            raise AssertionError('tmux is not on PATH')
         self.exe: str = TMUX
         self.socket = os.path.join(directory, 'sock')
         self.master, slave = pty.openpty()
@@ -295,7 +298,8 @@ class PrivateTmux:
             os.close(self.master)
 
     def client(self) -> TmuxClient:
-        assert self.client_proc is not None
+        if self.client_proc is None:
+            raise AssertionError('the tmux client has not been started')
         return TmuxClient(self.client_proc.pid, self.exe, ('-S', self.socket), None, os.environ.get('PATH'))
 
     def finder(self, state: TmuxFindState, op: TmuxOperation | None = None) -> TmuxFind:
