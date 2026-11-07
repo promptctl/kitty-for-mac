@@ -741,17 +741,19 @@ def run_tests(report_env: bool = False) -> None:
             worker_pids, read_fds = fork_test_workers(tests_list)
 
     # Launch the external suites immediately so they run in parallel with Python env setup and tests.
+    # The launch is inside the try, so one that fails still terminates the workers and any external already started.
     externals: list[ExternalTestProc] = []
-    if has_go:
-        if report_env:
-            print('Go executable:', go_exe())
-            print('Go packages being tested:', ' '.join(go_pkgs))
-        externals.append(run_go(go_pkgs, args.name))
-    if has_rust:
-        externals.append(run_cargo(cargo_cmd, rust_paths))
-    sys.stdout.flush()
     externals_ok = True
     try:
+        if has_go:
+            if report_env:
+                print('Go executable:', go_exe())
+                print('Go packages being tested:', ' '.join(go_pkgs))
+            externals.append(run_go(go_pkgs, args.name))
+        if has_rust:
+            externals.append(run_cargo(cargo_cmd, rust_paths))
+        sys.stdout.flush()
+
         # Module filter with no python tests but external tests present: run those only
         if args.module and not tests_list:
             _, externals_ok = collect_worker_results([], [], [], 0, externals=externals)

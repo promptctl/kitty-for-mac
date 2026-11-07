@@ -14,6 +14,12 @@ def parse(parser: OutputParser, text: str) -> tuple[list[Record], str]:
     return records + pending, unplaced
 
 
+def unit_failure(record: Record) -> UnitFailure:
+    if not isinstance(record, UnitFailure):
+        raise AssertionError(f'expected a UnitFailure, got {record!r}')
+    return record
+
+
 def go_events(*events: dict[str, object]) -> str:
     return '\n'.join(json.dumps(e) for e in events)
 
@@ -137,8 +143,7 @@ Caused by:
 """,
         )
         self.ae([type(r) for r in records], [TestRecord, UnitFailure])
-        crash = records[1]
-        assert isinstance(crash, UnitFailure)
+        crash = unit_failure(records[1])
         self.ae(crash.unit, 'unittests src/lib.rs')
         self.assertIn('SIGABRT', crash.output)
 
@@ -152,8 +157,7 @@ error: could not compile `kitty_rs` (lib test) due to 1 previous error
 """,
         )
         self.ae(len(records), 1)
-        failure = records[0]
-        assert isinstance(failure, UnitFailure)
+        failure = unit_failure(records[0])
         self.ae(failure.unit, 'cargo build')
         self.assertIn('error[E0308]', failure.output)
         self.ae(unplaced, '')
