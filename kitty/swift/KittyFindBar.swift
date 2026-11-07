@@ -197,7 +197,8 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
     required init?(coder: NSCoder) { fatalError("KittyFindBar is created in code") }
 
     // [LAW:one-source-of-truth] kitty knows where the top of its screen is; the bar asks when its
-    // layout is next worked out and keeps no copy of the answer.
+    // layout is next worked out; the constraint's constant is redone from the answer every time,
+    // never a value of the bar's own.
     public override func updateConstraints() {
         if let window {
             topConstraint.constant = CGFloat(Self.delegate.findBarClearance(window)) / window.backingScaleFactor + Self.margin

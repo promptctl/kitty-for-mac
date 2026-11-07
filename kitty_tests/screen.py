@@ -2233,6 +2233,17 @@ class TestScreen(BaseTest):
             active[0] = None
             self.ae(Boss.find_bar_clearance(SimpleNamespace(find_bar_window=lambda osw: active[0]), 1), 0)
 
+        # a geometry change reaches the bar only from the active window: a layout of any other window moves nothing
+        other = SimpleNamespace(os_window_id=1)
+        boss = SimpleNamespace(os_window_map={1: SimpleNamespace(active_window=w)})
+        seated = []
+        with mock.patch.object(window_module, 'is_macos', True), mock.patch.object(window_module, 'get_boss', lambda: boss), \
+                mock.patch.object(window_module, 'cocoa_seat_find_bar_for_os_window', seated.append):
+            Window.seat_find_bar(other)
+            self.ae(seated, [])
+            Window.seat_find_bar(w)
+            self.ae(seated, [1])
+
     def test_find_bar_follows_the_active_window(self):
         from types import SimpleNamespace
         from unittest import mock
