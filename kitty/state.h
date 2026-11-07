@@ -769,8 +769,7 @@ typedef struct GlobalState {
 
 extern GlobalState global_state;
 
-#define call_boss(name, ...) call_boss_method(name, __VA_ARGS__)
-#define call_boss_method(name, ...)                                                   \
+#define call_boss(name, ...)                                                          \
     if (global_state.boss) {                                                          \
         PyObject *cret_ = PyObject_CallMethod(global_state.boss, #name, __VA_ARGS__); \
         if (cret_ == NULL) {                                                          \

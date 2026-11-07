@@ -103,10 +103,13 @@ GLFW_INTERNAL_FUNCTION_TYPES = frozenset((
 ))
 
 
-def _strip_c_comments_and_directives(src: str) -> str:
+def _strip_c_comments(src: str) -> str:
     src = re.sub(r'/\*.*?\*/', ' ', src, flags=re.DOTALL)
     src = re.sub(r'//[^\n]*', '', src)
-    src = re.sub(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])+\'', '""', src)
+    return re.sub(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])+\'', '""', src)
+
+
+def _strip_c_directives(src: str) -> str:
     # preprocessor lines, with their continuations
     return re.sub(r'^[ \t]*#(?:[^\n]*\\\n)*[^\n]*', '', src, flags=re.MULTILINE)
 
@@ -131,11 +134,12 @@ def _storage_statements(src: str):
 
 
 def unclassified_glfw_callbacks(glfw_dir: str = GLFW_DIR) -> list[str]:
-    sources = {}
+    with_macros, sources = {}, {}
     for name in sorted(os.listdir(glfw_dir)):
         if name.endswith(('.c', '.h', '.m')):
             with open(os.path.join(glfw_dir, name)) as f:
-                sources[name] = _strip_c_comments_and_directives(f.read())
+                with_macros[name] = _strip_c_comments(f.read())
+                sources[name] = _strip_c_directives(with_macros[name])
     function_types = set()
     for src in sources.values():
         function_types.update(re.findall(r'\btypedef\b[^;]*?\(\s*\*\s*(\w+)\s*\)\s*\(', src))
@@ -155,7 +159,7 @@ def unclassified_glfw_callbacks(glfw_dir: str = GLFW_DIR) -> list[str]:
                 continue
             problems.append(f'{name}: callback {t} is neither _GLFW_EVENT nor _GLFW_NO_TICK: {" ".join(stmt.split())}')
         if name != 'callback_kinds.h':
-            for line in src.splitlines():
+            for line in with_macros[name].splitlines():  # a macro body can invoke an event too
                 if re.search(r'(?:\.|->)\s*fn\s*\)*\s*\(', line):
                     problems.append(f'{name}: event invoked outside _glfwDeliver: {line.strip()}')
     # A client callback GLFW holds as an argument or a local is not storage, so its kind comes from
@@ -173,7 +177,8 @@ def unclassified_glfw_callbacks(glfw_dir: str = GLFW_DIR) -> list[str]:
 
 
 def _function_definitions(src: str):
-    for m in re.finditer(r'\b(\w+)\s*\(([^()]*)\)\s*\{', src):
+    # a parameter list may hold one level of parentheses: a function-pointer parameter
+    for m in re.finditer(r'\b(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*\{', src):
         depth, end = 1, m.end()
         while depth and end < len(src):
             depth += {'{': 1, '}': -1}.get(src[end], 0)

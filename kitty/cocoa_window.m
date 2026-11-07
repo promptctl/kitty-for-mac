@@ -53,8 +53,7 @@ boss_answers(const char *method, id_type os_window_id) {
     return ret == Py_True;
 }
 #undef call_boss
-#undef call_boss_method
-#pragma GCC poison PyObject_CallMethod PyObject_CallFunction PyObject_CallObject PyObject_Call PyObject_CallNoArgs PyObject_CallOneArg PyObject_CallMethodObjArgs PyObject_CallFunctionObjArgs PyObject_Vectorcall
+#pragma GCC poison PyObject_Call PyObject_CallObject PyObject_CallNoArgs PyObject_CallOneArg PyObject_CallFunction PyObject_CallFunctionObjArgs PyObject_CallMethod PyObject_CallMethodNoArgs PyObject_CallMethodOneArg PyObject_CallMethodObjArgs PyObject_Vectorcall PyObject_VectorcallDict PyObject_VectorcallMethod PyVectorcall_Call
 
 static inline void
 cleanup_cfrelease(void *__p) {
@@ -1653,15 +1652,17 @@ static NSView *dock_content_view = nil;
 static NSImageView *dock_image_view = nil;
 static RoundedRectangleView *dock_pbar = nil;
 
-static void animate_dock_progress_bar(id_type timer_id UNUSED, void *data UNUSED);
+static void animate_dock_progress_bar(void);
 
+// The dock tile's animation is AppKit drawing that changes no kitty state, so it runs on the main
+// queue rather than as a main-loop timer, whose every firing is a tick (see request_tick_callback).
 static void
 tick_dock_pbar(void) {
-    add_main_loop_timer(ms_to_monotonic_t(20), false, animate_dock_progress_bar, NULL, NULL);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ animate_dock_progress_bar(); });
 }
 
 static void
-animate_dock_progress_bar(id_type timer_id UNUSED, void *data UNUSED) {
+animate_dock_progress_bar(void) {
     if (dock_pbar != nil && [dock_pbar isIndeterminate]) {
         [dock_pbar animate];
         NSDockTile *dockTile = [NSApp dockTile];
