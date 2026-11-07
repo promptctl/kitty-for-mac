@@ -3,6 +3,7 @@
 
 import fcntl
 import json
+import math
 import os
 import pty
 import re
@@ -33,6 +34,7 @@ from kitty.tmux_find import (
     ClientPane,
     Counted,
     PaneRef,
+    Runner,
     TmuxClient,
     TmuxError,
     TmuxFind,
@@ -73,13 +75,26 @@ def patient() -> TmuxOperation:
 
 
 class Sent:
-    "The runner a deadline test sends its commands through: it keeps whether each one was cut off at its timeout"
+    """The runner and the clock a deadline test gives its operation: it keeps, for each command, the clock reading
+    its timeout was worked out from, the timeout, and whether the command was cut off at it"""
 
-    def __init__(self, run: Callable[[Sequence[str], Mapping[str, str], float], str]) -> None:
-        self.run = run
+    def __init__(self, run: Runner, clock: Callable[[], float] = time.monotonic) -> None:
+        self.run, self.clock = run, clock
+        self.read_at = clock()
+        self.given: list[tuple[float, float]] = []
         self.cut_off: list[bool] = []
 
+    def now(self) -> float:
+        self.read_at = self.clock()
+        return self.read_at
+
+    def overspent(self, op: TmuxOperation) -> list[tuple[float, float]]:
+        "The commands that started at or past op's deadline, or were given more or less than the time left to it"
+        return [(at, timeout) for at, timeout in self.given if at >= op.expires_at or not math.isclose(at + timeout, op.expires_at)]
+
     def __call__(self, argv: Sequence[str], env: Mapping[str, str], timeout: float) -> str:
+        # the operation reads its clock, then sends with what is left: the last reading is this command's
+        self.given.append((self.read_at, timeout))
         try:
             out = self.run(argv, env, timeout)
         except TmuxError as e:
@@ -513,8 +528,10 @@ class TmuxFindIntegrationTest(BaseTest):
                 self.ae(t.finder(state).read_selection(t.pane), copied)
 
     def assert_ended_by_its_deadline(self, op: TmuxOperation, sent: Sent) -> None:
-        "The operation returned at its own deadline, give or take killing the command it cut off, and the deadline is what ended it"
-        returned_at = time.monotonic()  # the operation's clock, which expires_at is on
+        """Each command was given the time left, the deadline is what ended the operation, and tmux honoured it: the
+        operation returned at its deadline, give or take killing the command it cut off"""
+        returned_at = op.now()
+        self.ae(sent.overspent(op), [])
         self.assertTrue(sent.cut_off and sent.cut_off[-1], f'the last command was not cut off at the deadline: {sent.cut_off}')
         self.assertLessEqual(returned_at, op.expires_at + CUT_OFF_ALLOWANCE)
 
@@ -523,7 +540,6 @@ class TmuxFindIntegrationTest(BaseTest):
             self.selection_made(t, 'needle-59')
             state = TmuxFindState()
             client = t.client()
-            bad = TmuxClient(client.pid, '/bin/echo-not-here', client.server_args, None, client.path)
 
             def run(argv, env, timeout):
                 # the real tmux, but the job that would signal the channel is told to do something else
@@ -531,12 +547,11 @@ class TmuxFindIntegrationTest(BaseTest):
                 return tf.run_tmux(argv, env, timeout)
 
             sent = Sent(run)
-            op = TmuxOperation(sent)
+            op = TmuxOperation(sent, now=sent.now)
             self.assertIsNone(TmuxFind(client, state, op).program_selection_text())
             self.assert_ended_by_its_deadline(op, sent)
             # and the next read works
             self.ae(t.finder(TmuxFindState()).program_selection_text(), 'needle')
-            del bad
 
     def test_a_wedged_server_ends_in_the_deadline_and_the_pane_is_cancelled_when_it_wakes(self):
         with private_tmux(NEEDLES) as t:
@@ -546,7 +561,7 @@ class TmuxFindIntegrationTest(BaseTest):
             os.kill(server, signal.SIGSTOP)
             try:
                 sent = Sent(tf.run_tmux)
-                op = TmuxOperation(sent)
+                op = TmuxOperation(sent, now=sent.now)
                 t.finder(state, op).step(default_query('needle-5'), False)
                 self.assert_ended_by_its_deadline(op, sent)
                 self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
@@ -916,20 +931,15 @@ class TmuxFindWindowTest(BaseTest):
         w = self.make_window(self.screen_with_matches(), fake)
         self.run_in_tmux(w)
         clock = [0.0]
-        at: list[float] = []
-        given: list[float] = []
 
         def run(argv, env, timeout):
-            at.append(clock[0])
-            given.append(timeout)
             clock[0] += FIND_DEADLINE / 3 + 0.01
             return fake(argv, env, timeout)
 
-        op = TmuxOperation(run, now=lambda: clock[0], sleep=lambda s: None)
+        sent = Sent(run, clock=lambda: clock[0])
+        op = TmuxOperation(sent, now=sent.now, sleep=lambda s: None)
         backend = w.find_backend_to_search(op)
         backend.find(default_query('x'))
-        self.assertGreater(len(at), 1)
-        self.assertTrue(all(t < FIND_DEADLINE for t in at), f'a command started after the budget was spent: {at}')
-        for t, timeout in zip(at, given):
-            self.assertAlmostEqual(t + timeout, FIND_DEADLINE, msg='each command is given the time left, and no more')
-        self.assertLessEqual(len(at), 4, 'the budget ended the operation; it did not start a second one')
+        self.assertGreater(len(sent.given), 1)
+        self.ae(sent.overspent(op), [], 'each command is given the time left, and none starts after it is spent')
+        self.assertLessEqual(len(sent.given), 4, 'the budget ended the operation; it did not start a second one')

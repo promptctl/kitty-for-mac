@@ -253,6 +253,10 @@ def resolve_exe(client: TmuxClient) -> str:
     return exe
 
 
+# what sends one tmux command: its argv and environment, and the seconds it may take
+Runner = Callable[[Sequence[str], Mapping[str, str], float], str]
+
+
 def run_tmux(argv: Sequence[str], env: Mapping[str, str], timeout: float) -> str:
     try:
         cp = subprocess.run(argv, env=dict(env), capture_output=True, encoding='utf-8', errors='replace', timeout=timeout, check=False)
@@ -273,7 +277,7 @@ class TmuxOperation:
 
     def __init__(
         self,
-        run: Callable[[Sequence[str], Mapping[str, str], float], str] | None = None,
+        run: Runner | None = None,
         now: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         deadline: float = FIND_DEADLINE,
