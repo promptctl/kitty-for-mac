@@ -7560,7 +7560,7 @@ find_search_changed(Screen *self, FindQueryChange change, bool users_selection) 
     // the previous search's record goes with its matches; a query with nothing to search has none
     find_record_free(self->find_record);
     self->find_record = NULL;
-    const bool searching = kitty_rs_find_status(self->find_engine, find_buffer_bounds(self)).query == FIND_QUERY_SEARCHING;
+    const bool searching = kitty_rs_find_status(self->find_engine, find_buffer_bounds(self)).query == FIND_QUERY_STATE_SEARCHING;
     if (searching && (!search_find_chunk(self, self->find_engine, NULL) || !record_fed_buffer(self))) {
         // a part-walked chunk is not an answer
         screen_find_clear(self);

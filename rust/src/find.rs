@@ -1497,8 +1497,9 @@ mod tests {
         let view = FindOrigin::Within(pos(16, 0)..pos(20, 0));
         let mut e = FindEngine::default();
         e.set_query("x", MATCH);
-        buf.fill(&mut e, 0, 6, None); // lines 14..20
-                                      // Previous from the view finds line 15 with every line between searched
+        // lines 14..20
+        buf.fill(&mut e, 0, 6, None);
+        // Previous from the view finds line 15 with every line between searched
         assert_eq!(
             e.step(Direction::Previous, &view, b),
             StepOutcome::Landed(m(15, 0, 15, 0))
