@@ -1427,8 +1427,8 @@ python_timer_callback(id_type timer_id, void *data) {
     PyObject *ret = PyObject_CallFunction(callback, "K", id);
     if (ret == NULL) PyErr_Print();
     else Py_DECREF(ret);
-    // Python run from a timer runs outside the tick, so whatever it changed is only drawn and
-    // advanced once a tick runs: every timer asks for one rather than each caller remembering to.
+    // A timer fires outside the tick: see request_tick_callback. Every Python timer requests
+    // one here rather than each callback remembering to.
     request_tick_callback();
 }
 
