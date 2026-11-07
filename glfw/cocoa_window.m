@@ -1322,13 +1322,16 @@ is_ascii_control_char(char x) {
     _glfw.ns.text[0] = 0;
     if (keycode == 0x33 /* backspace */ || keycode == 0x35 /* escape */ || (keycode == 0x04 /* h */ && mods == GLFW_MOD_CONTROL)) [self unmarkText];
     GLFWkeyevent glfw_keyevent = {.key = key, .native_key = keycode, .native_key_id = keycode, .action = GLFW_PRESS, .mods = mods};
+    marked_text_cleared_by_insert = false;
     if (!_glfw.ns.unicodeData) {
         // Using the cocoa API for key handling is disabled, as there is no
         // reliable way to handle dead keys using it. Only use it if the
         // keyboard unicode data is not available.
         if (process_text) {
-            // this will call insertText with the text for this event, if any
+            in_key_handler = 1;
+            // this will call insertText which will fill up _glfw.ns.text
             [self interpretKeyEvents:@[ event ]];
+            in_key_handler = 0;
         }
     } else {
         static UniChar text[256];
@@ -1358,7 +1361,6 @@ is_ascii_control_char(char x) {
             char_count,
             window->ns.deadKeyState,
             event.ARepeat);
-        marked_text_cleared_by_insert = false;
         if (process_text) {
             in_key_handler = 1;
             // this will call insertText which will fill up _glfw.ns.text
