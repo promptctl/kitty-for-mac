@@ -4621,11 +4621,9 @@ record_fed_buffer(Screen *self) {
     return self->find_record != NULL;
 }
 
-// the empty query compiles, so this cannot fail
 static void
 screen_find_clear(Screen *self) {
-    char err[1];
-    kitty_rs_find_set_query(self->find_engine, (const uint8_t*)"", 0, false, err, sizeof(err));
+    kitty_rs_find_set_query(self->find_engine, (const uint8_t*)"", 0, (FindMode){0});
     find_record_free(self->find_record);
     self->find_record = NULL;
 }
@@ -7473,7 +7471,7 @@ find_advance(Screen *self, PyObject *o UNUSED) {
 
 static PyObject *
 find_status_tuple(FindStatus st) {
-    return Py_BuildValue("nnOK", (Py_ssize_t)st.current, (Py_ssize_t)st.total, st.wrapped ? Py_True : Py_False, (unsigned long long)st.unsearched);
+    return Py_BuildValue("nnOKi", (Py_ssize_t)st.current, (Py_ssize_t)st.total, st.wrapped ? Py_True : Py_False, (unsigned long long)st.unsearched, (int)st.query);
 }
 
 static PyObject *
@@ -7503,9 +7501,7 @@ selection_in_progress(Screen *self, PyObject *o UNUSED) {
 static PyObject *
 find_status_for_bar(Screen *self, PyObject *o UNUSED) {
     const FindStatus st = kitty_rs_find_status(screen_find_engine(self), find_buffer_bounds(self));
-    self->find_reported.current = st.current;
-    self->find_reported.total = st.total;
-    self->find_reported.unsearched = st.unsearched;
+    self->find_reported.status = st;
     self->find_reported.main_screen = self->linebuf == self->main_linebuf;
     self->find_reported.selecting = self->selections.in_progress;
     return find_status_tuple(st);
@@ -7523,8 +7519,9 @@ screen_find_status_changed(Screen *self) {
     // reported once the pause ends
     if (self->paused_rendering.expires_at) return false;
     const FindStatus st = kitty_rs_find_status(screen_find_engine(self), find_buffer_bounds(self));
-    return st.current != self->find_reported.current || st.total != self->find_reported.total ||
-        st.unsearched != self->find_reported.unsearched ||
+    const FindStatus told = self->find_reported.status;
+    // wrapped changes only with a step, and the step tells the bar itself
+    return st.current != told.current || st.total != told.total || st.unsearched != told.unsearched || st.query != told.query ||
         (self->linebuf == self->main_linebuf) != self->find_reported.main_screen || self->selections.in_progress != self->find_reported.selecting;
 }
 
@@ -7540,36 +7537,59 @@ find_report_status_change(Screen *self, PyObject *o UNUSED) {
     Py_RETURN_NONE;
 }
 
-// True when the query changed, which starts a new search and runs its first chunk at once so a
-// result shows; False when the query and case are the ones already searched for, which changes
-// nothing. A changed query ends the current match, so it releases the selection that showed
-// it, unless users_selection says the user is pointing at it (Cmd+E): then it is theirs.
+// [LAW:parse-dont-validate] the one crossing of a mode from Python: two ints become a FindMode
+static bool
+find_mode_from_args(int case_rule, int syntax, FindMode *mode) {
+    if (case_rule < FIND_CASE_SMART || case_rule > FIND_CASE_MATCH || syntax < FIND_SYNTAX_LITERAL || syntax > FIND_SYNTAX_REGEX) {
+        PyErr_Format(PyExc_ValueError, "Not a find mode: case rule %d, syntax %d", case_rule, syntax);
+        return false;
+    }
+    *mode = (FindMode){.case_rule = case_rule, .syntax = syntax};
+    return true;
+}
+
+// [LAW:single-enforcer] what a new search does to the screen, whatever set it: the query or the
+// mode. It ends the current match, so it releases the selection that showed it, unless
+// users_selection says the user is pointing at it (Cmd+E): then it is theirs. A query the engine
+// searches for runs its first chunk at once, so a result shows. Returns the FindQueryChange.
 static PyObject *
-find_set_query(Screen *self, PyObject *args) {
-    PyObject *text; int case_insensitive, users_selection = 0;
-    // [LAW:parse-dont-validate] a str, never bytes: its UTF-8 is valid by construction
-    if (!PyArg_ParseTuple(args, "Up|p", &text, &case_insensitive, &users_selection)) return NULL;
-    Py_ssize_t len;
-    const char *query = PyUnicode_AsUTF8AndSize(text, &len);
-    if (!query) return NULL;
-    char err[512];
-    const FindQueryResult result = kitty_rs_find_set_query(self->find_engine, (const uint8_t*)query, len, case_insensitive, err, sizeof(err));
-    if (result == FIND_QUERY_UNCHANGED) Py_RETURN_FALSE;
+find_search_changed(Screen *self, FindQueryChange change, bool users_selection) {
+    if (change == FIND_QUERY_UNCHANGED) return PyLong_FromLong(change);
     if (users_selection && self->selections.count) self->selections.items->is_find_match = false;
     release_find_selection(self);
-    // the previous query's record goes with its matches; the empty query has none
+    // the previous search's record goes with its matches; a query with nothing to search has none
     find_record_free(self->find_record);
     self->find_record = NULL;
-    if (result == FIND_QUERY_INVALID) {
-        PyErr_Format(PyExc_ValueError, "Cannot search for the query: %s", err);
-        return NULL;
-    }
-    if (len && (!search_find_chunk(self, self->find_engine, NULL) || !record_fed_buffer(self))) {
+    const bool searching = kitty_rs_find_status(self->find_engine, find_buffer_bounds(self)).query == FIND_QUERY_SEARCHING;
+    if (searching && (!search_find_chunk(self, self->find_engine, NULL) || !record_fed_buffer(self))) {
         // a part-walked chunk is not an answer
         screen_find_clear(self);
         return PyErr_NoMemory();
     }
-    Py_RETURN_TRUE;
+    return PyLong_FromLong(change);
+}
+
+// Sets the query, in the mode (case_rule, syntax). Returns the FindQueryChange: UNCHANGED when
+// the query and mode are the ones already set, which changes nothing.
+static PyObject *
+find_set_query(Screen *self, PyObject *args) {
+    PyObject *text; int case_rule, syntax, users_selection = 0;
+    FindMode mode;
+    // [LAW:parse-dont-validate] a str, never bytes: its UTF-8 is valid by construction
+    if (!PyArg_ParseTuple(args, "Uii|p", &text, &case_rule, &syntax, &users_selection) || !find_mode_from_args(case_rule, syntax, &mode)) return NULL;
+    Py_ssize_t len;
+    const char *query = PyUnicode_AsUTF8AndSize(text, &len);
+    if (!query) return NULL;
+    return find_search_changed(self, kitty_rs_find_set_query(self->find_engine, (const uint8_t*)query, len, mode), users_selection);
+}
+
+// Sets the query already set again, in the mode (case_rule, syntax). Returns the FindQueryChange.
+static PyObject *
+find_set_mode(Screen *self, PyObject *args) {
+    int case_rule, syntax;
+    FindMode mode;
+    if (!PyArg_ParseTuple(args, "ii", &case_rule, &syntax) || !find_mode_from_args(case_rule, syntax, &mode)) return NULL;
+    return find_search_changed(self, kitty_rs_find_set_mode(self->find_engine, mode), false);
 }
 
 static void
@@ -8102,7 +8122,7 @@ static PyMethodDef methods[] = {
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
     MND(find_logical_lines, METH_NOARGS)
 #ifdef __APPLE__
-    MND(find_set_query, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_origin, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_set_want, METH_O) MND(find_set_chunk_cells, METH_O) MND(find_advance, METH_NOARGS) MND(user_selection_changes, METH_NOARGS) MND(selection_in_progress, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_status_for_bar, METH_NOARGS) MND(find_report_status_change, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
+    MND(find_set_query, METH_VARARGS) MND(find_set_mode, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_origin, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_set_want, METH_O) MND(find_set_chunk_cells, METH_O) MND(find_advance, METH_NOARGS) MND(user_selection_changes, METH_NOARGS) MND(selection_in_progress, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_status_for_bar, METH_NOARGS) MND(find_report_status_change, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
 #endif
     MND(abs_line_at_viewport_top, METH_NOARGS)
 
@@ -8166,7 +8186,25 @@ test_set_history_reuse(PyObject *self UNUSED, PyObject *val) {
     Py_RETURN_NONE;
 }
 
+#ifdef __APPLE__
+// The regular expression that matches text literally: the one escaper, the engine's own
+static PyObject *
+find_escape(PyObject *self UNUSED, PyObject *text) {
+    if (!PyUnicode_Check(text)) { PyErr_SetString(PyExc_TypeError, "find_escape takes a str"); return NULL; }
+    Py_ssize_t len;
+    const char *utf8 = PyUnicode_AsUTF8AndSize(text, &len);
+    if (!utf8) return NULL;
+    RAII_ALLOC(uint8_t, out, malloc(2 * (size_t)len + 1));
+    if (!out) return PyErr_NoMemory();
+    const size_t n = kitty_rs_find_escape((const uint8_t*)utf8, len, out);
+    return PyUnicode_FromStringAndSize((const char*)out, n);
+}
+#endif
+
 static PyMethodDef module_methods[] = {
+#ifdef __APPLE__
+    {"find_escape", find_escape, METH_O, ""},
+#endif
     {"is_emoji_presentation_base", (PyCFunction)screen_is_emoji_presentation_base, METH_O, ""},
     {"truncate_point_for_length", (PyCFunction)screen_truncate_point_for_length, METH_VARARGS, ""},
     {"test_ch_and_idx", test_ch_and_idx, METH_O, ""},

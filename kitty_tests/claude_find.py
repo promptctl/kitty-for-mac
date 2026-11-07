@@ -34,7 +34,7 @@ from kitty.claude_find import (
     recognise,
     refusal,
 )
-from kitty.find_backends import FindCount, FindStatus
+from kitty.find_backends import FindCount, FindMode, FindQuery, FindStatus
 from kitty.tmux_find import FIND_DEADLINE, PaneRef, TmuxError, TmuxOperation
 
 from .base import BaseTest
@@ -43,6 +43,11 @@ from .tmux_find import PrivateTmux, private_tmux
 RULE = '─' * 100
 PYTHON = shutil.which('python3')
 FAKE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fake_claude.py')
+
+
+def default_query(text: str) -> FindQuery:
+    "text as a query in the default mode: tmux and Claude Code search by their own rules"
+    return FindQuery(text, FindMode())
 
 
 def screen(*rows: str) -> str:
@@ -282,16 +287,16 @@ class ClaudeFindIntegrationTest(BaseTest):
             state = ClaudeFindState()
             f = c.finder(state)
             self.ae(c.view(), Prompt())
-            f.find('zebra')
+            f.find(default_query('zebra'))
             self.ae(state.status, FindStatus(1, 3, FindCount.exact))
             self.ae(c.view(), Searching(1, 3))
             self.assertIsNotNone(state.held, 'the pane is on record')
-            c.finder(state).step('zebra', False)
-            c.finder(state).step('zebra', False)
+            c.finder(state).step(default_query('zebra'), False)
+            c.finder(state).step(default_query('zebra'), False)
             self.ae(state.status, FindStatus(3, 3, FindCount.exact))
-            c.finder(state).step('zebra', False)
+            c.finder(state).step(default_query('zebra'), False)
             self.ae(state.status, FindStatus(1, 3, FindCount.exact), 'forward wraps')
-            c.finder(state).step('zebra', True)
+            c.finder(state).step(default_query('zebra'), True)
             self.ae(state.status, FindStatus(3, 3, FindCount.exact), 'backward wraps')
             c.holding(state).clear()
             self.assertIsNone(state.held)
@@ -309,7 +314,7 @@ class ClaudeFindIntegrationTest(BaseTest):
         with fake_claude(*CONVERSATION) as c:
             self.person_opens_transcript(c)
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             self.ae(c.view(), Searching(1, 3))
             c.holding(state).clear()
             self.assertIsNone(state.held)
@@ -319,10 +324,10 @@ class ClaudeFindIntegrationTest(BaseTest):
         with fake_claude(*CONVERSATION) as c:
             self.person_opens_transcript(c)
             state = ClaudeFindState()
-            c.finder(state).find('zebra')  # leaves the pane in Claude's accepted search
+            c.finder(state).find(default_query('zebra'))  # leaves the pane in Claude's accepted search
             self.assertIs(state.held.return_to, Transcript)
-            c.finder(state).find('filler')  # the pane shows our search now, which reads as the transcript either way
-            c.finder(state).step('filler', False)
+            c.finder(state).find(default_query('filler'))  # the pane shows our search now, which reads as the transcript either way
+            c.finder(state).step(default_query('filler'), False)
             self.assertIs(state.held.return_to, Transcript)
             c.holding(state).clear()
             self.ae(c.view(), Transcript())
@@ -330,12 +335,12 @@ class ClaudeFindIntegrationTest(BaseTest):
     def test_a_pane_that_began_at_the_prompt_ends_at_the_prompt_after_several_searches(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
-            c.finder(state).find('filler')
+            c.finder(state).find(default_query('zebra'))
+            c.finder(state).find(default_query('filler'))
             self.assertIs(state.held.return_to, Prompt)
             c.holding(state).clear()
             self.ae(c.view(), Prompt())
-            c.finder(state).find('zebra')  # a new hold reads the view again
+            c.finder(state).find(default_query('zebra'))  # a new hold reads the view again
             self.assertIs(state.held.return_to, Prompt)
 
     def test_a_pane_that_began_in_the_persons_own_search_ends_in_the_transcript(self):
@@ -346,7 +351,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             while c.view() != SearchInput('') and time.monotonic() < deadline:
                 time.sleep(0.02)
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             c.holding(state).clear()
             self.ae(c.view(), Transcript())
 
@@ -354,7 +359,7 @@ class ClaudeFindIntegrationTest(BaseTest):
         with fake_claude(*CONVERSATION) as c:
             self.person_opens_transcript(c)
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             c.t.tmux('send-keys', '-t', c.t.pane, 'Escape')  # a first clear got as far as the prompt before it ran out of time
             deadline = time.monotonic() + 5
             while not isinstance(c.view(), Prompt) and time.monotonic() < deadline:
@@ -366,7 +371,7 @@ class ClaudeFindIntegrationTest(BaseTest):
     def test_a_search_with_no_match_is_zero_and_still_cleared(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
-            c.finder(state).find('quokka')
+            c.finder(state).find(default_query('quokka'))
             self.ae(state.status, FindStatus(0, 0, FindCount.exact))
             self.ae(c.view(), Transcript())
             c.holding(state).clear()
@@ -375,34 +380,34 @@ class ClaudeFindIntegrationTest(BaseTest):
     def test_a_new_query_replaces_the_search_from_any_view(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
-            c.finder(state).find('line 5 ')  # from an accepted search: '/' opens an empty field
+            c.finder(state).find(default_query('zebra'))
+            c.finder(state).find(default_query('line 5 '))  # from an accepted search: '/' opens an empty field
             self.ae(state.status.total, 1)
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             self.ae(state.status, FindStatus(1, 3, FindCount.exact))
             # from a field that holds a query: leave it first
             f = c.finder(state)
             held = f.hold(c.t.pane)
             f.open_search(held)
             f.press(held, cf.Key('half', literal=True), lambda v: isinstance(v, SearchInput) and v.query == 'half', 'the field')
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             self.ae(state.status, FindStatus(1, 3, FindCount.exact))
             # and from a plain transcript
             c.holding(state).clear()
             f = c.finder(state)
             held = f.hold(c.t.pane)
             f.press(held, cf.CTRL_O, lambda v: isinstance(v, Transcript), 'the transcript')
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             self.ae(state.status, FindStatus(1, 3, FindCount.exact))
 
     def test_a_query_ending_in_a_space_is_found_and_a_space_only_query_is_refused(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra ')
+            c.finder(state).find(default_query('zebra '))
             self.ae(state.status, FindStatus(1, 3, FindCount.exact))
             c.holding(state).clear()
             for bad in (' ', 'a\x1bb'):
-                c.finder(state).find(bad)
+                c.finder(state).find(default_query(bad))
                 self.ae(state.status, FindStatus(0, 0, FindCount.unavailable), repr(bad))
                 self.assertIsNone(state.held, 'it was refused before a key was sent')
                 self.assertTrue(state.reporting())
@@ -415,32 +420,32 @@ class ClaudeFindIntegrationTest(BaseTest):
         with fake_claude('first', 'return x; done', 'x; last', 'a\\; b') as c:
             state = ClaudeFindState()
             for query, total in (('x;', 2), (';', 3), ('a\\;', 1)):  # a backslash before the semicolon is the query's own
-                c.finder(state).find(query)
+                c.finder(state).find(default_query(query))
                 self.ae(state.status, FindStatus(1, total, FindCount.exact), query)
                 c.holding(state).clear()
 
     def test_stepping_re_searches_when_the_conversation_grew(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             self.ae(state.status.total, 3)
-            c.finder(state).step('zebra', False)
+            c.finder(state).step(default_query('zebra'), False)
             self.ae(state.status, FindStatus(2, 3, FindCount.exact))
             c.say('another zebra', 'and one more zebra')
-            c.finder(state).step('zebra', False)
+            c.finder(state).step(default_query('zebra'), False)
             self.ae(state.status.total, 5, 'Claude\'s list is a snapshot, so the new matches needed a new search')
             # nothing new: a plain step again
             keys = len(c.keys())
-            c.finder(state).step('zebra', False)
+            c.finder(state).step(default_query('zebra'), False)
             self.ae(c.keys()[keys:], ["b'n'"])
 
     def test_a_counter_that_does_not_move_is_the_answer_not_a_failure(self):
         # matches in one row can be one stop for n: the step waits a moment for the counter and takes it as it is
         with fake_claude(*CONVERSATION, mode='sticky') as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             start = time.monotonic()
-            c.finder(state).step('zebra', False)
+            c.finder(state).step(default_query('zebra'), False)
             self.assertLess(time.monotonic() - start, FIND_DEADLINE)
             self.ae(state.status, FindStatus(1, 3, FindCount.exact))
             self.ae(c.keys()[-1], "b'n'", 'the key was sent')
@@ -455,16 +460,16 @@ class ClaudeFindIntegrationTest(BaseTest):
             f.run_search(held, 'filler')  # a search Claude is on that this backend did not record
             f.clear()
             state.rest()
-            c.finder(state).step('zebra', False)  # the prompt: nothing is open, so it searches
+            c.finder(state).step(default_query('zebra'), False)  # the prompt: nothing is open, so it searches
             self.ae(state.status, FindStatus(1, 3, FindCount.exact))
             state.search = None
-            c.finder(state).step('zebra', False)  # a search of ours is not on record: search again, not n
+            c.finder(state).step(default_query('zebra'), False)  # a search of ours is not on record: search again, not n
             self.ae(state.status, FindStatus(1, 3, FindCount.exact))
 
     def test_an_unrecognised_screen_gets_no_key(self):
         with fake_claude(*CONVERSATION, mode='dialog') as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
             self.ae(c.keys(), [], 'a key sent into a dialog could answer it')
             self.assertTrue(state.reporting())
@@ -473,11 +478,11 @@ class ClaudeFindIntegrationTest(BaseTest):
     def test_a_session_with_matches_and_no_transcript_file_is_unavailable(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             self.ae(state.status.count, FindCount.exact, 'the file is where the host looks')
             c.holding(state).clear()
             os.remove(c.transcript)
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
 
     def test_a_search_that_times_out_keeps_the_hold_and_clear_retries(self):
@@ -494,7 +499,7 @@ class ClaudeFindIntegrationTest(BaseTest):
                 return out
 
             op = TmuxOperation(run, now=lambda: clock[0], sleep=lambda s: None)
-            c.finder(state, op).find('zebra')
+            c.finder(state, op).find(default_query('zebra'))
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
             self.assertIsNotNone(state.held, 'the pane was on record before the first key')
             c.holding(state).clear()  # a fresh budget: the pane is in the transcript view and gets its way back
@@ -504,7 +509,7 @@ class ClaudeFindIntegrationTest(BaseTest):
     def test_clear_with_the_pane_already_at_the_prompt_sends_no_key(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             c.t.tmux('send-keys', '-t', c.t.pane, 'Escape')  # the person left the transcript themselves
             deadline = time.monotonic() + 5
             while not isinstance(c.view(), Prompt) and time.monotonic() < deadline:
@@ -517,7 +522,7 @@ class ClaudeFindIntegrationTest(BaseTest):
     def test_claude_quitting_to_a_shell_releases_the_hold_without_keys(self):
         with fake_claude(*CONVERSATION, then='stty -echo; sleep 600') as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             pane_pid = c.t.fmt('#{pane_pid}')
             c.t.tmux('send-keys', '-t', c.t.pane, 'C-c')  # the fake exits; the pane stays on a main-screen sleep
             deadline = time.monotonic() + 5
@@ -533,7 +538,7 @@ class ClaudeFindIntegrationTest(BaseTest):
     def test_a_pane_the_person_put_in_copy_mode_gets_no_key(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             c.t.tmux('copy-mode', '-t', c.t.pane)
             keys = len(c.keys())
             c.holding(state).clear()
@@ -544,7 +549,7 @@ class ClaudeFindIntegrationTest(BaseTest):
     def test_a_pane_that_is_gone_releases_the_hold(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             f = c.holding(state)  # built while the server is there to ask
             c.t.tmux('kill-session', '-t', 'p', check=False)  # the private server exits with its only session
             f.clear()
@@ -553,7 +558,7 @@ class ClaudeFindIntegrationTest(BaseTest):
     def test_a_find_in_another_pane_ends_the_previous_one(self):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
-            c.finder(state).find('zebra')
+            c.finder(state).find(default_query('zebra'))
             other = c.t.tmux('split-window', '-d', '-P', '-F', '#{pane_id}', "printf '❯ \\n'; sleep 600")  # a prompt row: a view of Claude Code
             deadline = time.monotonic() + 5
             while not isinstance(parse_view(c.t.tmux('capture-pane', '-p', '-t', other)), Prompt) and time.monotonic() < deadline:
@@ -566,9 +571,9 @@ class ClaudeFindIntegrationTest(BaseTest):
     def test_every_cause_is_logged_once_and_sets_unavailable(self):
         with fake_claude(*CONVERSATION) as c:
             for cause, action in (
-                (Cause.refused, lambda f: f.find(' ')),
-                (Cause.not_claude_pane, lambda f: setattr(f, 'pane', ClaudeFindFailure(Cause.not_claude_pane, 'x')) or f.find('zebra')),
-                (Cause.undeterminable, lambda f: setattr(f, 'pane', ClaudeFindFailure(Cause.undeterminable, 'x')) or f.find('zebra')),
+                (Cause.refused, lambda f: f.find(default_query(' '))),
+                (Cause.not_claude_pane, lambda f: setattr(f, 'pane', ClaudeFindFailure(Cause.not_claude_pane, 'x')) or f.find(default_query('zebra'))),
+                (Cause.undeterminable, lambda f: setattr(f, 'pane', ClaudeFindFailure(Cause.undeterminable, 'x')) or f.find(default_query('zebra'))),
             ):
                 state = ClaudeFindState()
                 f = c.finder(state)
@@ -587,7 +592,7 @@ class ClaudeFindIntegrationTest(BaseTest):
 
             f = c.finder(state, TmuxOperation(run))
             with mock.patch.object(cf, 'log_error') as log:
-                f.find('zebra')
+                f.find(default_query('zebra'))
             self.assertIn(Cause.tmux.name, log.call_args[0][0])
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
 

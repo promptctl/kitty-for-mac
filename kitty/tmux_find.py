@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import NamedTuple, TypeVar
 
 from .child import ProcessDesc, environ_of_process
-from .find_backends import FindCount, FindStatus
+from .find_backends import FindCount, FindQuery, FindStatus
 from .utils import log_error
 
 # One bound for everything a find operation asks of tmux: the pane lookup, the clears of other
@@ -337,17 +337,19 @@ class TmuxFind:
     def can_search(self) -> bool:
         return True
 
-    def find(self, text: str) -> None:
-        self.search(text, lambda pane: find_command(pane, text))
+    # tmux's text search is literal, ignoring case unless the text has an uppercase letter
+    def find(self, query: FindQuery) -> None:
+        self.search(query.text, lambda pane: find_command(pane, query.text))
 
-    def use_selection(self, text: str) -> None:
-        self.find(text)
+    def use_selection(self, query: FindQuery) -> str:
+        self.find(query)
+        return query.text
 
-    def restore(self, text: str) -> None:
-        self.find(text)
+    def restore(self, query: FindQuery) -> None:
+        self.find(query)
 
-    def step(self, text: str, backwards: bool) -> None:
-        self.search(text, lambda pane: step_command(pane, text, backwards))
+    def step(self, query: FindQuery, backwards: bool) -> None:
+        self.search(query.text, lambda pane: step_command(pane, query.text, backwards))
 
     def search(self, text: str, command: Callable[[str], Sequence[str]]) -> None:
         if not text:  # an empty query searches nothing, as the engine's does

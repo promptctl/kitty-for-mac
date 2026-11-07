@@ -25,7 +25,7 @@ from kitty.boss import Boss
 from kitty.child import ProcessDesc
 from kitty.claude_find import ClaudeFind, ClaudeFindState, ClaudeHost
 from kitty.constants import is_macos
-from kitty.find_backends import EngineFind, FindCount, FindStatus
+from kitty.find_backends import EngineFind, FindCount, FindMode, FindQuery, FindStatus
 from kitty.tmux_find import (
     FIND_DEADLINE,
     Counted,
@@ -53,6 +53,11 @@ from kitty.window import Window
 from .base import BaseTest
 
 TMUX = shutil.which('tmux')
+
+
+def default_query(text: str) -> FindQuery:
+    "text as a query in the default mode: tmux and Claude Code search by their own rules"
+    return FindQuery(text, FindMode())
 
 
 def proc(pid: int, *cmdline: str) -> ProcessDesc:
@@ -245,7 +250,7 @@ class TmuxFindIntegrationTest(BaseTest):
         with private_tmux(NEEDLES) as t:
             state = TmuxFindState()
             f = t.finder(state)
-            f.find('needle-5')
+            f.find(default_query('needle-5'))
             self.ae(state.status, FindStatus(0, 11, FindCount.exact))
             self.assertTrue(self.in_mode(t))
             self.assertTrue(f.searching())
@@ -255,13 +260,13 @@ class TmuxFindIntegrationTest(BaseTest):
             # later in the buffer is forward and earlier is backward, and both wrap
             n = lambda: int(t.fmt('#{copy_cursor_line}').split()[1])  # noqa: E731
             at = n()
-            t.finder(state).step('needle-5', True)
+            t.finder(state).step(default_query('needle-5'), True)
             self.assertLess(n(), at)
-            t.finder(state).step('needle-5', False)
+            t.finder(state).step(default_query('needle-5'), False)
             self.ae(n(), at)
             self.ae(state.status, FindStatus(0, 11, FindCount.exact))
             for _ in range(11):
-                t.finder(state).step('needle-5', False)
+                t.finder(state).step(default_query('needle-5'), False)
             self.ae(n(), at, 'eleven matches later is the same match: the search wraps')
             self.ae(state.status.total, 11)
             holding(state).clear()
@@ -273,9 +278,9 @@ class TmuxFindIntegrationTest(BaseTest):
     def test_no_match_is_zero_not_unavailable(self):
         with private_tmux(NEEDLES) as t:
             state = TmuxFindState()
-            t.finder(state).find('no-such-text')
+            t.finder(state).find(default_query('no-such-text'))
             self.ae(state.status, FindStatus(0, 0, FindCount.exact))
-            t.finder(state).find('needle-29')
+            t.finder(state).find(default_query('needle-29'))
             self.ae(state.status.total, 11)
 
     def test_awkward_queries_search_what_was_typed(self):
@@ -284,35 +289,35 @@ class TmuxFindIntegrationTest(BaseTest):
             for query, total in counts.items():
                 state = TmuxFindState()
                 f = t.finder(state)
-                f.find(query)
+                f.find(default_query(query))
                 self.ae(state.status, FindStatus(0, total, FindCount.exact), query)
                 # stepping with the same awkward text finds the same matches
-                t.finder(state).step(query, False)
+                t.finder(state).step(default_query(query), False)
                 self.ae(state.status.total, total, query)
                 holding(state).clear()
             # the match is where the text is
             state = TmuxFindState()
-            t.finder(state).find('foo;')
+            t.finder(state).find(default_query('foo;'))
             self.assertIn('foo; x', t.fmt('#{copy_cursor_line}'))
-            t.finder(state).find('-n')
+            t.finder(state).find(default_query('-n'))
             self.assertIn('beta -n', t.fmt('#{copy_cursor_line}'))
 
     def test_empty_query_clears(self):
         with private_tmux(NEEDLES) as t:
             state = TmuxFindState()
-            t.finder(state).find('needle')
+            t.finder(state).find(default_query('needle'))
             self.assertTrue(self.in_mode(t))
-            t.finder(state).find('')
+            t.finder(state).find(default_query(''))
             self.assertFalse(self.in_mode(t))
             self.assertIsNone(state.held)
 
     def test_leaving_copy_mode_by_hand_is_entered_again(self):
         with private_tmux(NEEDLES) as t:
             state = TmuxFindState()
-            t.finder(state).find('needle-5')
+            t.finder(state).find(default_query('needle-5'))
             t.tmux('send', '-t', t.pane, '-X', 'cancel')
             self.assertFalse(self.in_mode(t))
-            t.finder(state).step('needle-5', True)
+            t.finder(state).step(default_query('needle-5'), True)
             self.assertTrue(self.in_mode(t))
             self.ae(state.status, FindStatus(0, 11, FindCount.exact))
 
@@ -322,13 +327,13 @@ class TmuxFindIntegrationTest(BaseTest):
             t.tmux('split-window', '-d', '-t', a, 'sh -c ' + repr(NEEDLES))
             b = [p for p in t.tmux('list-panes', '-F', '#{pane_id}').split() if p != a][0]
             state = TmuxFindState()
-            t.finder(state).find('needle-5')
+            t.finder(state).find(default_query('needle-5'))
             self.assertTrue(self.in_mode(t, a))
             self.ae(held_pane(state), a)
             # the user switches pane inside tmux: the client's active pane is now the other one
             t.tmux('select-pane', '-t', b)
             time.sleep(0.2)
-            t.finder(state).find('needle-5')
+            t.finder(state).find(default_query('needle-5'))
             self.assertFalse(self.in_mode(t, a), 'the pane the search left is out of copy mode')
             self.assertTrue(self.in_mode(t, b))
             self.ae(held_pane(state), b)
@@ -338,23 +343,23 @@ class TmuxFindIntegrationTest(BaseTest):
     def test_live_selection_is_not_stretched_by_the_search(self):
         with private_tmux(NEEDLES) as t:
             state = TmuxFindState()
-            t.finder(state).find('needle-5')
+            t.finder(state).find(default_query('needle-5'))
             t.tmux('send', '-t', t.pane, '-X', 'begin-selection')
             for _ in range(5):
                 t.tmux('send', '-t', t.pane, '-X', 'cursor-right')
             self.assertEqual(t.fmt('#{selection_present}'), '1')
-            t.finder(state).find('needle-2')
+            t.finder(state).find(default_query('needle-2'))
             self.ae(t.fmt('#{selection_present}'), '0')
             self.ae(t.fmt('#{selection_active}'), '0')
             self.ae(state.status, FindStatus(0, 111, FindCount.exact))
             # a new drag, then a step of the unchanged query: tmux withholds the count, the state has it
             t.tmux('send', '-t', t.pane, '-X', 'begin-selection')
             t.tmux('send', '-t', t.pane, '-X', 'cursor-right')
-            t.finder(state).step('needle-2', False)
+            t.finder(state).step(default_query('needle-2'), False)
             self.ae(t.fmt('#{selection_present}'), '0')
             self.ae(state.status, FindStatus(0, 111, FindCount.exact))
             t.tmux('send', '-t', t.pane, '-X', 'begin-selection')
-            t.finder(state).step('needle-2', True)
+            t.finder(state).step(default_query('needle-2'), True)
             self.ae(state.status, FindStatus(0, 111, FindCount.exact))
 
     def selection_made(self, t: PrivateTmux, search: str, right: int = 5, left: bool = False) -> None:
@@ -444,12 +449,12 @@ class TmuxFindIntegrationTest(BaseTest):
     def test_a_wedged_server_ends_in_the_deadline_and_the_pane_is_cancelled_when_it_wakes(self):
         with private_tmux(NEEDLES) as t:
             state = TmuxFindState()
-            t.finder(state).find('needle-5')
+            t.finder(state).find(default_query('needle-5'))
             server = int(t.fmt('#{pid}'))
             os.kill(server, signal.SIGSTOP)
             try:
                 start = time.monotonic()
-                t.finder(state).step('needle-5', False)
+                t.finder(state).step(default_query('needle-5'), False)
                 took = time.monotonic() - start
                 self.assertLess(took, FIND_DEADLINE + 1)
                 self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
@@ -468,7 +473,7 @@ class TmuxFindIntegrationTest(BaseTest):
             state = TmuxFindState()
             client = t.client()
             dead = TmuxClient(2**22 + 5, client.exe, client.server_args, None, client.path)
-            TmuxFind(dead, state, TmuxOperation()).find('needle')
+            TmuxFind(dead, state, TmuxOperation()).find(default_query('needle'))
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
             self.assertIsNone(state.held, 'no pane was reached')
 
@@ -531,7 +536,7 @@ class TmuxFindWindowTest(BaseTest):
             screen=s, find_query='', os_window_id=1, text_for_selection=lambda: s.callbacks.kitty_selection, geometry=None,
             child=SimpleNamespace(foreground_processes=foreground), tmux_find_state=TmuxFindState(), claude_find_state=ClaudeFindState(),
             claude_host=ClaudeHost(), find_reporting=None,
-            finish_scroll_animation=lambda: None, scroll_animation=SimpleNamespace(timer=0), find_bar_top_inset=lambda: 0,
+            finish_scroll_animation=lambda: None, scroll_animation=SimpleNamespace(timer=0), find_bar_top_inset=lambda: 0, find_mode=lambda: FindMode(),
             pending_find_timer=0,
         )
         w.foreground = foreground
@@ -797,7 +802,7 @@ class TmuxFindWindowTest(BaseTest):
         self.run_in_tmux(w)
         backend = w.find_pane_backend(w.tmux_client(), TmuxOperation())
         fake.pane = '%2'
-        backend.find('x')
+        backend.find(default_query('x'))
         self.ae(len([c for c in fake.calls if 'list-clients' in c]), 1)
         self.ae(w.tmux_find_state.held.pane, '%1')
         self.assertTrue(all('%2' not in arg for call in fake.calls for arg in call), 'nothing was sent to the pane tmux switched to')
@@ -809,7 +814,7 @@ class TmuxFindWindowTest(BaseTest):
         self.run_in_tmux(w)
         backend = w.find_pane_backend(w.tmux_client(), TmuxOperation())
         fake.unreachable = False
-        backend.find('x')
+        backend.find(default_query('x'))
         self.ae(w.tmux_find_state.status, FindStatus(0, 0, FindCount.unavailable))
         self.ae(len([c for c in fake.calls if 'list-clients' in c]), 1)
 
@@ -827,7 +832,7 @@ class TmuxFindWindowTest(BaseTest):
 
         op = TmuxOperation(run, now=lambda: clock[0], sleep=lambda s: None)
         backend = w.find_backend_to_search(op)
-        backend.find('x')
+        backend.find(default_query('x'))
         self.assertGreater(len(at), 1)
         self.assertTrue(all(t < FIND_DEADLINE for t in at), f'a command started after the budget was spent: {at}')
         self.assertLessEqual(len(at), 4, 'the budget ended the operation; it did not start a second one')

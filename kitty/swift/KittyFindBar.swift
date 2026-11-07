@@ -6,13 +6,17 @@
 
 import AppKit
 
-// What the bar tells kitty: it knows a query string, a step direction and an "n of m" status,
-// and nothing of the engine. kitty's Objective-C implements this and sets KittyFindBar.delegate.
+// What the bar tells kitty: it knows a query string, a step direction, the mode a query matches
+// in and an "n of m" status, and nothing of the engine. kitty's Objective-C implements this and
+// sets KittyFindBar.delegate.
 @MainActor
 @objc public protocol KittyFindBarDelegate: AnyObject {
     func findBar(_ window: NSWindow, queryChanged text: String)
     func findBar(_ window: NSWindow, step forward: Bool)
     func findBarClosed(_ window: NSWindow)
+    func findBarModeChanged(caseRule: KittyFindCaseRule, syntax: KittyFindSyntax)
+    // whether the window's search is kitty's own, the one the mode applies to
+    func findBarHonorsMode(_ window: NSWindow) -> Bool
 }
 
 // How far a search's total can be trusted. Python's FindCount has the same values.
@@ -21,6 +25,19 @@ import AppKit
     case partial = 1
     case unavailable = 2
     case pending = 3
+    case rejected = 4
+}
+
+// How a query matches. Python's FindCaseRule and FindSyntax, and kitty/kitty_rs.h's, have the same values.
+@objc public enum KittyFindCaseRule: Int {
+    case smart = 0
+    case ignore = 1
+    case match = 2
+}
+
+@objc public enum KittyFindSyntax: Int {
+    case literal = 0
+    case regex = 1
 }
 
 @MainActor
@@ -54,6 +71,7 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         bar.status.stringValue = switch (count, current, total) {
         // a search that could not be made is not a search that found nothing
         case (.unavailable, _, _): "Search unavailable"
+        case (.rejected, _, _): "Invalid pattern"
         case (.pending, _, _): ""
         // a search still counting has found at least total: none yet is not none
         case (.partial, 0, _): "\(total)+ matches"
@@ -62,6 +80,25 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         case (_, 0, _): "\(total) matches"
         default: "\(current) of \(total)"
         }
+    }
+
+    // [LAW:one-source-of-truth] The mode is the app's saved setting, the same in every window: the
+    // defaults hold it, and a change is told to kitty, which brings every window's search in line.
+    private static let caseRuleKey = "KittyFindCaseRule", syntaxKey = "KittyFindSyntax"
+
+    // An unset key reads 0, the default mode; a value no build wrote reads as the default too
+    @objc public static var caseRule: KittyFindCaseRule {
+        KittyFindCaseRule(rawValue: UserDefaults.standard.integer(forKey: caseRuleKey)) ?? .smart
+    }
+
+    @objc public static var syntax: KittyFindSyntax {
+        KittyFindSyntax(rawValue: UserDefaults.standard.integer(forKey: syntaxKey)) ?? .literal
+    }
+
+    @objc public static func setMode(caseRule: KittyFindCaseRule, syntax: KittyFindSyntax) {
+        UserDefaults.standard.set(caseRule.rawValue, forKey: caseRuleKey)
+        UserDefaults.standard.set(syntax.rawValue, forKey: syntaxKey)
+        delegate.findBarModeChanged(caseRule: caseRule, syntax: syntax)
     }
 
     // The text in the window's field, which a hidden bar keeps for the next Cmd+F; nil for a window
@@ -116,6 +153,7 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         field.target = self
         field.action = #selector(queryChanged)
         field.delegate = self
+        field.searchMenuTemplate = modeMenu()
         status.controlSize = .small
         status.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize(for: .small), weight: .regular)
         status.textColor = .secondaryLabelColor
@@ -164,6 +202,31 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
     public override func otherMouseDragged(with event: NSEvent) {}
     public override func scrollWheel(with event: NSEvent) {}
 
+    // The magnifier's menu: how a query matches. The items' state is read from the saved mode
+    // each time the menu opens, so it shows a change made in another window or by a key.
+    private func modeMenu() -> NSMenu {
+        let menu = NSMenu()
+        for (rule, title) in [(KittyFindCaseRule.smart, "Smart Case"), (.ignore, "Ignore Case"), (.match, "Match Case")] {
+            let item = NSMenuItem(title: title, action: #selector(chooseCaseRule), keyEquivalent: "")
+            item.target = self
+            item.tag = rule.rawValue
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let regex = NSMenuItem(title: "Regular Expression", action: #selector(toggleRegex), keyEquivalent: "")
+        regex.target = self
+        menu.addItem(regex)
+        return menu
+    }
+
+    @objc private func chooseCaseRule(_ sender: NSMenuItem) {
+        Self.setMode(caseRule: KittyFindCaseRule(rawValue: sender.tag)!, syntax: Self.syntax)
+    }
+
+    @objc private func toggleRegex(_ sender: NSMenuItem) {
+        Self.setMode(caseRule: Self.caseRule, syntax: Self.syntax == .regex ? .literal : .regex)
+    }
+
     @objc private func queryChanged() {
         Self.delegate.findBar(window!, queryChanged: field.stringValue)
     }
@@ -193,5 +256,21 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         window.makeFirstResponder(window.contentView)
         isHidden = true
         Self.delegate.findBarClosed(window)
+    }
+}
+
+extension KittyFindBar: NSMenuItemValidation {
+    // tmux and Claude Code search by their own rules, so the menu offers no mode while one of them
+    // holds the bar's search: it never shows a mode that is not the one searching
+    public func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(chooseCaseRule):
+            item.state = item.tag == Self.caseRule.rawValue ? .on : .off
+        case #selector(toggleRegex):
+            item.state = Self.syntax == .regex ? .on : .off
+        default:
+            return true
+        }
+        return window.map { Self.delegate.findBarHonorsMode($0) } ?? false
     }
 }

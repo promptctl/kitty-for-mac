@@ -7,8 +7,9 @@ mod find;
 use std::ffi::c_void;
 
 use find::{
-    Direction, FindBufferBounds, FindCellSpan, FindEngine, FindFill, FindMatch, FindOrigin,
-    FindPos, FindQueryChange, FindRefeed, FindRefeedRange, FindStatus, FindWant, StepOutcome,
+    Direction, FindBufferBounds, FindCellSpan, FindEngine, FindFill, FindMatch, FindMode,
+    FindOrigin, FindPos, FindQueryChange, FindRefeed, FindRefeedRange, FindStatus, FindWant,
+    StepOutcome,
 };
 
 /// `kitty/find.h`'s `FindLogicalLine`: the walker's view of one logical line.
@@ -35,21 +36,11 @@ pub unsafe extern "C" fn kitty_rs_find_engine_free(engine: *mut FindEngine) {
     drop(unsafe { Box::from_raw(engine) });
 }
 
-/// What `kitty_rs_find_set_query` did, as `kitty/kitty_rs.h` declares it.
-#[repr(C)]
-#[derive(Debug, PartialEq, Eq)]
-pub enum FindQueryResult {
-    Unchanged,
-    Changed,
-    Invalid,
-}
-
-/// Unchanged when the query and case are the ones already searched for, touching nothing.
-/// Invalid when the query cannot be compiled, leaving the empty query and the reason in `err`.
+/// Unchanged when the query and mode are the ones already set, touching nothing. Rejected when
+/// the query cannot be searched for: the engine holds it with no matches.
 ///
 /// # Safety
-/// `engine` is live; `utf8` points to `len` readable bytes (non-null even when `len` is 0);
-/// `err` points to `err_size` >= 1 writable bytes.
+/// `engine` is live; `utf8` points to `len` readable bytes (non-null even when `len` is 0).
 ///
 /// # Panics
 /// When `utf8` is not UTF-8: kitty always passes its query as UTF-8, so other bytes are a
@@ -59,38 +50,50 @@ pub unsafe extern "C" fn kitty_rs_find_set_query(
     engine: *mut FindEngine,
     utf8: *const u8,
     len: usize,
-    case_insensitive: bool,
-    err: *mut u8,
-    err_size: usize,
-) -> FindQueryResult {
+    mode: FindMode,
+) -> FindQueryChange {
     // SAFETY: the caller's contract above.
-    let (engine, bytes, err) = unsafe {
-        (
-            &mut *engine,
-            std::slice::from_raw_parts(utf8, len),
-            std::slice::from_raw_parts_mut(err, err_size),
-        )
-    };
+    let (engine, bytes) = unsafe { (&mut *engine, std::slice::from_raw_parts(utf8, len)) };
     // [LAW:no-silent-failure] invalid UTF-8 is a caller bug; the panic aborts loudly.
     let query = std::str::from_utf8(bytes).expect("kitty_rs_find_set_query: query is not UTF-8");
-    match engine.set_query(query, case_insensitive) {
-        Ok(FindQueryChange::Unchanged) => FindQueryResult::Unchanged,
-        Ok(FindQueryChange::Changed) => FindQueryResult::Changed,
-        Err(e) => {
-            write_c_string(&e.to_string(), err);
-            FindQueryResult::Invalid
-        }
-    }
+    engine.set_query(query, mode)
 }
 
-/// Writes `s` into `buf` as a NUL-terminated C string, cut at a char boundary to fit.
-fn write_c_string(s: &str, buf: &mut [u8]) {
-    let mut n = s.len().min(buf.len() - 1);
-    while !s.is_char_boundary(n) {
-        n -= 1;
-    }
-    buf[..n].copy_from_slice(&s.as_bytes()[..n]);
-    buf[n] = 0;
+/// Searches for the query already set, in `mode`; the empty query stays empty.
+///
+/// # Safety
+/// `engine` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_set_mode(
+    engine: *mut FindEngine,
+    mode: FindMode,
+) -> FindQueryChange {
+    // SAFETY: the caller's contract above.
+    unsafe { &mut *engine }.set_mode(mode)
+}
+
+/// Writes the pattern that matches the UTF-8 text `utf8` literally to `out` and returns its
+/// length: the escaping a literal query gets, for a regular-expression query seeded from text.
+///
+/// # Safety
+/// `utf8` points to `len` readable bytes and `out` to `2 * len` writable bytes (both non-null
+/// even when `len` is 0): escaping adds at most one backslash per character.
+///
+/// # Panics
+/// When `utf8` is not UTF-8, as `kitty_rs_find_set_query` does.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kitty_rs_find_escape(utf8: *const u8, len: usize, out: *mut u8) -> usize {
+    // SAFETY: the caller's contract above.
+    let (bytes, out) = unsafe {
+        (
+            std::slice::from_raw_parts(utf8, len),
+            std::slice::from_raw_parts_mut(out, 2 * len),
+        )
+    };
+    let text = std::str::from_utf8(bytes).expect("kitty_rs_find_escape: text is not UTF-8");
+    let escaped = regex::escape(text);
+    out[..escaped.len()].copy_from_slice(escaped.as_bytes());
+    escaped.len()
 }
 
 /// An empty refeed of `lines` under the engine's current query. Never NULL: allocation
@@ -387,19 +390,11 @@ mod tests {
             text_len: text.len(),
             cells: cells.as_ptr(),
         };
-        let mut err = [0u8; 8];
-        let set = |err: &mut [u8]| unsafe {
-            kitty_rs_find_set_query(
-                engine,
-                query.as_ptr(),
-                query.len(),
-                true,
-                err.as_mut_ptr(),
-                err.len(),
-            )
+        let set = || unsafe {
+            kitty_rs_find_set_query(engine, query.as_ptr(), query.len(), FindMode::default())
         };
-        assert_eq!(set(&mut err), FindQueryResult::Changed);
-        assert_eq!(set(&mut err), FindQueryResult::Unchanged);
+        assert_eq!(set(), FindQueryChange::Changed);
+        assert_eq!(set(), FindQueryChange::Unchanged);
         let mut fill = FindFill {
             from: 0,
             limit: 0,
@@ -498,38 +493,34 @@ mod tests {
     }
 
     #[test]
-    fn a_query_that_cannot_compile_reports_why() {
-        let engine = kitty_rs_find_engine_new();
-        // past the regex crate's default compiled-size limit
-        let query = "é".repeat(1 << 17);
-        let mut err = [0xffu8; 256];
-        let result = unsafe {
-            kitty_rs_find_set_query(
-                engine,
-                query.as_ptr(),
-                query.len(),
-                true,
-                err.as_mut_ptr(),
-                err.len(),
-            )
-        };
-        assert_eq!(result, FindQueryResult::Invalid);
-        let reason = std::ffi::CStr::from_bytes_until_nul(&err)
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert!(reason.contains("size limit"), "{reason}");
-        unsafe { kitty_rs_find_engine_free(engine) };
+    fn escaped_text_is_a_pattern_that_matches_it_literally() {
+        let text = "a.b(é)*";
+        let mut out = vec![0u8; 2 * text.len()];
+        let n = unsafe { kitty_rs_find_escape(text.as_ptr(), text.len(), out.as_mut_ptr()) };
+        let pattern = std::str::from_utf8(&out[..n]).unwrap();
+        assert_eq!(pattern, r"a\.b\(é\)\*");
+        assert!(regex::Regex::new(pattern).unwrap().is_match("xa.b(é)*"));
     }
 
     #[test]
-    fn write_c_string_cuts_at_a_char_boundary() {
-        let mut buf = [0xffu8; 4];
-        write_c_string("aéb", &mut buf);
-        assert_eq!(buf, *b"a\xc3\xa9\0");
-        // two bytes of room would split é, so only "a" fits
-        let mut buf = [0xffu8; 3];
-        write_c_string("aéb", &mut buf);
-        assert_eq!(buf[..2], *b"a\0");
+    fn a_query_that_cannot_compile_is_held_rejected() {
+        let engine = kitty_rs_find_engine_new();
+        // past the regex crate's default compiled-size limit
+        let query = "é".repeat(1 << 17);
+        let set = || unsafe {
+            kitty_rs_find_set_query(engine, query.as_ptr(), query.len(), FindMode::default())
+        };
+        assert_eq!(set(), FindQueryChange::Rejected);
+        assert_eq!(
+            set(),
+            FindQueryChange::Unchanged,
+            "the same rejected query again changes nothing"
+        );
+        let status = unsafe { kitty_rs_find_status(engine, BOUNDS) };
+        assert_eq!(
+            (status.total, status.query),
+            (0, find::FindQueryState::Rejected)
+        );
+        unsafe { kitty_rs_find_engine_free(engine) };
     }
 }
