@@ -113,17 +113,19 @@ impl FindRefeed {
             "a logical line's cells lie in its rows"
         );
         self.next_line = abs_first_line + u64::from(rows);
-        // a non-empty literal never matches empty, so every match has a last byte
+        // [LAW:types-are-the-program] a match is cells to highlight and select, so a pattern's
+        // empty matches (x*, ^, \b) are not matches: every match kept has a last byte
         let found = self.regex.iter().flat_map(|re| re.find_iter(text));
-        self.matches.extend(found.map(|m| {
-            let (first, last) = (cells[m.start()], cells[m.end() - 1]);
-            FindMatch {
-                abs_start_line: abs_first_line + u64::from(first.row),
-                start_x: first.x,
-                abs_end_line: abs_first_line + u64::from(last.row),
-                end_x: last.x_last,
-            }
-        }));
+        self.matches
+            .extend(found.filter(|m| !m.is_empty()).map(|m| {
+                let (first, last) = (cells[m.start()], cells[m.end() - 1]);
+                FindMatch {
+                    abs_start_line: abs_first_line + u64::from(first.row),
+                    start_x: first.x,
+                    abs_end_line: abs_first_line + u64::from(last.row),
+                    end_x: last.x_last,
+                }
+            }));
     }
 
     /// The lines fed: a walk the sink stopped early fed fewer than its range.
@@ -283,11 +285,167 @@ pub enum StepOutcome {
     Waiting(FindWant),
 }
 
-/// Whether a `set_query` started a new search.
+/// How a query's case decides a match: Smart ignores case unless the query has an uppercase
+/// letter of its own. The values are `kitty/kitty_rs.h`'s and Python's `FindCaseRule`'s.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FindCaseRule {
+    #[default]
+    Smart,
+    Ignore,
+    Match,
+}
+
+/// Whether the query is text to find as written or a regular expression.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FindSyntax {
+    #[default]
+    Literal,
+    Regex,
+}
+
+/// How a query matches: what the find bar's menu sets.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FindMode {
+    pub case_rule: FindCaseRule,
+    pub syntax: FindSyntax,
+}
+
+impl FindMode {
+    /// What `query` searches for in this mode.
+    fn search(self, query: &str) -> Search {
+        let pattern = match self.syntax {
+            FindSyntax::Literal => regex::escape(query),
+            FindSyntax::Regex => query.to_owned(),
+        };
+        let case_insensitive = match self.case_rule {
+            FindCaseRule::Ignore => true,
+            FindCaseRule::Match => false,
+            FindCaseRule::Smart => !has_uppercase_literal(&pattern),
+        };
+        Search {
+            pattern,
+            case_insensitive,
+        }
+    }
+}
+
+/// The regex a query builds. Modes are compared by it, so a change between two modes that
+/// build the same regex, such as smart and ignore case for a lowercase query, is no change.
+#[derive(PartialEq, Eq)]
+struct Search {
+    pattern: String,
+    case_insensitive: bool,
+}
+
+impl Search {
+    /// The regex that finds this, or why there is none.
+    fn compile(&self) -> Result<Regex, regex::Error> {
+        RegexBuilder::new(&self.pattern)
+            .case_insensitive(self.case_insensitive)
+            .build()
+    }
+}
+
+/// Whether a pattern spells an uppercase letter itself. Escapes and classes such as \S or
+/// \W are syntax, not letters, so they leave smart case ignoring case, as ripgrep's does.
+fn has_uppercase_literal(pattern: &str) -> bool {
+    use regex_syntax::ast::{self, Ast, ClassSetItem, Visitor};
+    struct Uppercase(bool);
+    impl Visitor for Uppercase {
+        type Output = bool;
+        type Err = ();
+        fn finish(self) -> Result<bool, ()> {
+            Ok(self.0)
+        }
+        fn visit_pre(&mut self, ast: &Ast) -> Result<(), ()> {
+            if let Ast::Literal(lit) = ast {
+                self.0 |= lit.c.is_uppercase();
+            }
+            Ok(())
+        }
+        fn visit_class_set_item_pre(&mut self, item: &ClassSetItem) -> Result<(), ()> {
+            // the visitor does not go into a range's ends, so [A-Z] is read here
+            self.0 |= match item {
+                ClassSetItem::Literal(lit) => lit.c.is_uppercase(),
+                ClassSetItem::Range(range) => {
+                    range.start.c.is_uppercase() || range.end.c.is_uppercase()
+                }
+                _ => false,
+            };
+            Ok(())
+        }
+    }
+    // a pattern that does not parse will not build either: its case does not matter
+    ast::parse::Parser::new()
+        .parse(pattern)
+        .is_ok_and(|a| ast::visit(&a, Uppercase(false)) == Ok(true))
+}
+
+/// The engine's query: what it searches for, or the query it could not search for.
+// [LAW:types-are-the-program] a rejected query has no regex, so it can have no matches
+#[derive(Default)]
+enum Query {
+    /// Nothing to find, so every line yields no match.
+    #[default]
+    Empty,
+    Searching {
+        text: String,
+        search: Search,
+        /// Shared with each refeed: a cloned Regex would build its search caches anew.
+        regex: Arc<Regex>,
+    },
+    /// Kept so that setting it again changes nothing.
+    Rejected { text: String, search: Search },
+}
+
+impl Query {
+    fn is(&self, query: &str, mode: FindMode) -> bool {
+        match self {
+            // the empty query finds nothing in every mode
+            Self::Empty => query.is_empty(),
+            Self::Searching { text, search, .. } | Self::Rejected { text, search } => {
+                text == query && *search == mode.search(query)
+            }
+        }
+    }
+
+    const fn regex(&self) -> Option<&Arc<Regex>> {
+        match self {
+            Self::Searching { regex, .. } => Some(regex),
+            Self::Empty | Self::Rejected { .. } => None,
+        }
+    }
+
+    const fn state(&self) -> FindQueryState {
+        match self {
+            Self::Empty => FindQueryState::Empty,
+            Self::Searching { .. } => FindQueryState::Searching,
+            Self::Rejected { .. } => FindQueryState::Rejected,
+        }
+    }
+}
+
+/// What the engine's query is, as the find bar shows it. The values are `kitty/kitty_rs.h`'s.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindQueryState {
+    Empty,
+    Searching,
+    /// The query cannot be searched for, such as a regular expression that does not parse.
+    Rejected,
+}
+
+/// Whether a `set_query` started a new search. The values are `kitty/kitty_rs.h`'s.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FindQueryChange {
     Unchanged,
     Changed,
+    /// A new query that cannot be searched for: the engine holds it, rejected, with no matches.
+    Rejected,
 }
 
 /// The match the user is on, and whether the step that reached it wrapped past an end.
@@ -306,14 +464,12 @@ pub struct FindStatus {
     pub total: usize,
     pub wrapped: bool,
     pub unsearched: u64,
+    pub query: FindQueryState,
 }
 
 #[derive(Default)]
 pub struct FindEngine {
-    /// The query and whether it ignores case: a `set_query` with both the same changes nothing.
-    query: (String, bool),
-    /// None is the empty query: there is nothing to find, so every line yields no match.
-    regex: Option<Arc<Regex>>,
+    query: Query,
     /// Sorted in buffer order, and every one in a searched range: a refeed is fed in order and
     /// spliced in at its range, which starts a logical line, so no match crosses the cut.
     matches: MatchList,
@@ -325,36 +481,46 @@ pub struct FindEngine {
 }
 
 impl FindEngine {
-    /// Starts a new search, dropping every match of the previous one, unless the query and
-    /// case are the ones already searched for: then nothing changes. The query is a literal:
-    /// `regex::escape` puts it through the regex crate's literal fast path.
-    pub fn set_query(
-        &mut self,
-        query: &str,
-        case_insensitive: bool,
-    ) -> Result<FindQueryChange, regex::Error> {
-        // the empty query finds nothing whichever case it ignores
-        let key = (query.to_owned(), case_insensitive && !query.is_empty());
-        if key == self.query {
-            return Ok(FindQueryChange::Unchanged);
+    /// Starts a new search, dropping every match of the previous one, unless the query is the
+    /// one already set and the mode builds the same regex: then nothing changes. A literal query is escaped, which
+    /// puts it through the regex crate's literal fast path.
+    pub fn set_query(&mut self, query: &str, mode: FindMode) -> FindQueryChange {
+        if self.query.is(query, mode) {
+            return FindQueryChange::Unchanged;
         }
         let cleared = self.matches.len();
         self.matches.clear();
         self.searched = Searched::default();
         self.changed(cleared);
-        // a query that fails to build leaves the empty query, never the previous one
-        self.regex = None;
-        self.query = (String::new(), false);
-        self.regex = (!query.is_empty())
-            .then(|| {
-                RegexBuilder::new(&regex::escape(query))
-                    .case_insensitive(case_insensitive)
-                    .build()
-                    .map(Arc::new)
-            })
-            .transpose()?;
-        self.query = key;
-        Ok(FindQueryChange::Changed)
+        let text = query.to_owned();
+        let (query, change) = if text.is_empty() {
+            (Query::Empty, FindQueryChange::Changed)
+        } else {
+            let search = mode.search(&text);
+            match search.compile() {
+                Ok(regex) => (
+                    Query::Searching {
+                        text,
+                        search,
+                        regex: Arc::new(regex),
+                    },
+                    FindQueryChange::Changed,
+                ),
+                Err(_) => (Query::Rejected { text, search }, FindQueryChange::Rejected),
+            }
+        };
+        self.query = query;
+        change
+    }
+
+    /// Searches for the query already set, in `mode`; the empty query stays empty.
+    pub fn set_mode(&mut self, mode: FindMode) -> FindQueryChange {
+        match &self.query {
+            Query::Empty => FindQueryChange::Unchanged,
+            Query::Searching { text, .. } | Query::Rejected { text, .. } => {
+                self.set_query(&text.clone(), mode)
+            }
+        }
     }
 
     /// An empty refeed of `lines` under the current query, for the caller to feed and splice.
@@ -362,7 +528,7 @@ impl FindEngine {
         FindRefeed {
             lines,
             next_line: lines.from,
-            regex: self.regex.clone(),
+            regex: self.query.regex().cloned(),
             matches: Vec::new(),
         }
     }
@@ -464,7 +630,7 @@ impl FindEngine {
     /// The searched lines under a query that can match; None for the empty query.
     // [LAW:single-enforcer] the empty query has nothing to search, so nothing waits on it
     fn searchable(&self) -> Option<&Searched> {
-        self.regex.as_ref().map(|_| &self.searched)
+        self.query.regex().map(|_| &self.searched)
     }
 
     /// The matches covering any of the lines `first..limit`, in buffer order, as the
@@ -597,6 +763,7 @@ impl FindEngine {
             total: self.matches.len(),
             wrapped: self.current.is_some_and(|c| c.wrapped),
             unsearched: self.searchable().map_or(0, |s| s.unsearched(b)),
+            query: self.query.state(),
         }
     }
 }
@@ -604,6 +771,27 @@ impl FindEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MATCH: FindMode = FindMode {
+        case_rule: FindCaseRule::Match,
+        syntax: FindSyntax::Literal,
+    };
+    const IGNORE: FindMode = FindMode {
+        case_rule: FindCaseRule::Ignore,
+        syntax: FindSyntax::Literal,
+    };
+    const SMART: FindMode = FindMode {
+        case_rule: FindCaseRule::Smart,
+        syntax: FindSyntax::Literal,
+    };
+    const REGEX: FindMode = FindMode {
+        case_rule: FindCaseRule::Match,
+        syntax: FindSyntax::Regex,
+    };
+    const SMART_REGEX: FindMode = FindMode {
+        case_rule: FindCaseRule::Smart,
+        syntax: FindSyntax::Regex,
+    };
 
     impl FindEngine {
         fn matches(&self) -> Vec<FindMatch> {
@@ -730,9 +918,9 @@ mod tests {
         e.add_searched(r);
     }
 
-    fn search(query: &str, case_insensitive: bool, lines: &[(u64, &[&str])]) -> Vec<FindMatch> {
+    fn search(query: &str, mode: FindMode, lines: &[(u64, &[&str])]) -> Vec<FindMatch> {
         let mut e = FindEngine::default();
-        e.set_query(query, case_insensitive).unwrap();
+        e.set_query(query, mode);
         for (abs, rows) in lines {
             let (text, cells, rows) = line(rows, narrow);
             append(&mut e, *abs, rows, &text, &cells);
@@ -757,7 +945,7 @@ mod tests {
     fn engine_with_one_match_per_line(lines: u64) -> (FindEngine, Buffer) {
         let buf = Buffer::of(lines, |_| true);
         let mut e = FindEngine::default();
-        e.set_query("x", false).unwrap();
+        e.set_query("x", MATCH);
         buf.fill_all(&mut e, 0, 1000);
         (e, buf)
     }
@@ -789,7 +977,7 @@ mod tests {
     #[test]
     fn every_match_in_one_line() {
         assert_eq!(
-            search("ab", false, &[(7, &["xabyab"])]),
+            search("ab", MATCH, &[(7, &["xabyab"])]),
             [m(7, 1, 7, 2), m(7, 4, 7, 5)]
         );
     }
@@ -797,7 +985,7 @@ mod tests {
     #[test]
     fn a_match_across_wrapped_rows_ends_on_the_later_row() {
         assert_eq!(
-            search("cdef", false, &[(3, &["abcd", "efgh"])]),
+            search("cdef", MATCH, &[(3, &["abcd", "efgh"])]),
             [m(3, 2, 4, 1)]
         );
     }
@@ -805,7 +993,7 @@ mod tests {
     #[test]
     fn matches_from_later_lines_follow_in_buffer_order() {
         assert_eq!(
-            search("x", false, &[(0, &["x"]), (1, &["ax", "x"]), (3, &["x"])]),
+            search("x", MATCH, &[(0, &["x"]), (1, &["ax", "x"]), (3, &["x"])]),
             [m(0, 0, 0, 0), m(1, 1, 1, 1), m(2, 0, 2, 0), m(3, 0, 3, 0)]
         );
     }
@@ -813,12 +1001,12 @@ mod tests {
     #[test]
     fn wide_and_multibyte_chars_map_to_their_cells() {
         let mut e = FindEngine::default();
-        e.set_query("é中z", false).unwrap();
+        e.set_query("é中z", MATCH);
         let (text, cells, rows) = line(&["a中é中z"], |c| if c == '中' { 2 } else { 1 });
         append(&mut e, 0, rows, &text, &cells);
         // a=0, 中=1..2, é=3, 中=4..5, z=6: the match ends on z, and starts on é after a wide char
         assert_eq!(e.matches(), [m(0, 3, 0, 6)]);
-        e.set_query("中", false).unwrap();
+        e.set_query("中", MATCH);
         append(&mut e, 0, rows, &text, &cells);
         // a match that is itself a wide char ends on that char's last cell
         assert_eq!(e.matches(), [m(0, 1, 0, 2), m(0, 4, 0, 5)]);
@@ -827,7 +1015,7 @@ mod tests {
     #[test]
     fn a_tab_covers_its_padding() {
         let mut e = FindEngine::default();
-        e.set_query("\tb", false).unwrap();
+        e.set_query("\tb", MATCH);
         let (text, cells, rows) = line(&["a\tb"], |c| if c == '\t' { 7 } else { 1 });
         append(&mut e, 0, rows, &text, &cells);
         assert_eq!(e.matches(), [m(0, 1, 0, 8)]);
@@ -835,26 +1023,120 @@ mod tests {
 
     #[test]
     fn case_insensitive_folds_letters_one_to_one() {
-        assert_eq!(search("é", true, &[(0, &["É"])]), [m(0, 0, 0, 0)]);
-        assert_eq!(search("abc", true, &[(0, &["xABc"])]), [m(0, 1, 0, 3)]);
+        assert_eq!(search("é", IGNORE, &[(0, &["É"])]), [m(0, 0, 0, 0)]);
+        assert_eq!(search("abc", IGNORE, &[(0, &["xABc"])]), [m(0, 1, 0, 3)]);
         // simple case folding: ß does not expand to SS
-        assert_eq!(search("straße", true, &[(0, &["STRASSE"])]), []);
+        assert_eq!(search("straße", IGNORE, &[(0, &["STRASSE"])]), []);
     }
 
     #[test]
     fn case_sensitive_by_request() {
-        assert_eq!(search("abc", false, &[(0, &["ABC abc"])]), [m(0, 4, 0, 6)]);
+        assert_eq!(search("abc", MATCH, &[(0, &["ABC abc"])]), [m(0, 4, 0, 6)]);
     }
 
     #[test]
     fn regex_metacharacters_are_literal() {
-        assert_eq!(search("a.c", false, &[(0, &["abc a.c"])]), [m(0, 4, 0, 6)]);
-        assert_eq!(search("(", false, &[(0, &["f(x)"])]), [m(0, 1, 0, 1)]);
+        assert_eq!(search("a.c", MATCH, &[(0, &["abc a.c"])]), [m(0, 4, 0, 6)]);
+        assert_eq!(search("(", MATCH, &[(0, &["f(x)"])]), [m(0, 1, 0, 1)]);
+    }
+
+    #[test]
+    fn smart_case_matches_case_only_for_a_query_with_an_uppercase_letter() {
+        assert_eq!(search("abc", SMART, &[(0, &["ABC"])]), [m(0, 0, 0, 2)]);
+        assert_eq!(search("Abc", SMART, &[(0, &["abc Abc"])]), [m(0, 4, 0, 6)]);
+        // escapes and classes are syntax, not letters
+        assert_eq!(
+            search(r"a\Sc", SMART_REGEX, &[(0, &["AbC"])]),
+            [m(0, 0, 0, 2)]
+        );
+        assert_eq!(
+            search(r"a[B]c", SMART_REGEX, &[(0, &["abc aBc"])]),
+            [m(0, 4, 0, 6)]
+        );
+        assert_eq!(
+            search("[A-Z]", SMART_REGEX, &[(0, &["aB"])]),
+            [m(0, 1, 0, 1)]
+        );
+        // a literal query's backslash is a character: its letters are the query's
+        assert_eq!(search(r"\W", SMART, &[(0, &[r"\w \W"])]), [m(0, 3, 0, 4)]);
+    }
+
+    #[test]
+    fn a_regex_matches_across_a_wrapped_line() {
+        assert_eq!(
+            search("c[de]+f", REGEX, &[(3, &["abcd", "efgh"])]),
+            [m(3, 2, 4, 1)]
+        );
+    }
+
+    #[test]
+    fn a_pattern_s_empty_matches_are_not_matches() {
+        assert_eq!(search("x*", REGEX, &[(0, &["axxb"])]), [m(0, 1, 0, 2)]);
+        assert_eq!(search("^", REGEX, &[(0, &["ab"])]), []);
+        assert_eq!(search(r"\b", REGEX, &[(0, &["a b"])]), []);
+    }
+
+    #[test]
+    fn a_pattern_that_does_not_parse_is_held_rejected_with_no_matches() {
+        let mut e = FindEngine::default();
+        assert_eq!(e.set_query("a(", REGEX), FindQueryChange::Rejected);
+        assert_eq!(e.set_query("a(", REGEX), FindQueryChange::Unchanged);
+        let (text, cells, rows) = line(&["a(b"], narrow);
+        append(&mut e, 0, rows, &text, &cells);
+        let s = e.status(FindBufferBounds { oldest: 0, end: 1 });
+        assert_eq!(
+            (s.total, s.unsearched, s.query),
+            (0, 0, FindQueryState::Rejected)
+        );
+        // as a literal it is text to find
+        assert_eq!(e.set_mode(MATCH), FindQueryChange::Changed);
+        assert_eq!(
+            e.status(FindBufferBounds { oldest: 0, end: 1 }).query,
+            FindQueryState::Searching
+        );
+    }
+
+    #[test]
+    fn a_mode_change_searches_the_query_again_and_leaves_the_empty_query_empty() {
+        let mut e = FindEngine::default();
+        assert_eq!(e.set_mode(REGEX), FindQueryChange::Unchanged);
+        e.set_query("a.c", MATCH);
+        let (text, cells, rows) = line(&["abc"], narrow);
+        append(&mut e, 0, rows, &text, &cells);
+        assert_eq!(e.matches(), []);
+        assert_eq!(e.set_mode(REGEX), FindQueryChange::Changed);
+        assert_eq!(
+            e.status(FindBufferBounds { oldest: 0, end: 1 }).unsearched,
+            1,
+            "the new search starts afresh"
+        );
+        append(&mut e, 0, rows, &text, &cells);
+        assert_eq!(e.matches(), [m(0, 0, 0, 2)]);
+        assert_eq!(e.set_mode(REGEX), FindQueryChange::Unchanged);
+    }
+
+    #[test]
+    fn a_mode_change_that_builds_the_same_regex_keeps_the_search() {
+        let mut e = FindEngine::default();
+        e.set_query("abc", SMART);
+        let (text, cells, rows) = line(&["abc ABC"], narrow);
+        append(&mut e, 0, rows, &text, &cells);
+        assert_eq!(
+            press(&mut e, Direction::Next, bounds(0, 1)),
+            StepOutcome::Landed(m(0, 0, 0, 2))
+        );
+        let at = e.status(bounds(0, 1));
+        // a lowercase query ignores case under smart case, and has no regex syntax to read
+        for mode in [IGNORE, SMART_REGEX] {
+            assert_eq!(e.set_mode(mode), FindQueryChange::Unchanged);
+        }
+        assert_eq!(e.status(bounds(0, 1)), at, "the match the user is on stays");
+        assert_eq!(e.set_mode(MATCH), FindQueryChange::Changed);
     }
 
     #[test]
     fn the_empty_query_finds_nothing_and_has_nothing_to_search() {
-        assert_eq!(search("", false, &[(0, &["abc"])]), []);
+        assert_eq!(search("", MATCH, &[(0, &["abc"])]), []);
         let mut e = FindEngine::default();
         assert_eq!(e.next_fill(bounds(0, 10), None), None);
         assert_eq!(e.status(bounds(0, 10)).unsearched, 0);
@@ -867,7 +1149,7 @@ mod tests {
     #[test]
     fn a_new_query_drops_the_previous_matches_and_searched_lines() {
         let (mut e, _) = engine_with_one_match_per_line(4);
-        assert_eq!(e.set_query("y", false).unwrap(), FindQueryChange::Changed);
+        assert_eq!(e.set_query("y", MATCH), FindQueryChange::Changed);
         assert_eq!(e.matches(), []);
         assert_eq!(e.status(bounds(0, 4)).unsearched, 4);
     }
@@ -879,17 +1161,17 @@ mod tests {
         landed(press(&mut e, Direction::Next, b));
         landed(press(&mut e, Direction::Next, b));
         let (current, g) = (e.current(), e.generation());
-        assert_eq!(e.set_query("x", false).unwrap(), FindQueryChange::Unchanged);
+        assert_eq!(e.set_query("x", MATCH), FindQueryChange::Unchanged);
         assert_eq!(
             (e.current(), e.generation(), e.status(b).unsearched),
             (current, g, 0)
         );
-        // the empty query is the same whichever case it ignores
-        e.set_query("", false).unwrap();
-        assert_eq!(e.set_query("", true).unwrap(), FindQueryChange::Unchanged);
-        // the case flag is part of a real query
-        e.set_query("x", false).unwrap();
-        assert_eq!(e.set_query("x", true).unwrap(), FindQueryChange::Changed);
+        // the empty query is the same in every mode
+        e.set_query("", MATCH);
+        assert_eq!(e.set_query("", IGNORE), FindQueryChange::Unchanged);
+        // the mode is part of a real query
+        e.set_query("x", MATCH);
+        assert_eq!(e.set_query("x", IGNORE), FindQueryChange::Changed);
     }
 
     #[test]
@@ -897,13 +1179,13 @@ mod tests {
         let buf = Buffer::of(97, |i| i % 7 == 3 || i % 11 == 0);
         let full = {
             let mut e = FindEngine::default();
-            e.set_query("x", false).unwrap();
+            e.set_query("x", MATCH);
             e.add_searched(buf.walk(&e, onward(0), 0..buf.end()));
             e.matches()
         };
         for budget in [1, 2, 5, 13, 96, 200] {
             let mut e = FindEngine::default();
-            e.set_query("x", false).unwrap();
+            e.set_query("x", MATCH);
             // a want first, as a waiting step makes, then the default order
             assert!(buf.fill(
                 &mut e,
@@ -924,7 +1206,7 @@ mod tests {
     fn the_default_fill_searches_back_from_the_end() {
         let buf = Buffer::of(10, |_| true);
         let mut e = FindEngine::default();
-        e.set_query("x", false).unwrap();
+        e.set_query("x", MATCH);
         buf.fill(&mut e, 0, 3, None);
         assert_eq!(starts(&e), [7, 8, 9]);
         buf.fill(&mut e, 0, 3, None);
@@ -935,7 +1217,7 @@ mod tests {
     fn a_want_fills_toward_it_first() {
         let buf = Buffer::of(10, |_| true);
         let mut e = FindEngine::default();
-        e.set_query("x", false).unwrap();
+        e.set_query("x", MATCH);
         buf.fill(&mut e, 0, 3, None);
         // a wrapping Next needs the oldest lines, forward
         buf.fill(
@@ -984,7 +1266,7 @@ mod tests {
     #[should_panic(expected = "a refeed re-searches searched lines")]
     fn a_refeed_of_unsearched_lines_panics() {
         let mut e = FindEngine::default();
-        e.set_query("x", false).unwrap();
+        e.set_query("x", MATCH);
         let r = e.refeed(FindRefeedRange { from: 0, limit: 2 });
         e.splice(r);
     }
@@ -1041,7 +1323,7 @@ mod tests {
         // eviction of unsearched lines leaves the first line unsearched
         let buf = Buffer::of(10, |_| true);
         let mut e = FindEngine::default();
-        e.set_query("x", false).unwrap();
+        e.set_query("x", MATCH);
         buf.fill(&mut e, 0, 3, None);
         assert!(!e.evict_before(2));
         assert_eq!(e.status(bounds(2, 10)).unsearched, 5);
@@ -1064,8 +1346,8 @@ mod tests {
         );
         let mut empty = FindEngine::default();
         let g0 = empty.generation();
-        empty.set_query("x", false).unwrap();
-        empty.set_query("", false).unwrap();
+        empty.set_query("x", MATCH);
+        empty.set_query("", MATCH);
         assert_eq!(
             empty.generation(),
             g0,
@@ -1075,7 +1357,7 @@ mod tests {
         e.evict_before(1);
         assert_ne!(e.generation(), g);
         let g = e.generation();
-        e.set_query("z", false).unwrap();
+        e.set_query("z", MATCH);
         assert_ne!(e.generation(), g);
     }
 
@@ -1103,7 +1385,7 @@ mod tests {
     /// holds a wide char before the match.
     fn engine_for_steps() -> (FindEngine, Vec<FindMatch>) {
         let mut e = FindEngine::default();
-        e.set_query("ab", false).unwrap();
+        e.set_query("ab", MATCH);
         let (text, cells, rows) = line(&["ab a", "b ab"], narrow);
         append(&mut e, 0, rows, &text, &cells);
         let (text, cells, rows) = line(&["中ab"], |c| if c == '中' { 2 } else { 1 });
@@ -1184,7 +1466,7 @@ mod tests {
     fn with_no_matches_a_step_finds_nothing_once_all_is_searched() {
         let buf = Buffer::of(3, |_| false);
         let mut e = FindEngine::default();
-        e.set_query("x", false).unwrap();
+        e.set_query("x", MATCH);
         let b = bounds(0, 3);
         assert_eq!(
             press(&mut e, Direction::Next, b),
@@ -1201,7 +1483,8 @@ mod tests {
                 current: 0,
                 total: 0,
                 wrapped: false,
-                unsearched: 0
+                unsearched: 0,
+                query: FindQueryState::Searching,
             }
         );
     }
@@ -1213,8 +1496,9 @@ mod tests {
         let b = bounds(0, 20);
         let view = FindOrigin::Within(pos(16, 0)..pos(20, 0));
         let mut e = FindEngine::default();
-        e.set_query("x", false).unwrap();
-        buf.fill(&mut e, 0, 6, None); // lines 14..20
+        e.set_query("x", MATCH);
+        // lines 14..20
+        buf.fill(&mut e, 0, 6, None);
         // Previous from the view finds line 15 with every line between searched
         assert_eq!(
             e.step(Direction::Previous, &view, b),
@@ -1270,7 +1554,7 @@ mod tests {
         // the view is lines 10..15, all searched; line 15 below it is not
         let buf = Buffer::of(20, |i| i == 12);
         let mut e = FindEngine::default();
-        e.set_query("x", false).unwrap();
+        e.set_query("x", MATCH);
         let want = FindWant {
             line: 10,
             forward: true,
@@ -1305,7 +1589,7 @@ mod tests {
     #[test]
     fn the_matches_in_lines_are_those_touching_them() {
         let mut e = FindEngine::default();
-        e.set_query("xx", false).unwrap();
+        e.set_query("xx", MATCH);
         // lines 0, 1-2 (one match wrapping), 4
         for (abs, rows) in [(0, &["xx"][..]), (1, &["   x", "x  "]), (4, &["xx"])] {
             let (text, cells, rows) = line(rows, narrow);
@@ -1335,7 +1619,7 @@ mod tests {
     fn a_logical_line_walks_its_rows_past_its_last_text() {
         // two rows, the second erased: the next line starts after both
         let mut e = FindEngine::default();
-        e.set_query("x", false).unwrap();
+        e.set_query("x", MATCH);
         let (text, cells, _) = line(&["x"], narrow);
         append(&mut e, 0, 2, &text, &cells);
         assert_eq!(e.status(bounds(0, 3)).unsearched, 1);

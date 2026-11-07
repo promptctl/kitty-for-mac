@@ -3320,7 +3320,31 @@ cocoa_find_bar_state_py(PyObject UNUSED *self, PyObject *args) {
     if (!query) Py_RETURN_NONE;
     return Py_BuildValue("Os", shown ? Py_True : Py_False, query);
 }
+static PyObject *
+cocoa_find_mode_py(PyObject UNUSED *self, PyObject *args UNUSED) {
+    long case_rule, syntax;
+    cocoa_find_mode(&case_rule, &syntax);
+    return Py_BuildValue("ll", case_rule, syntax);
+}
+
+static PyObject *
+cocoa_set_find_mode_py(PyObject UNUSED *self, PyObject *args) {
+    long case_rule, syntax;
+    if (!PyArg_ParseTuple(args, "ll", &case_rule, &syntax)) return NULL;
+    cocoa_set_find_mode(case_rule, syntax);
+    Py_RETURN_NONE;
+}
 #else
+static PyObject *
+cocoa_find_mode_py(PyObject UNUSED *self, PyObject *args UNUSED) {
+    PyErr_SetString(PyExc_RuntimeError, "cocoa_find_mode() is only supported on macOS");
+    return NULL;
+}
+static PyObject *
+cocoa_set_find_mode_py(PyObject UNUSED *self, PyObject *args UNUSED) {
+    PyErr_SetString(PyExc_RuntimeError, "cocoa_set_find_mode() is only supported on macOS");
+    return NULL;
+}
 static PyObject *
 cocoa_find_bar_state_py(PyObject UNUSED *self, PyObject *args UNUSED) {
     PyErr_SetString(PyExc_RuntimeError, "cocoa_find_bar_state() is only supported on macOS");
@@ -4287,6 +4311,8 @@ static PyMethodDef module_methods[] = {
     METHODB(cocoa_show_find_bar_for_os_window, METH_VARARGS),
     {"cocoa_update_find_bar", cocoa_update_find_bar_py, METH_VARARGS, ""},
     {"cocoa_find_bar_covered_pixels", cocoa_find_bar_covered_pixels_py, METH_VARARGS, ""},
+    {"cocoa_find_mode", cocoa_find_mode_py, METH_NOARGS, ""},
+    {"cocoa_set_find_mode", cocoa_set_find_mode_py, METH_VARARGS, ""},
     {"cocoa_find_bar_state", cocoa_find_bar_state_py, METH_VARARGS, ""},
     {"glfw_wayland_inject_init", (PyCFunction)glfw_wayland_inject_init, METH_VARARGS, ""},
     {"glfw_wayland_inject_terminate", (PyCFunction)glfw_wayland_inject_terminate, METH_NOARGS, ""},

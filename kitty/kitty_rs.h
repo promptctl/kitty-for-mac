@@ -9,6 +9,7 @@
 #pragma once
 
 #include "find.h"
+#include "find-status.h"
 
 // A match from (abs_start_line, start_x) through (abs_end_line, end_x), both cells included.
 typedef struct FindMatch {
@@ -26,13 +27,23 @@ typedef struct FindEngine FindEngine;
 // Never NULL: allocation failure aborts. The new engine holds the empty query.
 FindEngine* kitty_rs_find_engine_new(void);
 void kitty_rs_find_engine_free(FindEngine *engine);
-typedef enum { FIND_QUERY_UNCHANGED, FIND_QUERY_CHANGED, FIND_QUERY_INVALID } FindQueryResult;
-// Sets a literal query; "" is the query that finds nothing. UNCHANGED when the query and case
-// are the ones already searched for, touching nothing. CHANGED drops every match and searched
-// line. INVALID when the query cannot be compiled, leaving the empty query and the reason in
-// err (NUL-terminated, truncated to err_size). utf8 must be non-NULL (even when len is 0) and
-// valid UTF-8; err_size must be at least 1.
-FindQueryResult kitty_rs_find_set_query(FindEngine *engine, const uint8_t *utf8, size_t len, bool case_insensitive, char *err, size_t err_size);
+// How a query matches. SMART ignores case unless the query has an uppercase letter of its own.
+// The values are Python's FindCaseRule and FindSyntax.
+typedef enum { FIND_CASE_SMART, FIND_CASE_IGNORE, FIND_CASE_MATCH } FindCaseRule;
+typedef enum { FIND_SYNTAX_LITERAL, FIND_SYNTAX_REGEX } FindSyntax;
+typedef struct { FindCaseRule case_rule; FindSyntax syntax; } FindMode;
+typedef enum { FIND_QUERY_UNCHANGED, FIND_QUERY_CHANGED, FIND_QUERY_REJECTED } FindQueryChange;
+// Sets the query; "" is the query that finds nothing, in every mode. UNCHANGED when the query and
+// mode are the ones already set, touching nothing. CHANGED drops every match and searched line.
+// REJECTED does the same and holds a query that cannot be searched for, such as a regular
+// expression that does not parse: it has no matches. utf8 must be non-NULL (even when len is 0)
+// and valid UTF-8.
+FindQueryChange kitty_rs_find_set_query(FindEngine *engine, const uint8_t *utf8, size_t len, FindMode mode);
+// Sets the query already set again, in mode; the empty query stays empty.
+FindQueryChange kitty_rs_find_set_mode(FindEngine *engine, FindMode mode);
+// Writes the regular expression that matches the UTF-8 text literally to out, which has room for
+// 2 * len bytes, and returns its length.
+size_t kitty_rs_find_escape(const uint8_t *utf8, size_t len, uint8_t *out);
 // The matches in a range of lines searched under the engine's query, spliced in whole.
 typedef struct FindRefeed FindRefeed;
 // Never NULL: allocation failure aborts.
@@ -107,12 +118,4 @@ typedef enum { FIND_STEP_LANDED, FIND_STEP_NO_MATCH, FIND_STEP_WAITING } FindSte
 // is searched and holds none; WAITING means unsearched lines could still hold the answer, writes
 // the first it needs to *want, and changes nothing.
 FindStepResult kitty_rs_find_step(FindEngine *engine, bool backwards, FindOrigin origin, FindBufferBounds bounds, FindMatch *landed, FindWant *want);
-// current is 1-based among the matches, 0 when there is no current match; wrapped says the
-// step that reached it went past an end; unsearched counts the buffer's lines not yet searched,
-// 0 once all are and for the empty query.
-typedef struct {
-    size_t current, total;
-    bool wrapped;
-    uint64_t unsearched;
-} FindStatus;
 FindStatus kitty_rs_find_status(const FindEngine *engine, FindBufferBounds bounds);

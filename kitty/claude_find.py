@@ -19,7 +19,7 @@ from enum import Enum
 from typing import NamedTuple
 
 from .child import environ_of_process
-from .find_backends import FindCount, FindStatus
+from .find_backends import FindCount, FindQuery, FindStatus
 from .tmux_find import (
     PANE_FORMAT,
     Held,
@@ -431,19 +431,23 @@ class ClaudeFind:
     def can_search(self) -> bool:
         return True
 
-    def find(self, text: str) -> None:
+    # Claude Code's transcript search has its own rules: the query's mode is not its to use
+    def find(self, query: FindQuery) -> None:
+        text = query.text
         if not text:  # an empty query searches nothing, as the engine's does
             self.clear()
             return
         self.guarded(lambda pane: self.search(pane, text))
 
-    def use_selection(self, text: str) -> None:
-        self.find(text)
+    def use_selection(self, query: FindQuery) -> str:
+        self.find(query)
+        return query.text
 
-    def restore(self, text: str) -> None:
-        self.find(text)
+    def restore(self, query: FindQuery) -> None:
+        self.find(query)
 
-    def step(self, text: str, backwards: bool) -> None:
+    def step(self, query: FindQuery, backwards: bool) -> None:
+        text = query.text
         if not text:
             self.clear()
             return

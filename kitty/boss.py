@@ -87,6 +87,7 @@ from .fast_data_types import (
     cocoa_hide_other_apps,
     cocoa_minimize_os_window,
     cocoa_set_menubar_title,
+    cocoa_set_find_mode,
     cocoa_show_find_bar_for_os_window,
     create_os_window,
     current_application_quit_request,
@@ -183,7 +184,8 @@ from .utils import (
     timed_debug_print,
     which,
 )
-from .window import CommandOutput, CwdRequest, Window, global_watchers
+from .find_backends import EngineFind, FindCaseRule, FindMode, FindSyntax
+from .window import CommandOutput, CwdRequest, Window, current_find_mode, global_watchers
 
 if TYPE_CHECKING:
     from .fast_data_types import OSWindowSize
@@ -4291,10 +4293,29 @@ class Boss:
     def ungrab_keyboard(self) -> None:
         grab_keyboard(False)
 
-    @ac('misc', 'Show the find bar of the active OS window and focus its search field, on macOS')
-    def show_find_bar(self) -> None:
-        if (osw_id := self.os_window_id_for_dispatch()) is not None:
-            cocoa_show_find_bar_for_os_window(osw_id)
+    @ac('misc', """
+        Show the find bar of the active OS window and focus its search field, on macOS
+
+        It takes how the query matches, which the field's menu also sets and which lasts: any of
+        :code:`smart_case`, :code:`ignore_case` or :code:`match_case`, and :code:`literal` or
+        :code:`regex`. For example::
+
+            map cmd+shift+f show_find_bar regex
+        """)
+    def show_find_bar(self, case_rule: FindCaseRule | None = None, syntax: FindSyntax | None = None) -> None:
+        if (osw_id := self.os_window_id_for_dispatch()) is None:
+            return
+        saved = current_find_mode()
+        # the mode is set before the bar shows, so the bar's search runs in it
+        cocoa_set_find_mode(*FindMode(saved.case_rule if case_rule is None else case_rule, saved.syntax if syntax is None else syntax))
+        cocoa_show_find_bar_for_os_window(osw_id)
+
+    # [LAW:one-source-of-truth] The mode is the find bar's saved setting; each window's engine holds
+    # a copy for the query it searches, and this is where every copy is brought in line with it.
+    def find_mode_changed(self, case_rule: int, syntax: int) -> None:
+        mode = FindMode(FindCaseRule(case_rule), FindSyntax(syntax))
+        for w in self.all_windows:
+            w.find_mode_changed(mode)
 
     # The find bar's events. The bar targets the active window of its OS window.
     def find_bar_window(self, os_window_id: int) -> Window | None:
@@ -4312,6 +4333,10 @@ class Boss:
     # actions use, so the menu and the keymap cannot disagree about when a key is the program's.
     def find_can_search(self, os_window_id: int) -> bool:
         return bool((w := self.find_bar_window(os_window_id)) and w.find_backend().can_search())
+
+    def find_honors_mode(self, os_window_id: int) -> bool:
+        "Whether the bar's search is kitty's own, the one the mode applies to: tmux and Claude Code search by their own rules"
+        return bool((w := self.find_bar_window(os_window_id)) and isinstance(w.find_backend(), EngineFind))
 
     def find_has_selection(self, os_window_id: int) -> bool:
         return bool((w := self.find_bar_window(os_window_id)) and w.find_selection_text() is not None)

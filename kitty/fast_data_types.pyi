@@ -882,6 +882,15 @@ def cocoa_find_bar_covered_pixels(os_window_id: int) -> int:
     0 while the bar is hidden. macOS only."""
     pass
 
+def cocoa_find_mode() -> tuple[int, int]:
+    """The find bar's saved mode, app-wide: (case_rule, syntax), the values of find_backends.FindCaseRule
+    and FindSyntax. macOS only."""
+    pass
+
+def cocoa_set_find_mode(case_rule: int, syntax: int) -> None:
+    """Save the find bar's mode; Boss.find_mode_changed is then told of it. macOS only."""
+    pass
+
 def cocoa_find_bar_state(os_window_id: int) -> tuple[bool, str] | None:
     """Whether the OS window's find bar is shown and the text in its field, which a hidden bar keeps
     for the next Cmd+F; None when the window has never had a bar. macOS only."""
@@ -979,6 +988,11 @@ def wcswidth(string: str) -> int:
     pass
 
 def is_emoji_presentation_base(code: int) -> bool:
+    pass
+
+def find_escape(text: str) -> str:
+    """The regular expression that matches text literally, as the find engine escapes a literal
+    query. macOS only."""
     pass
 
 def x11_window_id(os_window_id: int) -> int:
@@ -1286,13 +1300,19 @@ class Screen:
         one (row, x, x_last) per codepoint, row relative to abs_first_line."""
         pass
 
-    def find_set_query(self, text: str, case_insensitive: bool, users_selection: bool = False) -> bool:
-        """Start a search of the main buffer for the literal text, replacing the previous one,
-        and search its first chunk at once; True when it changed the query, False when text and
-        case are the ones already searched for, which changes nothing. The empty text is no
-        search. A change ends the current match and the selection it made, unless
-        users_selection says the user points at it: then the selection is theirs. ValueError
-        for a query that cannot be searched, MemoryError when out of memory. macOS only."""
+    def find_set_query(self, text: str, case_rule: int, syntax: int, users_selection: bool = False) -> int:
+        """Start a search of the main buffer for text in the mode (case_rule, syntax), the values of
+        find_backends.FindCaseRule and FindSyntax, replacing the previous one, and search its first
+        chunk at once. Returns a find_backends.FindQueryChange: unchanged when text and mode are the
+        ones already set, which changes nothing; rejected for text that cannot be searched for, held
+        with no matches. The empty text is no search. A change ends the current match and the
+        selection it made, unless users_selection says the user points at it: then the selection is
+        theirs. MemoryError when out of memory. macOS only."""
+        pass
+
+    def find_set_mode(self, case_rule: int, syntax: int) -> int:
+        """find_set_query for the query already set, in the mode (case_rule, syntax); the empty query
+        stays empty. macOS only."""
         pass
 
     def find_clear(self) -> None:
@@ -1344,13 +1364,14 @@ class Screen:
         """Whether the user is dragging out a selection."""
         pass
 
-    def find_status(self) -> tuple[int, int, bool, int]:
-        """(current, total, wrapped, unsearched): the current match's 1-based place among the
+    def find_status(self) -> tuple[int, int, bool, int, int]:
+        """(current, total, wrapped, unsearched, query): the current match's 1-based place among the
         matches, 0 when there is none; how many have been found; whether the step that reached
-        it wrapped past an end; how many lines are left to search. macOS only."""
+        it wrapped past an end; how many lines are left to search; the find_backends.FindQueryState
+        of the query. macOS only."""
         pass
 
-    def find_status_for_bar(self) -> tuple[int, int, bool, int]:
+    def find_status_for_bar(self) -> tuple[int, int, bool, int, int]:
         """find_status(), recorded as what the find bar was last told: the one read a window
         tells the bar from. macOS only."""
         pass

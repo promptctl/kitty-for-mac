@@ -45,7 +45,7 @@ class TestBuild(BaseTest):
 
         s = Screen(None, 1, 10)
         s.draw('héllo')
-        self.assertTrue(s.find_set_query('L', True))
+        self.assertTrue(s.find_set_query('L', 1, 0))  # ignore case, literal
         self.ae(s.find_count(), 2)
 
     def test_slang_build(self) -> None:

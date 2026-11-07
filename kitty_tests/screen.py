@@ -7,6 +7,7 @@ import tempfile
 
 from kitty.fast_data_types import DECAWM, DECCOLM, DECOM, IRM, VT_PARSER_BUFFER_SIZE, Color, ColorProfile, Cursor
 from kitty.marks import marker_from_function, marker_from_regex, marker_from_text
+from kitty.find_backends import FindCaseRule, FindCount, FindMode, FindQueryChange, FindStatus, FindSyntax
 from kitty.tmux_find import TmuxOperation
 from kitty.window import pagerhist
 
@@ -22,6 +23,12 @@ def cells_with(s, bits, all_bits=False):
     # the render buffer may start with a pixel scroll row above screen row 0
     leading = (len(data) // s.columns - s.lines) * s.columns
     return [(i % s.columns, i // s.columns) for i, b in enumerate(data[leading:]) if (b & bits == bits if all_bits else b & bits)]
+
+
+# the modes the engine tests search in, as find_set_query takes them
+MATCH_CASE = tuple(FindMode(FindCaseRule.match))
+IGNORE_CASE = tuple(FindMode(FindCaseRule.ignore))
+REGEX = tuple(FindMode(FindCaseRule.match, FindSyntax.regex))
 
 
 def find_step(s, backwards, top_inset=0):
@@ -1669,8 +1676,8 @@ class TestScreen(BaseTest):
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
-        def find(s, query, case_insensitive=False):
-            self.assertTrue(s.find_set_query(query, case_insensitive))
+        def find(s, query, mode=MATCH_CASE):
+            self.ae(s.find_set_query(query, *mode), FindQueryChange.changed)
             return list(s.find_matches())
 
         # every match inside one physical line, both cells included
@@ -1714,8 +1721,8 @@ class TestScreen(BaseTest):
         s = self.create_screen(cols=20, lines=1)
         s.draw('Café STRASSE')
         self.ae(find(s, 'CAFÉ'), [])
-        self.ae(find(s, 'CAFÉ', True), [(0, 0, 0, 3)])
-        self.ae(find(s, 'straße', True), [])
+        self.ae(find(s, 'CAFÉ', IGNORE_CASE), [(0, 0, 0, 3)])
+        self.ae(find(s, 'straße', IGNORE_CASE), [])
 
         # history ring full: surviving matches keep their absolute coordinates, evicted ones go
         s = self.create_screen(cols=5, lines=2, scrollback=3)
@@ -1749,7 +1756,7 @@ class TestScreen(BaseTest):
             return cells_with(s, FIND_MATCH_BIT)
 
         def search(s, query):
-            s.find_set_query(query, False)
+            s.find_set_query(query, *MATCH_CASE)
             return highlighted(s)
 
         # one physical line, a wrapped line (fill to the row end, from column 0 after), wide chars
@@ -1787,7 +1794,7 @@ class TestScreen(BaseTest):
         self.assertTrue(s.is_selection_dirty())
         self.ae(highlighted(s), [(0, 0)])
         self.assertFalse(s.is_selection_dirty())
-        s.find_set_query('x6', False)
+        s.find_set_query('x6', *MATCH_CASE)
         self.assertTrue(s.is_selection_dirty())
         self.ae(highlighted(s), [(0, 0), (1, 0)])
         s.find_clear()
@@ -1796,7 +1803,7 @@ class TestScreen(BaseTest):
         # output that moves no highlight repaints nothing, with no query or with no match in view
         s.draw('y'), s.carriage_return(), s.linefeed()
         self.assertFalse(s.is_selection_dirty())
-        s.find_set_query('x0', False)
+        s.find_set_query('x0', *MATCH_CASE)
         self.ae(highlighted(s), [])
         s.draw('y'), s.carriage_return(), s.linefeed()
         self.assertFalse(s.is_selection_dirty())
@@ -1877,7 +1884,7 @@ class TestScreen(BaseTest):
         for i in range(4):
             s.draw(f'ab{i}')
             s.carriage_return(), s.linefeed()
-        self.assertTrue(s.find_set_query('ab', False))
+        self.assertTrue(s.find_set_query('ab', *MATCH_CASE))
         self.ae(s.find_count(), 4)
         matches = s.find_matches()
         # the current match is the selection, also when its line is in history
@@ -1899,13 +1906,13 @@ class TestScreen(BaseTest):
         s.find_clear()
         self.assertFalse(s.has_selection())
         # and so does a new query, which ends the current match whether or not it finds any
-        s.find_set_query('ab', False)
+        s.find_set_query('ab', *MATCH_CASE)
         s.find_set_current(s.find_matches()[1])
-        self.assertTrue(s.find_set_query('abz', False))
+        self.assertTrue(s.find_set_query('abz', *MATCH_CASE))
         self.ae(s.find_count(), 0)
         self.assertFalse(s.has_selection())
         # a match names itself, so one still in the list stays selectable after eviction moves the list
-        s.find_set_query('ab', False)
+        s.find_set_query('ab', *MATCH_CASE)
         kept = s.find_matches()[-1]
         while first in s.find_matches():
             s.draw('qq'), s.carriage_return(), s.linefeed()
@@ -1918,7 +1925,7 @@ class TestScreen(BaseTest):
         self.assertRaises(RuntimeError, s.find_set_current, kept)
         s.toggle_alt_screen()
         # find_clear leaves alone a selection the user made since
-        s.find_set_query('ab', False)
+        s.find_set_query('ab', *MATCH_CASE)
         s.find_set_current(s.find_matches()[1])
         s.start_selection(0, 0)
         s.update_selection(1, 0)
@@ -1930,7 +1937,7 @@ class TestScreen(BaseTest):
         # the same cells, or extends, is theirs; one whose match eviction ended is still find's
         s = self.create_screen(cols=5, lines=2, scrollback=2)
         s.draw('ab'), s.carriage_return(), s.linefeed()
-        s.find_set_query('ab', False)
+        s.find_set_query('ab', *MATCH_CASE)
         s.find_set_current(s.find_matches()[0])
         finds = s.current_selections()
         s.start_selection(0, 0)
@@ -1938,12 +1945,12 @@ class TestScreen(BaseTest):
         self.ae(s.current_selections(), finds)
         s.find_clear()
         self.assertTrue(s.has_selection())
-        s.find_set_query('ab', False)
+        s.find_set_query('ab', *MATCH_CASE)
         s.find_set_current(s.find_matches()[0])
         s.update_selection(0, 1)
         s.find_clear()
         self.assertTrue(s.has_selection())
-        s.find_set_query('ab', False)
+        s.find_set_query('ab', *MATCH_CASE)
         s.find_set_current(s.find_matches()[0])
         while s.find_matches():
             s.draw('qq'), s.carriage_return(), s.linefeed()
@@ -1964,7 +1971,7 @@ class TestScreen(BaseTest):
             s.carriage_return(), s.linefeed()
         self.ae(find_step(s, False), None, 'no query, nothing to step to')
         self.ae(s.find_status()[:3], (0, 0, False))
-        self.assertTrue(s.find_set_query('x', False))
+        self.assertTrue(s.find_set_query('x', *MATCH_CASE))
         self.ae(s.find_count(), 20)
         matches = s.find_matches()
         top = s.abs_line_at_viewport_top()
@@ -1972,9 +1979,9 @@ class TestScreen(BaseTest):
         # with no current match, next starts at the top row and previous at the bottom one
         self.ae(find_step(s, False), on_screen[0])
         self.ae(s.find_status()[:3], (matches.index(on_screen[0]) + 1, 20, False))
-        self.assertFalse(s.find_set_query('x', False), 'the same query again changes nothing')
+        self.assertFalse(s.find_set_query('x', *MATCH_CASE), 'the same query again changes nothing')
         self.ae(s.find_status()[0], matches.index(on_screen[0]) + 1)
-        s.find_clear(), s.find_set_query('x', False)
+        s.find_clear(), s.find_set_query('x', *MATCH_CASE)
         self.ae(find_step(s, True), on_screen[-1])
         self.ae(s.abs_line_at_viewport_top(), top, 'a match on screen is not scrolled to')
         # stepping past the last match wraps to the first, and reveals it in history
@@ -2023,7 +2030,7 @@ class TestScreen(BaseTest):
         # pointed at by the user, find's current match is theirs: a new query leaves it and the
         # step lands on it, not past it, as Use Selection for Find needs
         current = find_step(s, False)
-        s.find_set_query('x', True, True)
+        s.find_set_query('x', *IGNORE_CASE, True)
         self.ae(text(s), 'x')
         self.ae(find_step(s, False), current)
 
@@ -2031,7 +2038,7 @@ class TestScreen(BaseTest):
         s = self.create_screen(cols=4, lines=3, scrollback=10)
         s.draw('ab a'), s.draw('b ab'), s.carriage_return(), s.linefeed()
         s.draw('中ab'), s.carriage_return(), s.linefeed()
-        s.find_set_query('ab', False)
+        s.find_set_query('ab', *MATCH_CASE)
         first, *rest = matches = s.find_matches()
         s.find_set_current(first)
         self.ae([find_step(s, False) for i in range(4)], rest + [first])
@@ -2044,7 +2051,7 @@ class TestScreen(BaseTest):
         s.draw('abcdefghi'), s.carriage_return(), s.linefeed()
         for i in range(6):
             s.draw('z'), s.carriage_return(), s.linefeed()
-        s.find_set_query('abcdefghi', False)
+        s.find_set_query('abcdefghi', *MATCH_CASE)
         m = find_step(s, False)
         self.ae(m[2] - m[0], 2)
         self.ae(s.abs_line_at_viewport_top(), m[0])
@@ -2054,7 +2061,7 @@ class TestScreen(BaseTest):
             s = self.create_screen(cols=3, lines=6, scrollback=40)
             for i in range(30):
                 s.draw('Q' if i == 3 else 'ab'), s.carriage_return(), s.linefeed()
-            s.find_set_query('Q', False)
+            s.find_set_query('Q', *MATCH_CASE)
             return find_step(s, False, top_inset)[0] - s.abs_line_at_viewport_top()
         self.ae(row_of_revealed(0), 2)
         self.ae(row_of_revealed(2), 3)
@@ -2074,6 +2081,7 @@ class TestScreen(BaseTest):
         from kitty.find_backends import EngineFind
         from kitty.tmux_find import TmuxFindState
         from kitty.window import Window
+        attrs.setdefault('find_mode', lambda: FindMode())
         w = SimpleNamespace(screen=s, find_query='', pending_find_timer=0, os_window_id=1, finish_scroll_animation=lambda: None,
                             scroll_animation=SimpleNamespace(timer=0), find_bar_top_inset=lambda: 0,
                             child=SimpleNamespace(foreground_processes=[]), tmux_find_state=TmuxFindState(), claude_find_state=ClaudeFindState(),
@@ -2105,7 +2113,7 @@ class TestScreen(BaseTest):
         # Esc: the highlights go, the query stays, so Find Next with the bar hidden searches again
         Window.find_clear(w)
         self.ae(s.find_status()[:3], (0, 0, False))
-        self.ae(pushes[-1], (0, 0, False, 0))
+        self.ae(pushes[-1][:4], (0, 0, False, 0))
         Window.find_step(w, False)
         self.ae(s.find_status()[1], 20)
         self.assertGreater(pushes[-1][0], 0, 'and steps to a match')
@@ -2118,16 +2126,89 @@ class TestScreen(BaseTest):
                                    find_set_query=lambda *a: walks.append(a) or find_set_query(*a))
         Window.find(w, 'nomatch')
         self.ae(len(walks), 1)
-        # a query the engine rejects is not the one the bar shows and stepping repeats
-        w.screen.find_set_query = lambda *a: (_ for _ in ()).throw(ValueError('rejected'))
-        self.assertRaises(ValueError, Window.find, w, 'bad')
-        self.ae(w.find_query, 'nomatch')
-        # typing in the bar over a full-screen program searches nothing and leaves the query as it was
+        # a pattern that does not parse is the query the bar shows, rejected: it raises nothing and
+        # the bar says it is invalid, and stepping it steps nowhere
         w.screen = s
+        w.find_mode = lambda: FindMode(syntax=FindSyntax.regex)
+        Window.find(w, 'x(')
+        self.ae((w.find_query, w.find_status()), ('x(', FindStatus(0, 0, FindCount.rejected)))
+        Window.find_step(w, False)
+        self.ae(w.find_status(), FindStatus(0, 0, FindCount.rejected))
+        # typing in the bar over a full-screen program searches nothing and leaves the query as it was
         s.toggle_alt_screen()
         Window.find(w, 'y')
-        self.ae(w.find_query, 'nomatch')
+        self.ae(w.find_query, 'x(')
         self.ae(Window.find_step(w, False), True)
+
+    def test_find_modes(self):
+        from types import SimpleNamespace
+
+        from kitty.boss import Boss
+        from kitty.constants import is_macos
+        from kitty.options.utils import show_find_bar
+        from kitty.window import Window
+        if not is_macos:
+            self.skipTest('The Rust find engine is linked on macOS only')
+
+        def window(*lines, **attrs):
+            s = self.create_screen(cols=12, lines=4, scrollback=50)
+            for line in lines:
+                s.draw(line), s.carriage_return(), s.linefeed()
+            mode = attrs.pop('mode', FindMode())
+            w = self.find_window(s, ('use_selection_for_find', 'find_mode_changed'), push_find_bar=lambda: None, find_mode=lambda: mode, **attrs)
+            return s, w
+
+        def found(mode, query, *lines):
+            s, w = window(*lines, mode=mode)
+            Window.find(w, query)
+            return [(m[0], m[1]) for m in s.find_matches()]
+
+        # each mode, end to end from the find action
+        text = ('abc', 'ABC', 'aBc', 'a.c')
+        self.ae(found(FindMode(), 'abc', *text), [(0, 0), (1, 0), (2, 0), ])
+        self.ae(found(FindMode(), 'aBc', *text), [(2, 0)], 'smart case matches case once the query has an uppercase letter')
+        self.ae(found(FindMode(FindCaseRule.ignore), 'aBc', *text), [(0, 0), (1, 0), (2, 0)])
+        self.ae(found(FindMode(FindCaseRule.match), 'abc', *text), [(0, 0)])
+        self.ae(found(FindMode(syntax=FindSyntax.regex), 'a.c', *text), [(0, 0), (1, 0), (2, 0), (3, 0)])
+        self.ae(found(FindMode(syntax=FindSyntax.regex), r'a\.c', *text), [(3, 0)])
+        self.ae(found(FindMode(), 'a.c', *text), [(3, 0)], 'a literal query is text, not a pattern')
+        # a pattern that can match empty finds only what it spans, and never brings kitty down
+        self.ae(found(FindMode(FindCaseRule.match, FindSyntax.regex), 'b*', *text), [(0, 1)])
+        self.ae(found(FindMode(syntax=FindSyntax.regex), '^', *text), [])
+
+        # Cmd+E with regular expressions on searches for the selection as written: the query is its pattern
+        s, w = window('a.b(', 'axb(', mode=FindMode(syntax=FindSyntax.regex), text_for_selection=lambda: 'a.b(')
+        Window.use_selection_for_find(w)
+        self.ae(w.find_query, r'a\.b\(')
+        self.ae([(m[0], m[1]) for m in s.find_matches()], [(0, 0)])
+
+        # a mode change reaches every window's search, without stepping, and ends the steps waiting
+        s1, w1 = window(*(f'x{i}' for i in range(30)))
+        s2, w2 = window('X', 'x')
+        s1.find_set_chunk_cells(1)
+        Window.find(w1, 'X')
+        self.assertTrue(w1.engine_find.waiting, 'a step waits for the search to reach its answer')
+        Window.find(w2, 'X')
+        self.ae(s2.find_status()[:2], (1, 1))
+        Boss.find_mode_changed(SimpleNamespace(all_windows=[w1, w2]), FindCaseRule.ignore, FindSyntax.literal)
+        self.ae(w1.engine_find.waiting, [])
+        self.ae(s2.find_status()[:2], (0, 2), 'the search is redone in the new mode and lands on nothing')
+
+        # a change into or out of an invalid pattern is reported even when the counts stay the same
+        s, w = window('x(')
+        s.callbacks.find_status_changes = 0
+        s.find_set_query('x)', *REGEX)
+        s.find_status_for_bar()
+        s.find_set_mode(*MATCH_CASE)
+        self.ae(s.find_status()[:2], (0, 0))
+        s.find_report_status_change()
+        self.ae(s.callbacks.find_status_changes, 1)
+
+        # the find action takes the modes, one of each kind at most
+        self.ae(show_find_bar('show_find_bar', ''), ('show_find_bar', [None, None]))
+        self.ae(show_find_bar('show_find_bar', 'regex ignore_case'), ('show_find_bar', [FindCaseRule.ignore, FindSyntax.regex]))
+        for bad in ('regexp', 'regex literal', 'smart_case match_case'):
+            self.assertRaises(ValueError, show_find_bar, 'show_find_bar', bad)
 
     def test_find_bar_follows_the_active_window(self):
         from types import SimpleNamespace
@@ -2215,7 +2296,7 @@ class TestScreen(BaseTest):
         def live_is_fresh(s, query):
             live = s.find_matches()
             s.find_clear()
-            s.find_set_query(query, False)
+            s.find_set_query(query, *MATCH_CASE)
             self.ae(live, s.find_matches())
             return live
 
@@ -2229,24 +2310,24 @@ class TestScreen(BaseTest):
         # output appended after the query is found without a new query
         s = self.create_screen(cols=10, lines=3, scrollback=20)
         lines_of(s, 'ax')
-        s.find_set_query('x', False)
+        s.find_set_query('x', *MATCH_CASE)
         lines_of(s, 'bx', 'cx', 'dx')
         self.ae(live_is_fresh(s, 'x'), tuple((i, 1, i, 1) for i in range(4)))
 
         # a match overwritten in place disappears
         s = self.create_screen(cols=10, lines=3)
         s.draw('abc')
-        s.find_set_query('b', False)
+        s.find_set_query('b', *MATCH_CASE)
         s.cursor_position(1, 2), s.draw('z')
         self.ae(live_is_fresh(s, 'b'), ())
 
         # a full small scrollback evicts: the count shrinks, the rest keep their coordinates
         s = self.create_screen(cols=5, lines=2, scrollback=3)
         lines_of(s, *(f'x{i}' for i in range(4)))
-        s.find_set_query('x', False)
+        s.find_set_query('x', *MATCH_CASE)
         lines_of(s, *(f'y{i}' for i in range(4)))
         self.ae(live_is_fresh(s, 'x'), ())
-        s.find_set_query('x', False)
+        s.find_set_query('x', *MATCH_CASE)
         lines_of(s, 'x4', 'y')
         self.ae(live_is_fresh(s, 'x'), ((8, 0, 8, 0),))
 
@@ -2259,18 +2340,18 @@ class TestScreen(BaseTest):
         # resizes: other widths rewrap every line, another height moves lines to and from history
         for lines, cols in ((3, 9), (3, 4), (5, 6), (2, 6)):
             s = wrapped_history()
-            s.find_set_query('ab', False)
+            s.find_set_query('ab', *MATCH_CASE)
             s.resize(lines, cols)
             self.assertTrue(live_is_fresh(s, 'ab'))
         # narrower then back with the ring full: the column count and row 0's number come back
         s = wrapped_history(scrollback=8)
-        s.find_set_query('ab', False)
+        s.find_set_query('ab', *MATCH_CASE)
         s.resize(3, 3), s.resize(3, 6)
         self.assertTrue(live_is_fresh(s, 'ab'))
 
         # clear_scrollback and reset
         s = wrapped_history()
-        s.find_set_query('ab', False)
+        s.find_set_query('ab', *MATCH_CASE)
         s.clear_scrollback()
         self.assertTrue(live_is_fresh(s, 'ab'))
         s.reset()
@@ -2282,14 +2363,14 @@ class TestScreen(BaseTest):
         # cut line did not
         s = self.create_screen(cols=5, lines=2, scrollback=2)
         s.draw('bbbbaaab'), s.carriage_return(), s.linefeed()
-        self.assertTrue(s.find_set_query('aa', False))
+        self.assertTrue(s.find_set_query('aa', *MATCH_CASE))
         self.ae(s.find_count(), 1)
         lines_of(s, 'c', 'd')
         self.ae(live_is_fresh(s, 'aa'), ((1, 0, 1, 1),))
         # and so does clear_scrollback while screen row 0 continues a history line
         s = self.create_screen(cols=5, lines=2, scrollback=10)
         s.draw('zz\r\n'), s.draw('bbbbaaab'), s.carriage_return(), s.linefeed()
-        self.assertTrue(s.find_set_query('aa', False))
+        self.assertTrue(s.find_set_query('aa', *MATCH_CASE))
         self.ae(s.find_count(), 1)
         s.clear_scrollback()
         self.ae(live_is_fresh(s, 'aa'), ((2, 0, 2, 1),))
@@ -2298,7 +2379,7 @@ class TestScreen(BaseTest):
         s = self.create_screen(cols=5, lines=3, scrollback=10)
         lines_of(s, 'h0', 'h1', 'h2')
         s.draw('x')
-        self.assertTrue(s.find_set_query('x', False))
+        self.assertTrue(s.find_set_query('x', *MATCH_CASE))
         self.ae(s.find_count(), 1)
         s.reverse_scroll(1, True)
         self.ae(live_is_fresh(s, 'x'), ())
@@ -2311,12 +2392,12 @@ class TestScreen(BaseTest):
 
         s = self.create_screen(cols=8, lines=3, scrollback=20)
         command_in_history(s)
-        self.assertTrue(s.find_set_query('x', False))
+        self.assertTrue(s.find_set_query('x', *MATCH_CASE))
         self.ae(s.find_count(), 6)
         self.assertTrue(s.erase_last_command())
         self.ae(live_is_fresh(s, 'x'), ())
         s = wrapped_history()
-        s.find_set_query('ab', False)
+        s.find_set_query('ab', *MATCH_CASE)
         last = s.find_matches()[-1]
         s.resize(3, 12)
         self.assertNotIn(last, live_is_fresh(s, 'ab'))
@@ -2326,7 +2407,7 @@ class TestScreen(BaseTest):
         # and so does output after erase_last_command
         s = self.create_screen(cols=5, lines=10, scrollback=30)
         lines_of(s, 'x0', *(f'h{i}' for i in range(18)))
-        self.assertTrue(s.find_set_query('x', False))
+        self.assertTrue(s.find_set_query('x', *MATCH_CASE))
         self.ae(s.find_count(), 1)
         # x0 is the oldest of the ten history lines: popping them all puts it on screen row 0
         s.reverse_scroll(10, True)
@@ -2337,7 +2418,7 @@ class TestScreen(BaseTest):
         self.ae(live_is_fresh(s, 'x'), ())
         s = self.create_screen(cols=8, lines=3, scrollback=30)
         command_in_history(s, output_lines=16)
-        s.find_set_query('x', False)
+        s.find_set_query('x', *MATCH_CASE)
         self.assertTrue(s.erase_last_command())
         lines_of(s, *(f'q{i}' for i in range(18)))
         self.ae(live_is_fresh(s, 'x'), ())
@@ -2347,7 +2428,7 @@ class TestScreen(BaseTest):
         s = self.create_screen(cols=8, lines=3, scrollback=10)
         s.draw('zz\r\n'), draw_multicell(s, 'M', scale=2)
         s.cursor_position(3, 1), s.linefeed(), s.linefeed()
-        self.assertTrue(s.find_set_query('M', False))
+        self.assertTrue(s.find_set_query('M', *MATCH_CASE))
         self.ae(s.find_count(), 1)
         s.cursor_position(1, 1), s.erase_in_line(2, False)
         self.ae(live_is_fresh(s, 'M'), ())
@@ -2357,7 +2438,7 @@ class TestScreen(BaseTest):
         mark_prompt(s), s.draw('$ p1\r\n')
         lines_of(s, *(str(i) for i in range(9)))
         mark_prompt(s), s.draw('$ ')
-        self.assertTrue(s.find_set_query('M', False))
+        self.assertTrue(s.find_set_query('M', *MATCH_CASE))
         self.ae(s.find_count(), 1)
         self.assertTrue(s.erase_last_command())
         self.ae(live_is_fresh(s, 'M'), ())
@@ -2368,7 +2449,7 @@ class TestScreen(BaseTest):
         s.draw('ó\r\n'), s.draw('é')
         lines_of(s, '', 'p', 'q')
         lines_of(s, 'é')
-        s.find_set_query('é', False)
+        s.find_set_query('é', *MATCH_CASE)
         self.ae(len(s.find_matches()), 1)
         y = s.find_matches()[0][0] - s.abs_line_at_viewport_top()
         # no read between the GC and the overwrite: a read would re-record the renumbered cells.
@@ -2383,7 +2464,7 @@ class TestScreen(BaseTest):
         for t in ('a', 'x1', 'x2', 'x3'):
             s.draw(t), s.carriage_return(), s.linefeed()
         s.draw('b')
-        s.find_set_query('x', False)
+        s.find_set_query('x', *MATCH_CASE)
         s.find_set_current((2, 0, 2, 0))
         s.set_margins(2, 4)
         s.cursor_position(4, 1), s.index()
@@ -2394,7 +2475,7 @@ class TestScreen(BaseTest):
         # unrelated output leaves the current match current
         s = self.create_screen(cols=5, lines=4, scrollback=10)
         lines_of(s, 'x0', 'x1')
-        s.find_set_query('x', False)
+        s.find_set_query('x', *MATCH_CASE)
         s.find_set_current((1, 0, 1, 0))
         lines_of(s, 'y', 'y', 'y')
         self.ae(s.find_status()[:3], (2, 2, False))
@@ -2475,7 +2556,7 @@ class TestScreen(BaseTest):
         s = self.create_screen(cols=5, lines=3, scrollback=4)
         lines_of(s, 'x0')
         self.ae(reports(s), 0, 'no query, nothing to report')
-        s.find_set_query('x', False)
+        s.find_set_query('x', *MATCH_CASE)
         s.find_report_status_change()
         s.find_report_status_change()
         self.ae(s.callbacks.find_status_changes, 2, 'a report no window took up is made again')
@@ -2498,7 +2579,7 @@ class TestScreen(BaseTest):
         # overwriting the current match's cells ends it
         s = self.create_screen(cols=10, lines=3)
         s.draw('abc ab')
-        s.find_set_query('b', False)
+        s.find_set_query('b', *MATCH_CASE)
         find_step(s, False)
         self.ae((s.find_status()[:3], reports(s)), ((1, 2, False), 1))
         s.cursor_position(1, 2), s.draw('z')
@@ -2545,18 +2626,18 @@ class TestScreen(BaseTest):
         def is_fresh(s, query):
             live = s.find_matches()
             s.find_set_chunk_cells(1500000)
-            s.find_clear(), s.find_set_query(query, False)
+            s.find_clear(), s.find_set_query(query, *MATCH_CASE)
             self.ae(s.find_status()[3], 0)
             self.ae(live, s.find_matches())
 
         whole = screen()
-        whole.find_set_query('xx', False)
+        whole.find_set_query('xx', *MATCH_CASE)
         self.ae(whole.find_status()[3], 0, 'a buffer shorter than one chunk is searched in the first')
         expected = whole.find_matches()
         self.assertGreater(len(expected), 20)
 
         s = screen(1)
-        s.find_set_query('xx', False)
+        s.find_set_query('xx', *MATCH_CASE)
         self.assertGreater(s.find_status()[3], 0, 'a chunk of one line leaves the rest to the frames')
         self.assertLess(len(s.find_matches()), len(expected))
         search_all(s)
@@ -2565,7 +2646,7 @@ class TestScreen(BaseTest):
 
         # output streaming into the full ring while the search is under way
         s = screen(1)
-        s.find_set_query('xx', False)
+        s.find_set_query('xx', *MATCH_CASE)
         for i in range(5):
             s.find_advance()
         lines_of(s, 'xxxxxxx', 'xx', 'y')
@@ -2577,13 +2658,13 @@ class TestScreen(BaseTest):
         for chunk_cells in (1, 5):
             s = screen(chunk_cells)
             s.draw('xxxxxxx'), s.carriage_return(), s.erase_in_line()
-            s.find_set_query('xx', False)
+            s.find_set_query('xx', *MATCH_CASE)
             search_all(s)
             is_fresh(s, 'xx')
 
         # a resize rewraps every line while the search is under way
         s = screen(1)
-        s.find_set_query('xx', False)
+        s.find_set_query('xx', *MATCH_CASE)
         for i in range(5):
             s.find_advance()
         s.resize(3, 7)
@@ -2593,7 +2674,7 @@ class TestScreen(BaseTest):
         # a step whose answer is on unsearched lines waits, changing nothing, and its want
         # searches them first, so it lands with the rest still unsearched
         s = screen(1)
-        s.find_set_query('xx', False)
+        s.find_set_query('xx', *MATCH_CASE)
         s.scroll(30, True)
         origin = s.find_origin()
         r = s.find_step(False, origin)
@@ -2609,11 +2690,11 @@ class TestScreen(BaseTest):
 
         # the empty query is one state, however it is reached and whatever its case
         s = screen()
-        s.find_set_query('xx', False), s.find_set_query('', False)
+        s.find_set_query('xx', *MATCH_CASE), s.find_set_query('', *MATCH_CASE)
         cleared = s.find_status(), s.find_matches()
-        s.find_set_query('xx', False), s.find_clear()
+        s.find_set_query('xx', *MATCH_CASE), s.find_clear()
         self.ae((s.find_status(), s.find_matches()), cleared)
-        self.assertFalse(s.find_set_query('', True))
+        self.assertFalse(s.find_set_query('', *IGNORE_CASE))
         self.assertFalse(s.find_advance())
 
     def test_find_steps_wait_for_the_search(self):

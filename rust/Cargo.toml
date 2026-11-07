@@ -20,6 +20,8 @@ panic = "abort"
 
 [dependencies]
 regex = "1"
+# smart case reads the pattern's own letters; regex already depends on it
+regex-syntax = "0.8"
 
 # Every line of this crate is ours, so it is held to clippy's strict groups; a plain
 # `cargo clippy --all-targets -- -D warnings` enforces the bar.

@@ -72,6 +72,7 @@ from .fast_data_types import (
     click_mouse_url,
     cocoa_find_bar_covered_pixels,
     cocoa_find_bar_state,
+    cocoa_find_mode,
     cocoa_update_find_bar,
     current_focused_os_window_id,
     draw_single_line_of_text,
@@ -107,7 +108,7 @@ from .fast_data_types import (
     update_window_visibility,
     wakeup_main_loop,
 )
-from .find_backends import EngineFind, FindBackend, FindCount, FindStatus
+from .find_backends import EngineFind, FindBackend, FindCaseRule, FindCount, FindMode, FindQuery, FindStatus, FindSyntax
 from .keys import keyboard_mode_name, mod_mask
 from .notifications import NotificationManager
 from .options.types import Options
@@ -473,6 +474,13 @@ class WindowCreationSpec(NamedTuple):
     hold_after_ssh: bool = False
     spacing: tuple[str, ...] = ()
     user_vars: tuple[tuple[str, str], ...] = ()
+
+
+# [LAW:one-source-of-truth] the find bar's saved setting is the mode; the find actions read it
+# once each, and the backends are handed it in the query
+def current_find_mode() -> FindMode:
+    case_rule, syntax = cocoa_find_mode()
+    return FindMode(FindCaseRule(case_rule), FindSyntax(syntax))
 
 
 def pagerhist(screen: Screen, as_ansi: bool = False, add_wrap_markers: bool = True, upto_output_start: bool = False) -> str:
@@ -3109,7 +3117,7 @@ class Window:
         self.settle_find()
         if (backend := self.find_backend_to_search(TmuxOperation())) is None:
             return True
-        backend.step(self.find_query, backwards)
+        backend.step(FindQuery(self.find_query, self.find_mode()), backwards)
         self.push_find_bar()
         return None
 
@@ -3117,16 +3125,14 @@ class Window:
         "Bring the search in line with text, without stepping, on the budget of the action that asked"
         if (backend := self.find_backend_to_search(op)) is None:
             return
-        backend.restore(text)
-        # the backend took it: a query it rejects never becomes the one stepping repeats from here.
-        # find_typed is the exception: an edit is the bar's text before any search runs
+        backend.restore(FindQuery(text, self.find_mode()))
         self.find_query = text
 
     def find(self, text: str) -> None:
         "Search the whole buffer for text and step to the first match; the query already searched for changes nothing"
         if (backend := self.find_backend_to_search(TmuxOperation())) is None:
             return
-        backend.find(text)
+        backend.find(FindQuery(text, self.find_mode()))
         self.find_query = text
         self.push_find_bar()
 
@@ -3196,6 +3202,15 @@ class Window:
         if (tm := get_boss().os_window_map.get(self.os_window_id)) and tm.active_window is self:
             cocoa_update_find_bar(self.os_window_id, self.find_query, status.current, status.total, int(status.count))
 
+    def find_mode(self) -> FindMode:
+        "How the find actions' query matches: read once per action"
+        return current_find_mode()
+
+    def find_mode_changed(self, mode: FindMode) -> None:
+        "The find mode changed: kitty's own search, if it holds one, searches for its query in mode"
+        self.engine_find.set_mode(mode)
+        self.push_find_bar()
+
     def find_status_changed(self) -> None:
         "The screen's callback for the find status changing as the buffer it searches changes"
         # the search may have reached the answers of the steps waiting for it
@@ -3242,8 +3257,7 @@ class Window:
         backend = self.find_backend_for(op)
         if (text := self.selection_text_in(backend)) is None or self.begin_find_in(backend, op) is None:
             return True
-        backend.use_selection(text)
-        self.find_query = text
+        self.find_query = backend.use_selection(FindQuery(text, self.find_mode()))
         self.push_find_bar()
         return None
 

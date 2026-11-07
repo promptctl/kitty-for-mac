@@ -305,6 +305,15 @@ boss_find_answer(const char *method) {
 - (void)findBarClosed:(NSWindow *)window {
     call_boss_from_appkit(find_bar_closed, "K", cocoa_os_window_id_for_window(window));
 }
+- (void)findBarModeChangedWithCaseRule:(KittyFindCaseRule)caseRule syntax:(KittyFindSyntax)syntax {
+    call_boss_from_appkit(find_mode_changed, "ll", (long)caseRule, (long)syntax);
+}
+- (BOOL)findBarHonorsMode:(NSWindow *)window {
+    if (!global_state.boss) return NO;
+    RAII_PyObject(ret, PyObject_CallMethod(global_state.boss, "find_honors_mode", "K", (unsigned long long)cocoa_os_window_id_for_window(window)));
+    if (!ret) { PyErr_Print(); return NO; }
+    return ret == Py_True;
+}
 @end
 
 @implementation GlobalMenuTarget
@@ -1942,6 +1951,17 @@ const char*
 cocoa_find_bar_query(void *w, bool *shown) {
     *shown = [KittyFindBar isShownIn:(NSWindow *)w];
     return [[KittyFindBar queryIn:(NSWindow *)w] UTF8String];
+}
+
+void
+cocoa_find_mode(long *case_rule, long *syntax) {
+    *case_rule = KittyFindBar.caseRule;
+    *syntax = KittyFindBar.syntax;
+}
+
+void
+cocoa_set_find_mode(long case_rule, long syntax) {
+    [KittyFindBar setModeWithCaseRule:(KittyFindCaseRule)case_rule syntax:(KittyFindSyntax)syntax];
 }
 // }}}
 
