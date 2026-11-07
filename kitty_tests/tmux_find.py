@@ -35,6 +35,7 @@ from kitty.tmux_find import (
     TmuxFind,
     TmuxFindState,
     TmuxOperation,
+    TmuxVersion,
     batch,
     cancel_batch,
     find_command,
@@ -42,6 +43,7 @@ from kitty.tmux_find import (
     parse_displayed_pane,
     parse_pane,
     parse_selection,
+    parse_version,
     query_argument,
     search_batch,
     server_args_of,
@@ -120,20 +122,29 @@ class TmuxFindPureTest(BaseTest):
         self.ae(tmux_client_of([proc(5, 'tmux')], boom), TmuxClient(5, 'tmux', (), None, None))
 
     def test_parsing(self):
-        out = '12 %3 0 0 400 w:@1.%3\n99 %7 1 1 500 a session:@4.%7\n'
-        self.ae(parse_pane(out, 99), PaneRef('%7', True, True, 500, 'a session:@4.%7'))
-        self.ae(parse_pane(out, 12), PaneRef('%3', False, False, 400, 'w:@1.%3'))
-        self.ae(parse_displayed_pane('%3 0 1 400 w:@1.%3\n'), PaneRef('%3', False, True, 400, 'w:@1.%3'))
-        for bad in ('', '12 %3 0 0 400', '12 %3 2 0 400 w:@1.%3', '12 %3 0 0 x w:@1.%3'):
+        v35 = TmuxVersion(3, 5)
+        out = '12 %3 0 0 400 3.5a w:@1.%3\n99 %7 1 1 500 3.5a a session:@4.%7\n'
+        self.ae(parse_pane(out, 99), PaneRef('%7', True, True, 500, v35, 'a session:@4.%7'))
+        self.ae(parse_pane(out, 12), PaneRef('%3', False, False, 400, v35, 'w:@1.%3'))
+        self.ae(parse_displayed_pane('%3 0 1 400 3.8 w:@1.%3\n'), PaneRef('%3', False, True, 400, TmuxVersion(3, 8), 'w:@1.%3'))
+        for bad in (
+            '', '12 %3 0 0 400 3.5', '12 %3 2 0 400 3.5 w:@1.%3', '12 %3 0 0 x 3.5 w:@1.%3', '12 %3 0 0 400 w:@1.%3',
+            '12 %3 0 0 400 openbsd-7.6 w:@1.%3',
+        ):
             with self.assertRaises(TmuxError, msg=bad):
                 parse_pane(bad, 12)
-        for bad in ('', '%3 0 1 400', '%3 0 1 x w:@1.%3', '%3 2 1 400 w:@1.%3'):
+        for bad in ('', '%3 0 1 400 3.5', '%3 0 1 x 3.5 w:@1.%3', '%3 2 1 400 3.5 w:@1.%3', '%3 0 1 400 w:@1.%3'):
             with self.assertRaises(TmuxError, msg=bad):
                 parse_displayed_pane(bad)
         with self.assertRaises(TmuxError):
             parse_pane(out, 5)
         with self.assertRaises(TmuxError):
             parse_pane('', 5)
+        for text, version in (('3.5a', (3, 5)), ('3.6', (3, 6)), ('next-3.7', (3, 7)), ('3.6-rc2', (3, 6)), ('3.10', (3, 10))):
+            self.ae(parse_version(text), TmuxVersion(*version), text)
+        for bad in ('', '3', 'master', 'openbsd-7.6', '3.5 ', 'tmux 3.5'):
+            with self.assertRaises(TmuxError, msg=bad):
+                parse_version(bad)
         self.ae(parse_count('1|111|0\n'), Counted(True, 111, False))
         self.ae(parse_count('1|42|1'), Counted(True, 42, True))
         self.ae(parse_count('0||\n'), Counted(False, None, False))
@@ -146,13 +157,24 @@ class TmuxFindPureTest(BaseTest):
         for nothing in ('', '\n', 'a\nb', 'a\nb\n'):
             self.assertIsNone(parse_selection(nothing), nothing)
 
+    def test_a_server_with_no_match_count_is_unavailable_and_never_searched(self):
+        fake = FakeTmux()
+        fake.version = '3.4'
+        state = TmuxFindState()
+        TmuxFind(TmuxClient(fake.client_pid, '/bin/sh', (), None, None), state, TmuxOperation(fake)).find('needle')
+        self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
+        self.assertIsNone(state.held)
+        self.ae([c for c in fake.calls if 'list-clients' not in c], [])
+
     def test_commands(self):
         # a semicolon ends a tmux command unless it is escaped, and an option cannot be told from a query
         for text, arg in {'foo': 'foo', 'foo;': 'foo\\;', ';': '\\;', 'a;b': 'a;b', '-n': '-n', '#{x}': '#{x}', 'é日': 'é日', '': ''}.items():
             self.ae(query_argument(text), arg, text)
         self.ae(find_command('%1', 'foo;'), ['send', '-t', '%1', '-X', 'search-backward-incremental', '=foo\\;'])
-        self.ae(step_command('%1', '-n', False), ['send', '-t', '%1', '-X', 'search-forward-text', '--', '-n'])
-        self.ae(step_command('%1', '-n', True)[4:], ['search-backward-text', '--', '-n'])
+        # from 3.6 tmux parses a copy-mode command's options, and before it takes every argument as text
+        self.ae(step_command('%1', '-n', False, TmuxVersion(3, 6)), ['send', '-t', '%1', '-X', 'search-forward-text', '--', '-n'])
+        self.ae(step_command('%1', '-n', True, TmuxVersion(3, 8))[4:], ['search-backward-text', '--', '-n'])
+        self.ae(step_command('%1', '-n', True, TmuxVersion(3, 5))[4:], ['search-backward-text', '-n'])
         self.ae(batch(['a', 'b'], ['c']), ['a', 'b', ';', 'c'])
         self.ae(batch(['a']), ['a'])
         b = search_batch('%1', ['SEARCH'])
@@ -445,9 +467,14 @@ class TmuxFindIntegrationTest(BaseTest):
             for _ in range(30):
                 time.sleep(0.05)
                 self.ae(t.finder(state).program_selection_text(), expected)
+            # in tmux 3.5 scrolling drags the cursor and stretches the selection over more rows: what is read is
+            # what tmux itself copies, whichever it does
             for _ in range(5):
                 t.tmux('send', '-t', t.pane, '-X', 'scroll-up')
-                self.ae(t.finder(state).program_selection_text(), expected)
+                t.tmux('send', '-t', t.pane, '-X', 'copy-selection-no-clear')
+                copied = parse_selection(t.tmux('show-buffer') + '\n')
+                t.tmux('delete-buffer')
+                self.ae(t.finder(state).program_selection_text(), copied)
 
     def test_a_pipe_that_cannot_run_ends_in_the_deadline_with_a_typed_error(self):
         with private_tmux(NEEDLES) as t:
@@ -512,6 +539,7 @@ class FakeTmux:
         self.unreachable = False
         # how list-clients describes the pane: in copy mode, on the main screen, its process
         self.in_mode, self.alternate, self.pane_pid = '1', '0', 4242
+        self.version = '3.8'
         # the server's paste buffers: (created, name, text)
         self.buffers: list[tuple[int, str, str]] = []
 
@@ -520,15 +548,15 @@ class FakeTmux:
         if self.unreachable:
             raise TmuxError('no server running')
         if 'list-clients' in argv:
-            return f'{self.client_pid} {self.pane} {self.in_mode} {self.alternate} {self.pane_pid} s:@1.{self.pane}\n'
+            return f'{self.client_pid} {self.pane} {self.in_mode} {self.alternate} {self.pane_pid} {self.version} s:@1.{self.pane}\n'
         if 'list-buffers' in argv:
             return ''.join(f'{created} {name}\n' for created, name, _ in self.buffers)
         if 'show-buffer' in argv:
             return next(text for _, name, text in self.buffers if name == argv[argv.index('-b') + 1])
         if 'display-message' in argv:
             return self.counted + '\n'
-        if 'copy-pipe-no-clear' in argv:
-            out = argv[argv.index('copy-pipe-no-clear') + 2].split('>')[1].split(';')[0].strip().strip("'")
+        if 'pipe-no-clear' in argv:
+            out = argv[argv.index('pipe-no-clear') + 1].split('>')[1].split(';')[0].strip().strip("'")
             with open(out, 'w') as f:
                 f.write(self.selection)
         if self.timeout_cancel and any('send -t' in a and 'cancel' in a for a in argv):

@@ -35,7 +35,7 @@ from kitty.claude_find import (
     refusal,
 )
 from kitty.find_backends import FindCount, FindMode, FindQuery, FindStatus
-from kitty.tmux_find import FIND_DEADLINE, PaneRef, TmuxError, TmuxOperation, run_tmux
+from kitty.tmux_find import FIND_DEADLINE, PaneRef, TmuxError, TmuxOperation, TmuxVersion, run_tmux
 
 from .base import BaseTest
 from .fake_claude import DIALOG as FAKE_DIALOG
@@ -112,7 +112,7 @@ class RecogniserTest(BaseTest):
         write_json(os.path.join(self.config, 'sessions', name + '.json'), {'pid': 600, 'sessionId': 'sid-1', 'tmux': 's:@1.%5', **kw})
 
     def pane(self, **kw: Any) -> PaneRef:
-        return PaneRef(**{'id': '%5', 'in_mode': False, 'alternate': True, 'pid': 500, 'address': 's:@1.%5', **kw})
+        return PaneRef(**{'id': '%5', 'in_mode': False, 'alternate': True, 'pid': 500, 'version': TmuxVersion(3, 8), 'address': 's:@1.%5', **kw})
 
     def test_a_pane_running_claude_is_named_by_its_session_file(self):
         self.session()

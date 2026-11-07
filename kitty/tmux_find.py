@@ -8,6 +8,7 @@
 # paste buffers are left alone.
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -39,9 +40,11 @@ COUNT_FORMAT = '#{search_present}|#{search_count}|#{search_count_partial}'
 LIVE_SELECTION = '#{||:#{selection_present},#{selection_active}}'
 # a pane as the find backends need to tell it apart: the address is the one Claude Code records for
 # its pane (~/.claude/sessions/<pid>.json), and it ends the line because a session name may hold spaces
-PANE_FORMAT = '#{pane_id} #{pane_in_mode} #{alternate_on} #{pane_pid} #{session_name}:#{window_id}.#{pane_id}'
+PANE_FORMAT = '#{pane_id} #{pane_in_mode} #{alternate_on} #{pane_pid} #{version} #{session_name}:#{window_id}.#{pane_id}'
 CLIENT_FORMAT = '#{client_pid} ' + PANE_FORMAT
 T = TypeVar('T')
+# a release (3.5a), a build from git (next-3.7) or a release candidate (3.6-rc2)
+VERSION_SHAPE = re.compile(r'(?:next-)?(\d+)\.(\d+)[a-z]?(?:-rc\d*)?')
 
 
 class TmuxError(Exception):
@@ -62,11 +65,26 @@ class TmuxClient:
     path: str | None  # the client's PATH, where exe is looked up
 
 
+class TmuxVersion(NamedTuple):
+    major: int
+    minor: int
+
+    def __str__(self) -> str:
+        return f'{self.major}.{self.minor}'
+
+
+# search_count and search_count_partial arrived in 3.5: an older server has no count for the bar
+COUNTING = TmuxVersion(3, 5)
+# 3.6 parses the options of copy-mode commands: before it, a -- is taken as the search text itself
+COPY_MODE_OPTIONS = TmuxVersion(3, 6)
+
+
 class PaneRef(NamedTuple):
     id: str
     in_mode: bool
     alternate: bool  # the program draws on the alternate screen, where tmux keeps no history of it
     pid: int  # the pane's own process
+    version: TmuxVersion  # of the server the pane is on
     address: str  # session_name:window_id.pane_id
 
 
@@ -117,27 +135,34 @@ def tmux_client_of(
     return None
 
 
+def parse_version(text: str) -> TmuxVersion:
+    "The server's version, from #{version}"
+    if (m := VERSION_SHAPE.fullmatch(text)) is None:
+        raise TmuxError(f'tmux answered {text!r} where its version was expected')
+    return TmuxVersion(int(m.group(1)), int(m.group(2)))
+
+
 def parse_pane_fields(fields: Sequence[str]) -> PaneRef:
     "A pane from the fields of PANE_FORMAT"
-    pane_id, in_mode, alternate, pid, address = fields
+    pane_id, in_mode, alternate, pid, version, address = fields
     if in_mode not in ('0', '1') or alternate not in ('0', '1') or not pid.isdigit():
         raise TmuxError(f'tmux answered {" ".join(fields)!r} where a pane was expected')
-    return PaneRef(pane_id, in_mode == '1', alternate == '1', int(pid), address)
+    return PaneRef(pane_id, in_mode == '1', alternate == '1', int(pid), parse_version(version), address)
 
 
 def parse_pane(output: str, client_pid: int) -> PaneRef:
     "The pane the client shows, from list-clients -F CLIENT_FORMAT"
     for line in output.splitlines():
-        fields = line.split(' ', 5)
-        if len(fields) == 6 and fields[0] == str(client_pid):
+        fields = line.split(' ', 6)
+        if len(fields) == 7 and fields[0] == str(client_pid):
             return parse_pane_fields(fields[1:])
     raise TmuxError(f'tmux client {client_pid} is not among its server\'s clients')
 
 
 def parse_displayed_pane(output: str) -> PaneRef:
     "A pane asked for by id, from display-message -p PANE_FORMAT"
-    fields = output.strip('\n').split(' ', 4)
-    if len(fields) != 5:
+    fields = output.strip('\n').split(' ', 5)
+    if len(fields) != 6:
         raise TmuxError(f'tmux answered {output!r} where a pane was expected')
     return parse_pane_fields(fields)
 
@@ -180,9 +205,10 @@ def find_command(pane: str, text: str) -> list[str]:
     return ['send', '-t', pane, '-X', 'search-backward-incremental', query_argument('=' + text)]
 
 
-def step_command(pane: str, text: str, backwards: bool) -> list[str]:
-    "Later in the buffer is forward, earlier backward; the -- keeps a query like -n from being an option"
-    return ['send', '-t', pane, '-X', 'search-backward-text' if backwards else 'search-forward-text', '--', query_argument(text)]
+def step_command(pane: str, text: str, backwards: bool, version: TmuxVersion) -> list[str]:
+    "Later in the buffer is forward, earlier backward; where tmux parses options, the -- keeps a query like -n from being one"
+    end_of_options = ['--'] if version >= COPY_MODE_OPTIONS else []
+    return ['send', '-t', pane, '-X', 'search-backward-text' if backwards else 'search-forward-text', *end_of_options, query_argument(text)]
 
 
 def search_batch(pane: str, search: Sequence[str]) -> list[str]:
@@ -201,9 +227,9 @@ def cancel_batch(pane: str) -> list[str]:
 
 
 def selection_batch(pane: str, pipe: str, channel: str) -> list[str]:
-    # -C: no terminal clipboard write, -P: no paste buffer, no-clear: the selection stays. The pipe is a
-    # job tmux runs on its own, so the wait-for is what returns when it is done.
-    return batch(['send', '-t', pane, '-X', 'copy-pipe-no-clear', '-CP', pipe], ['wait-for', channel])
+    # pipe, not copy-pipe: no paste buffer and no terminal clipboard write; no-clear: the selection stays.
+    # The pipe is a job tmux runs on its own, so the wait-for is what returns when it is done.
+    return batch(['send', '-t', pane, '-X', 'pipe-no-clear', pipe], ['wait-for', channel])
 
 
 # The one effect: spawn tmux
@@ -340,7 +366,7 @@ class TmuxFind:
 
     # tmux's text search is literal, ignoring case unless the text has an uppercase letter
     def find(self, query: FindQuery) -> None:
-        self.search(query.text, lambda pane: find_command(pane, query.text))
+        self.search(query.text, lambda pane: find_command(pane.id, query.text))
 
     def use_selection(self, query: FindQuery) -> str:
         self.find(query)
@@ -350,16 +376,18 @@ class TmuxFind:
         self.find(query)
 
     def step(self, query: FindQuery, backwards: bool) -> None:
-        self.search(query.text, lambda pane: step_command(pane, query.text, backwards))
+        self.search(query.text, lambda pane: step_command(pane.id, query.text, backwards, pane.version))
 
-    def search(self, text: str, command: Callable[[str], Sequence[str]]) -> None:
+    def search(self, text: str, command: Callable[[PaneRef], Sequence[str]]) -> None:
         if not text:  # an empty query searches nothing, as the engine's does
             self.clear()
             return
         try:
             pane = self.resolved()
+            if pane.version < COUNTING:
+                raise TmuxError(f'find in tmux needs tmux {COUNTING} or later for its match count; this server is {pane.version}')
             self.move_to(pane.id)
-            counted = parse_count(self.tmux(self.client, *search_batch(pane.id, command(pane.id))))
+            counted = parse_count(self.tmux(self.client, *search_batch(pane.id, command(pane))))
             self.state.status = self.status_of(pane.id, text, counted)
         except TmuxError as e:
             log_error(f'Find in tmux: {e}')
