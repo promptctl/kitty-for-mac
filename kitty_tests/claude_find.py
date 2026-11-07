@@ -38,7 +38,7 @@ from kitty.find_backends import FindCount, FindMode, FindQuery, FindStatus
 from kitty.tmux_find import FIND_DEADLINE, PaneRef, TmuxError, TmuxOperation
 
 from .base import BaseTest
-from .tmux_find import PrivateTmux, patient, private_tmux
+from .tmux_find import PATIENT_DEADLINE, PrivateTmux, patient, private_tmux
 
 RULE = '─' * 100
 PYTHON = shutil.which('python3')
@@ -446,7 +446,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             c.finder(state).find(default_query('zebra'))
             start = time.monotonic()
             c.finder(state).step(default_query('zebra'), False)
-            self.assertLess(time.monotonic() - start, FIND_DEADLINE)
+            self.assertLess(time.monotonic() - start, PATIENT_DEADLINE / 2, 'a moment, not the budget')
             self.ae(state.status, FindStatus(1, 3, FindCount.exact))
             self.ae(c.keys()[-1], "b'n'", 'the key was sent')
             c.holding(state).clear()
