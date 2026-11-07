@@ -153,7 +153,7 @@ removeAllTimers(EventLoopData *eld) {
     eld->timers_count = 0;
 }
 
-void
+GLFWAPI void
 toggleTimer(EventLoopData *eld, id_type timer_id, int enabled) {
     Timer *t = find_timer(eld, timer_id);
     if (!t) return;
@@ -209,19 +209,18 @@ dispatchEvents(EventLoopData *eld) {
 GLFWAPI unsigned
 dispatchTimers(EventLoopData *eld) {
     if (!eld->timers_count || eld->timers[0].trigger_at == MONOTONIC_T_MAX) return 0;
-    // Callbacks may add, remove and reorder timers, so the round is fixed by id up front.
-    // [LAW:one-source-of-truth] Each id is looked up in the table before it is called: a timer an
-    // earlier callback removed is gone (and its data freed), so it is not called.
-    static id_type due[sizeof(eld->timers) / sizeof(eld->timers[0])];
+    // Callbacks may add, remove, cancel, re-arm and reorder timers, and may run a nested round, so the
+    // round is fixed by id up front and each timer is re-armed only as it fires.
+    // [LAW:one-source-of-truth] Only a timer the table still holds as due is called: one an earlier callback
+    // removed (its data freed), cancelled or re-armed, or that a nested round already fired, is skipped.
+    id_type due[sizeof(eld->timers) / sizeof(eld->timers[0])];
     unsigned num_due = 0, num_fired = 0;
     monotonic_t now = monotonic();
-    for (nfds_t i = 0; i < eld->timers_count && eld->timers[i].trigger_at <= now; i++) {
-        eld->timers[i].trigger_at = now + eld->timers[i].interval;
-        due[num_due++] = eld->timers[i].id;
-    }
+    for (nfds_t i = 0; i < eld->timers_count && eld->timers[i].trigger_at <= now; i++) due[num_due++] = eld->timers[i].id;
     for (unsigned i = 0; i < num_due; i++) {
         Timer *t = find_timer(eld, due[i]);
-        if (!t) continue;
+        if (!t || t->trigger_at > now) continue;
+        t->trigger_at = now + t->interval;
         bool repeats = t->repeats;
         fire_timer(t->fire, t->id, t->callback_data);
         num_fired++;

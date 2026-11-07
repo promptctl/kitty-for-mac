@@ -92,8 +92,9 @@ class TestGLFW(BaseTest):
         self.ae(utf_8_strndup(b'\xf0\x9f\x98\xb8', 3).value, b'')
         self.ae(utf_8_strndup(b'\xc3\xb6\xf0\x9f\x98\xb8', 4).value, b'\xc3\xb6')
 
-    @unittest.skipIf(is_macos, 'Skipping test on macOS because glfw-cocoa.so is not built with backend_utils')
-    def test_timer_removed_earlier_in_its_round_is_not_called(self):
+    def _two_due_timers_each_acting_on_the_other(self, act):
+        # Both timers are due in the same round and each one's callback calls act(lib, eld, other_id). Returns
+        # what dispatchTimers returned, the ids called and the (id, data) pairs freed once all timers are removed.
         import ctypes
 
         from kitty.constants import glfw_path
@@ -104,6 +105,7 @@ class TestGLFW(BaseTest):
         lib.addTimer.argtypes = (
             ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int64, ctypes.c_int, ctypes.c_bool, timer_func, ctypes.c_void_p, timer_func)
         lib.removeTimer.argtypes = (ctypes.c_void_p, ctypes.c_ulonglong)
+        lib.toggleTimer.argtypes = (ctypes.c_void_p, ctypes.c_ulonglong, ctypes.c_int)
         lib.dispatchTimers.restype = ctypes.c_uint
         lib.dispatchTimers.argtypes = (ctypes.c_void_p,)
         lib.removeAllTimers.argtypes = (ctypes.c_void_p,)
@@ -111,22 +113,31 @@ class TestGLFW(BaseTest):
         ids, called, freed = [], [], []
 
         @timer_func
-        def remove_the_other(timer_id, data):
+        def act_on_the_other(timer_id, data):
             called.append(timer_id)
-            lib.removeTimer(eld, ids[1] if timer_id == ids[0] else ids[0])
+            act(lib, eld, ids[1] if timer_id == ids[0] else ids[0])
 
         @timer_func
         def free(timer_id, data):
             freed.append((timer_id, data))
 
-        # Both are due in the same round and each removes the other, so whichever fires first,
-        # the second must not be called and each timer's data is freed exactly once.
         for data in (1, 2):
-            ids.append(lib.addTimer(eld, b'test', 0, 1, True, remove_the_other, data, free))
-        self.ae(lib.dispatchTimers(eld), 1)
-        self.ae(len(called), 1)
+            ids.append(lib.addTimer(eld, b'test', 0, 1, True, act_on_the_other, data, free))
+        fired = lib.dispatchTimers(eld)
         lib.removeAllTimers(eld)
-        self.ae(sorted(freed), [(ids[0], 1), (ids[1], 2)])
+        return fired, called, sorted(freed), ids
+
+    @unittest.skipIf(is_macos, 'Skipping test on macOS because glfw-cocoa.so is not built with backend_utils')
+    def test_timer_removed_earlier_in_its_round_is_not_called(self):
+        # Whichever fires first removes the other, so the second is not called and each timer's data is freed once.
+        fired, called, freed, ids = self._two_due_timers_each_acting_on_the_other(lambda lib, eld, other: lib.removeTimer(eld, other))
+        self.ae((fired, len(called)), (1, 1))
+        self.ae(freed, [(ids[0], 1), (ids[1], 2)])
+
+    @unittest.skipIf(is_macos, 'Skipping test on macOS because glfw-cocoa.so is not built with backend_utils')
+    def test_timer_cancelled_earlier_in_its_round_is_not_called(self):
+        fired, called, freed, ids = self._two_due_timers_each_acting_on_the_other(lambda lib, eld, other: lib.toggleTimer(eld, other, 0))
+        self.ae((fired, len(called)), (1, 1))
 
 
 GLFW_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'glfw')
