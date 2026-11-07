@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import tempfile
+from unittest.mock import patch
 
 from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
 from kitty.constants import is_macos, kitty_exe
@@ -22,8 +23,7 @@ def spawn_and_wait_for_ready(code: str, what: str) -> subprocess.Popen:
         line = p.stdout.readline().strip()
         p.stdout.close()
         if line != b'ready':
-            # A child still printing something else gets no patience.
-            end = await_exit(p, patience=0) if line else await_exit(p)
+            end = await_exit(p)
             stderr.seek(0)
             err = stderr.read().decode('utf-8', 'replace')
             raise AssertionError(f'Unexpected output from {what}: {line!r}, it {end}, stderr:\n{err}')
@@ -279,10 +279,29 @@ class AwaitExitTest(BaseTest):
         self.ae(await_exit(p, patience=0.2), KilledAtDeadline(0.2, -signal.SIGKILL))
         self.ae(p.returncode, -signal.SIGKILL)
 
-    def test_a_child_already_dead_when_its_patience_runs_out_reports_its_own_status(self):
+    def _first_poll_misses_the_exit(self):
+        # Stages the race where the child ends between await_exit's last poll and its kill
+        real_waitpid, polls = os.waitpid, []
+        def waitpid(pid, options):
+            polls.append(options)
+            return (0, 0) if len(polls) == 1 else real_waitpid(pid, options)
+        return patch('kitty_tests.base.os.waitpid', waitpid)
+
+    def test_a_child_that_exits_just_before_the_kill_reports_its_own_status(self):
         p = self._spawn('raise SystemExit(5)')
         os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOWAIT)  # WNOWAIT leaves it a zombie, unreaped
-        self.ae(await_exit(p, patience=0), Exited(5))
+        with self._first_poll_misses_the_exit():
+            self.ae(await_exit(p, patience=0), Exited(5))
+
+    def test_a_child_reaped_elsewhere_just_before_the_kill_is_not_reported_as_killed(self):
+        p = self._spawn('raise SystemExit(3)')
+        status = os.waitpid(p.pid, 0)[1]
+        with self._first_poll_misses_the_exit():
+            self.ae(await_exit(p, patience=0), ReapedElsewhere())
+        p.returncode = os.waitstatus_to_exitcode(status)
+
+    def test_a_signal_with_no_name_is_reported_by_number(self):
+        self.ae(str(Exited(-200)), 'was killed by signal 200')
 
     def test_a_signal_death_names_the_signal(self):
         self.ae(str(Exited(-signal.SIGSEGV)), 'was killed by signal SIGSEGV')

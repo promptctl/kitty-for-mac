@@ -292,7 +292,10 @@ def retry_on_failure(max_attempts=max_attempts, sleep_duration=sleep_duration):
 def describe_exit(status: int) -> str:
     # status as os.waitstatus_to_exitcode() gives it: negative is the signal that ended the child
     if status < 0:
-        return f'was killed by signal {signal.Signals(-status).name}'
+        try:
+            return f'was killed by signal {signal.Signals(-status).name}'
+        except ValueError:  # a signal with no name, such as a Linux real-time one
+            return f'was killed by signal {-status}'
     return f'exited with status {status}'
 
 
@@ -326,9 +329,8 @@ def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 30 if is_ci else 
     # Awaits the exit of a child the test has stopped reading and says how it
     # ended. Popen's poll(), wait() and kill() report a child that another
     # waiter in this process reaped as exit 0, so nothing may touch p through
-    # Popen before this runs; patience=0 kills a child at once. A status this
-    # reaps goes on p, where a later p.wait() finds it.
-    # [LAW:single-enforcer] the one place a test's helper child is signalled and reaped
+    # Popen before this runs. A status this reaps goes on p, where a later
+    # p.wait() finds it.
     deadline = time.monotonic() + patience
     while True:
         try:
@@ -346,7 +348,8 @@ def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 30 if is_ci else 
             except (ProcessLookupError, ChildProcessError):
                 return ReapedElsewhere()
             p.returncode = os.waitstatus_to_exitcode(status)
-            return KilledAtDeadline(patience, p.returncode)
+            # a child that exited between the poll and the kill was not killed by it
+            return KilledAtDeadline(patience, p.returncode) if p.returncode == -signal.SIGKILL else Exited(p.returncode)
         time.sleep(0.01)
 
 

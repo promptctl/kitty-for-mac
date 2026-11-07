@@ -30,7 +30,8 @@ class TestBuild(BaseTest):
         p = subprocess.Popen([exe, '--version'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         out = p.stdout.read().decode()
         p.stdout.close()
-        self.ae(await_exit(p), Exited(0), f'kitten --version printed: {out!r}')
+        end = await_exit(p)
+        self.ae(end, Exited(0), f'kitten --version {end}, printed: {out!r}')
         self.assertIn(str_version, out)
         self.assertTrue(shutil.which(slangc()[0]), f'slang compiler: {slangc()[0]} not found on PATH: {os.environ["PATH"]}')
 
