@@ -50,6 +50,8 @@
 #define GLFW_INCLUDE_NONE
 #include "glfw3.h"
 
+#include "callback_kinds.h"
+
 #define EGL_PRESENT_OPAQUE_EXT 0x31df
 
 #define GLFW_MOD_REMAP_SZ 8
@@ -456,27 +458,27 @@ struct _GLFWwindow {
     } drop_operation;
 
     struct {
-        GLFWwindowposfun pos;
-        GLFWwindowsizefun size;
-        GLFWwindowclosefun close;
-        GLFWwindowrefreshfun refresh;
-        GLFWwindowfocusfun focus;
-        GLFWwindowocclusionfun occlusion;
-        GLFWwindowiconifyfun iconify;
-        GLFWwindowmaximizefun maximize;
-        GLFWframebuffersizefun fbsize;
-        GLFWwindowcontentscalefun scale;
-        GLFWmousebuttonfun mouseButton;
-        GLFWcursorposfun cursorPos;
-        GLFWcursorenterfun cursorEnter;
-        GLFWscrollfun scroll;
-        GLFWtouchfun touch;
-        GLFWkeyboardfun keyboard;
-        GLFWliveresizefun liveResize;
-        GLFWnativeviewfocusfun nativeViewFocus;
+        _GLFW_EVENT(GLFWwindowposfun) pos;
+        _GLFW_EVENT(GLFWwindowsizefun) size;
+        _GLFW_EVENT(GLFWwindowclosefun) close;
+        _GLFW_EVENT(GLFWwindowrefreshfun) refresh;
+        _GLFW_EVENT(GLFWwindowfocusfun) focus;
+        _GLFW_EVENT(GLFWwindowocclusionfun) occlusion;
+        _GLFW_EVENT(GLFWwindowiconifyfun) iconify;
+        _GLFW_EVENT(GLFWwindowmaximizefun) maximize;
+        _GLFW_EVENT(GLFWframebuffersizefun) fbsize;
+        _GLFW_EVENT(GLFWwindowcontentscalefun) scale;
+        _GLFW_EVENT(GLFWmousebuttonfun) mouseButton;
+        _GLFW_EVENT(GLFWcursorposfun) cursorPos;
+        _GLFW_EVENT(GLFWcursorenterfun) cursorEnter;
+        _GLFW_EVENT(GLFWscrollfun) scroll;
+        _GLFW_EVENT(GLFWtouchfun) touch;
+        _GLFW_EVENT(GLFWkeyboardfun) keyboard;
+        _GLFW_EVENT(GLFWliveresizefun) liveResize;
+        _GLFW_EVENT(GLFWnativeviewfocusfun) nativeViewFocus;
 
-        GLFWdragsourcefun drag_source;
-        GLFWdropeventfun drop_event;
+        _GLFW_EVENT(GLFWdragsourcefun) drag_source;
+        _GLFW_EVENT(GLFWdropeventfun) drop_event;
     } callbacks;
 
     // This is defined in the window API's platform.h
@@ -569,7 +571,7 @@ struct _GLFWmutex {
 typedef struct _GLFWClipboardData {
     const char **mime_types;
     size_t num_mime_types;
-    GLFWclipboarditerfun get_data;
+    _GLFW_NO_TICK(GLFWclipboarditerfun) get_data;
     GLFWClipboardType ctype;
 } _GLFWClipboardData;
 
@@ -634,16 +636,16 @@ struct _GLFWlibrary {
     } vk;
 
     struct {
-        GLFWmonitorfun monitor;
-        GLFWjoystickfun joystick;
-        GLFWapplicationclosefun application_close;
-        GLFWclipboardlostfun clipboard_lost;
-        GLFWsystemcolorthemechangefun system_color_theme_change;
-        GLFWdrawtextfun draw_text;
-        GLFWcurrentselectionfun get_current_selection;
-        GLFWhascurrentselectionfun has_current_selection;
-        GLFWimecursorpositionfun get_ime_cursor_position;
-        GLFWimetextaroundcursorfun get_ime_text_around_cursor;
+        _GLFW_EVENT(GLFWmonitorfun) monitor;
+        _GLFW_EVENT(GLFWjoystickfun) joystick;
+        _GLFW_EVENT(GLFWapplicationclosefun) application_close;
+        _GLFW_EVENT(GLFWclipboardlostfun) clipboard_lost;
+        _GLFW_EVENT(GLFWsystemcolorthemechangefun) system_color_theme_change;
+        _GLFW_NO_TICK(GLFWdrawtextfun) draw_text;
+        _GLFW_NO_TICK(GLFWcurrentselectionfun) get_current_selection;
+        _GLFW_NO_TICK(GLFWhascurrentselectionfun) has_current_selection;
+        _GLFW_NO_TICK(GLFWimecursorpositionfun) get_ime_cursor_position;
+        _GLFW_NO_TICK(GLFWimetextaroundcursorfun) get_ime_text_around_cursor;
     } callbacks;
 
     // This is defined in the window API's platform.h
@@ -880,6 +882,8 @@ _GLFWwindow *_glfwWindowForId(GLFWid id);
 void _glfwPlatformRunMainLoop(GLFWtickcallback, void *);
 void _glfwPlatformStopMainLoop(void);
 unsigned long long _glfwPlatformAddTimer(monotonic_t interval, bool repeats, GLFWuserdatafun callback, void *callback_data, GLFWuserdatafun free_callback);
+// A timer whose firing is an event: see TimerFire in callback_kinds.h
+unsigned long long _glfwPlatformAddClientTimer(monotonic_t interval, bool repeats, GLFWuserdatafun callback, void *callback_data, GLFWuserdatafun free_callback);
 void _glfwPlatformUpdateTimer(unsigned long long timer_id, monotonic_t interval, bool enabled);
 void _glfwPlatformRemoveTimer(unsigned long long timer_id);
 int _glfwPlatformSetWindowBlur(_GLFWwindow *handle, int value);

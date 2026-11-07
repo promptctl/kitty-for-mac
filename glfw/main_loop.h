@@ -41,7 +41,12 @@ _glfwPlatformRunMainLoop(GLFWtickcallback tick_callback, void *data) {
 
 unsigned long long
 _glfwPlatformAddTimer(monotonic_t interval, bool repeats, GLFWuserdatafreefun callback, void *callback_data, GLFWuserdatafreefun free_callback) {
-    return addTimer(&_glfw.GLFW_LOOP_BACKEND.eventLoopData, "user timer", interval, 1, repeats, callback, callback_data, free_callback);
+    return addTimer(&_glfw.GLFW_LOOP_BACKEND.eventLoopData, "internal timer", interval, 1, repeats, callback, callback_data, free_callback);
+}
+
+unsigned long long
+_glfwPlatformAddClientTimer(monotonic_t interval, bool repeats, GLFWuserdatafreefun callback, void *callback_data, GLFWuserdatafreefun free_callback) {
+    return addClientTimer(&_glfw.GLFW_LOOP_BACKEND.eventLoopData, "user timer", interval, 1, repeats, callback, callback_data, free_callback);
 }
 
 void

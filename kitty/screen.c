@@ -3236,7 +3236,7 @@ fire_bell_shader_event(id_type window_id) {
                 if (tab->windows[i].visible) {
                     osw->shader_anim_event_registry |= (1u << SHADER_ANIM_EVENT_BELL_IN_WINDOW);
                     osw->last_bell_window_id = window_id;
-                    wakeup_main_loop();
+                    request_tick_callback();
                 }
                 return;
             }

@@ -44,7 +44,7 @@
 //
 void
 _glfwInputWindowFocus(_GLFWwindow *window, bool focused) {
-    if (window->callbacks.focus) window->callbacks.focus((GLFWwindow *)window, focused);
+    _glfwDeliver(window->callbacks.focus, (GLFWwindow *)window, focused);
 
     if (!focused) {
         _glfw.focusedWindowId = 0;
@@ -95,7 +95,7 @@ _glfwWindowForId(GLFWid id) {
 //
 void
 _glfwInputWindowOcclusion(_GLFWwindow *window, bool occluded) {
-    if (window->callbacks.occlusion) window->callbacks.occlusion((GLFWwindow *)window, occluded);
+    _glfwDeliver(window->callbacks.occlusion, (GLFWwindow *)window, occluded);
 }
 
 // Notifies shared code that a window has moved
@@ -103,7 +103,7 @@ _glfwInputWindowOcclusion(_GLFWwindow *window, bool occluded) {
 //
 void
 _glfwInputWindowPos(_GLFWwindow *window, int x, int y) {
-    if (window->callbacks.pos) window->callbacks.pos((GLFWwindow *)window, x, y);
+    _glfwDeliver(window->callbacks.pos, (GLFWwindow *)window, x, y);
 }
 
 // Notifies shared code that a window has been resized
@@ -111,21 +111,21 @@ _glfwInputWindowPos(_GLFWwindow *window, int x, int y) {
 //
 void
 _glfwInputWindowSize(_GLFWwindow *window, int width, int height) {
-    if (window->callbacks.size) window->callbacks.size((GLFWwindow *)window, width, height);
+    _glfwDeliver(window->callbacks.size, (GLFWwindow *)window, width, height);
 }
 
 // Notifies shared code that a window has been iconified or restored
 //
 void
 _glfwInputWindowIconify(_GLFWwindow *window, bool iconified) {
-    if (window->callbacks.iconify) window->callbacks.iconify((GLFWwindow *)window, iconified);
+    _glfwDeliver(window->callbacks.iconify, (GLFWwindow *)window, iconified);
 }
 
 // Notifies shared code that a window has been maximized or restored
 //
 void
 _glfwInputWindowMaximize(_GLFWwindow *window, bool maximized) {
-    if (window->callbacks.maximize) window->callbacks.maximize((GLFWwindow *)window, maximized);
+    _glfwDeliver(window->callbacks.maximize, (GLFWwindow *)window, maximized);
 }
 
 // Notifies shared code that a window framebuffer has been resized
@@ -133,21 +133,21 @@ _glfwInputWindowMaximize(_GLFWwindow *window, bool maximized) {
 //
 void
 _glfwInputFramebufferSize(_GLFWwindow *window, int width, int height) {
-    if (window->callbacks.fbsize) window->callbacks.fbsize((GLFWwindow *)window, width, height);
+    _glfwDeliver(window->callbacks.fbsize, (GLFWwindow *)window, width, height);
 }
 
 // Notifies shared code that a window live resize is in progress
 //
 void
 _glfwInputLiveResize(_GLFWwindow *window, bool started) {
-    if (window && window->callbacks.liveResize) window->callbacks.liveResize((GLFWwindow *)window, started);
+    if (window) _glfwDeliver(window->callbacks.liveResize, (GLFWwindow *)window, started);
 }
 
 // Notifies shared code that keyboard focus moved between the terminal and a native view of the window
 //
 void
 _glfwInputNativeViewFocus(_GLFWwindow *window, bool native_view_has_focus) {
-    if (window && window->callbacks.nativeViewFocus) window->callbacks.nativeViewFocus((GLFWwindow *)window, native_view_has_focus);
+    if (window) _glfwDeliver(window->callbacks.nativeViewFocus, (GLFWwindow *)window, native_view_has_focus);
 }
 
 // Notifies shared code that a window content scale has changed
@@ -155,14 +155,14 @@ _glfwInputNativeViewFocus(_GLFWwindow *window, bool native_view_has_focus) {
 //
 void
 _glfwInputWindowContentScale(_GLFWwindow *window, float xscale, float yscale) {
-    if (window->callbacks.scale) window->callbacks.scale((GLFWwindow *)window, xscale, yscale);
+    _glfwDeliver(window->callbacks.scale, (GLFWwindow *)window, xscale, yscale);
 }
 
 // Notifies shared code that the window contents needs updating
 //
 void
 _glfwInputWindowDamage(_GLFWwindow *window) {
-    if (window->callbacks.refresh) window->callbacks.refresh((GLFWwindow *)window);
+    _glfwDeliver(window->callbacks.refresh, (GLFWwindow *)window);
 }
 
 // Notifies shared code that the user wishes to close a window
@@ -171,7 +171,7 @@ void
 _glfwInputWindowCloseRequest(_GLFWwindow *window) {
     window->shouldClose = true;
 
-    if (window->callbacks.close) window->callbacks.close((GLFWwindow *)window);
+    _glfwDeliver(window->callbacks.close, (GLFWwindow *)window);
 }
 
 // Notifies shared code that a window has changed its desired monitor
@@ -915,7 +915,7 @@ glfwSetWindowPosCallback(GLFWwindow *handle, GLFWwindowposfun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.pos, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.pos.fn, cbfun);
     return cbfun;
 }
 
@@ -925,7 +925,7 @@ glfwSetWindowSizeCallback(GLFWwindow *handle, GLFWwindowsizefun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.size, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.size.fn, cbfun);
     return cbfun;
 }
 
@@ -935,7 +935,7 @@ glfwSetWindowCloseCallback(GLFWwindow *handle, GLFWwindowclosefun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.close, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.close.fn, cbfun);
     return cbfun;
 }
 
@@ -945,7 +945,7 @@ glfwSetWindowRefreshCallback(GLFWwindow *handle, GLFWwindowrefreshfun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.refresh, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.refresh.fn, cbfun);
     return cbfun;
 }
 
@@ -955,7 +955,7 @@ glfwSetWindowFocusCallback(GLFWwindow *handle, GLFWwindowfocusfun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.focus, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.focus.fn, cbfun);
     return cbfun;
 }
 
@@ -965,7 +965,7 @@ glfwSetWindowOcclusionCallback(GLFWwindow *handle, GLFWwindowocclusionfun cbfun)
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.occlusion, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.occlusion.fn, cbfun);
     return cbfun;
 }
 
@@ -975,7 +975,7 @@ glfwSetWindowIconifyCallback(GLFWwindow *handle, GLFWwindowiconifyfun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.iconify, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.iconify.fn, cbfun);
     return cbfun;
 }
 
@@ -985,7 +985,7 @@ glfwSetWindowMaximizeCallback(GLFWwindow *handle, GLFWwindowmaximizefun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.maximize, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.maximize.fn, cbfun);
     return cbfun;
 }
 
@@ -995,7 +995,7 @@ glfwSetFramebufferSizeCallback(GLFWwindow *handle, GLFWframebuffersizefun cbfun)
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.fbsize, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.fbsize.fn, cbfun);
     return cbfun;
 }
 
@@ -1005,7 +1005,7 @@ glfwSetLiveResizeCallback(GLFWwindow *handle, GLFWliveresizefun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.liveResize, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.liveResize.fn, cbfun);
     return cbfun;
 }
 
@@ -1015,7 +1015,7 @@ glfwSetNativeViewFocusCallback(GLFWwindow *handle, GLFWnativeviewfocusfun cbfun)
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.nativeViewFocus, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.nativeViewFocus.fn, cbfun);
     return cbfun;
 }
 
@@ -1025,7 +1025,7 @@ glfwSetWindowContentScaleCallback(GLFWwindow *handle, GLFWwindowcontentscalefun 
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.scale, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.scale.fn, cbfun);
     return cbfun;
 }
 

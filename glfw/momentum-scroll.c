@@ -187,7 +187,7 @@ static void
 start_momentum_scroll(monotonic_t now) {
     set_velocity_from_samples(now);
     send_momentum_event(true);
-    s.timer_id = glfwAddTimer(s.timer_interval, true, momentum_timer_fired, NULL, NULL);
+    s.timer_id = _glfwPlatformAddTimer(s.timer_interval, true, momentum_timer_fired, NULL, NULL);
 }
 
 static bool

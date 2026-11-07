@@ -769,7 +769,8 @@ typedef struct GlobalState {
 
 extern GlobalState global_state;
 
-#define call_boss(name, ...)                                                          \
+#define call_boss(name, ...) call_boss_method(name, __VA_ARGS__)
+#define call_boss_method(name, ...)                                                   \
     if (global_state.boss) {                                                          \
         PyObject *cret_ = PyObject_CallMethod(global_state.boss, #name, __VA_ARGS__); \
         if (cret_ == NULL) {                                                          \
@@ -802,7 +803,6 @@ void update_os_window_viewport(OSWindow *window, bool notify_boss);
 bool should_os_window_be_rendered(OSWindow *w);
 bool is_os_window_potentially_visible(OSWindow *w);
 void update_os_window_visibility_reports(OSWindow *w);
-void wakeup_main_loop(void);
 bool make_window_context_current(id_type);
 void hide_mouse(OSWindow *w);
 bool is_mouse_hidden(OSWindow *w);
@@ -844,11 +844,13 @@ void send_prerendered_sprites_for_window(OSWindow *w);
 #endif
 void request_frame_render(OSWindow *w);
 // [LAW:single-enforcer] A frame is drawn, and pending work such as a find search is advanced,
-// only on a tick. Code that changes state outside the tick (GLFW input callbacks, AppKit events,
-// notification events, Python timers) requests one after it runs, unconditionally: a tick is
-// cheap. Code inside the tick must not, or the loop never sleeps.
+// only on a tick. GLFW requests the tick for every event it delivers to kitty and every kitty timer
+// it fires (glfw/callback_kinds.h), so a GLFW callback makes no request of its own. kitty/cocoa_window.m
+// requests for the AppKit entries GLFW does not dispatch. Other code requests only to wake the main
+// loop from another thread, or to re-run the tick for work the tick itself left. A request made
+// inside the tick re-runs it once, so code inside the tick must not request on every pass, or the
+// loop never sleeps.
 void request_tick_callback(void);
-#define call_boss_outside_tick(name, ...) do { call_boss(name, __VA_ARGS__); request_tick_callback(); } while (0)
 typedef void (*timer_callback_fun)(id_type, void *);
 typedef void (*tick_callback_fun)(void *);
 id_type add_main_loop_timer(monotonic_t interval, bool repeats, timer_callback_fun callback, void *callback_data, timer_callback_fun free_callback);

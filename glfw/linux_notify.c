@@ -23,15 +23,15 @@ cleanup_free(void *p) {
 
 typedef struct {
     notification_id_type next_id;
-    GLFWDBusnotificationcreatedfun callback;
+    _GLFW_EVENT(GLFWDBusnotificationcreatedfun) callback;
     void *data;
 } NotificationCreatedData;
 
-static GLFWDBusnotificationactivatedfun activated_handler = NULL;
+static _GLFW_EVENT(GLFWDBusnotificationactivatedfun) activated_handler;
 
 void
 glfw_dbus_set_user_notification_activated_handler(GLFWDBusnotificationactivatedfun handler) {
-    activated_handler = handler;
+    activated_handler.fn = handler;
 }
 
 void
@@ -45,7 +45,7 @@ notification_created(DBusMessage *msg, const DBusError *err, void *data) {
     if (!glfw_dbus_get_args(msg, "Failed to get Notification uid", DBUS_TYPE_UINT32, &id, DBUS_TYPE_INVALID)) return;
     NotificationCreatedData *ncd = (NotificationCreatedData *)data;
     if (ncd) {
-        if (ncd->callback) ncd->callback(ncd->next_id, id, ncd->data);
+        _glfwDeliver(ncd->callback, ncd->next_id, id, ncd->data);
         free(ncd);
     }
 }
@@ -58,8 +58,8 @@ message_handler(DBusConnection *conn UNUSED, DBusMessage *msg, void *user_data U
         const char *action = NULL;
         if (glfw_dbus_get_args(
                 msg, "Failed to get args from ActionInvoked notification signal", DBUS_TYPE_UINT32, &id, DBUS_TYPE_STRING, &action, DBUS_TYPE_INVALID)) {
-            if (activated_handler) {
-                activated_handler(id, 2, action);
+            if (activated_handler.fn) {
+                _glfwDeliver(activated_handler, id, 2, action);
                 return DBUS_HANDLER_RESULT_HANDLED;
             }
         }
@@ -70,8 +70,8 @@ message_handler(DBusConnection *conn UNUSED, DBusMessage *msg, void *user_data U
         const char *token = NULL;
         if (glfw_dbus_get_args(
                 msg, "Failed to get args from ActivationToken notification signal", DBUS_TYPE_UINT32, &id, DBUS_TYPE_STRING, &token, DBUS_TYPE_INVALID)) {
-            if (activated_handler) {
-                activated_handler(id, 1, token);
+            if (activated_handler.fn) {
+                _glfwDeliver(activated_handler, id, 1, token);
                 return DBUS_HANDLER_RESULT_HANDLED;
             }
         }
@@ -80,8 +80,8 @@ message_handler(DBusConnection *conn UNUSED, DBusMessage *msg, void *user_data U
     if (dbus_message_is_signal(msg, NOTIFICATIONS_IFACE, "NotificationClosed")) {
         uint32_t id;
         if (glfw_dbus_get_args(msg, "Failed to get args from NotificationClosed notification signal", DBUS_TYPE_UINT32, &id, DBUS_TYPE_INVALID)) {
-            if (activated_handler) {
-                activated_handler(id, 0, "");
+            if (activated_handler.fn) {
+                _glfwDeliver(activated_handler, id, 0, "");
                 return DBUS_HANDLER_RESULT_HANDLED;
             }
         }
@@ -124,7 +124,7 @@ got_capabilities(DBusMessage *msg, const DBusError *err, void *data UNUSED) {
         }
         dbus_message_iter_next(&array_iter);
     }
-    if (activated_handler) activated_handler(0, -1, buf);
+    _glfwDeliver(activated_handler, 0, -1, buf);
 #undef check_call
 }
 
@@ -152,7 +152,7 @@ glfw_dbus_send_user_notification(const GLFWDBUSNotificationData *n, GLFWDBusnoti
     if (!data) return 0;
     static notification_id_type notification_id = 0;
     data->next_id = ++notification_id;
-    data->callback = callback;
+    data->callback.fn = callback;
     data->data = user_data;
     if (!data->next_id) data->next_id = ++notification_id;
 

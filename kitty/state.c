@@ -1866,7 +1866,7 @@ PYWRAP0(destroy_global_data) {
 }
 
 PYWRAP0(wakeup_main_loop) {
-    wakeup_main_loop();
+    request_tick_callback();
     Py_RETURN_NONE;
 }
 

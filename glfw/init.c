@@ -48,7 +48,8 @@ _GLFWlibrary _glfw = {false};
 // after termination
 //
 static _GLFWerror _glfwMainThreadError;
-static GLFWerrorfun _glfwErrorCallback;
+// Reports an error: a GLFW call that fails on every tick would otherwise re-run the tick forever
+static _GLFW_NO_TICK(GLFWerrorfun) _glfwErrorCallback;
 static _GLFWinitconfig _glfwInitHints = {
     .hatButtons = true,
     .angleType = GLFW_ANGLE_PLATFORM_TYPE_NONE,
@@ -311,7 +312,7 @@ glfwStopMainLoop(void) {
 
 GLFWAPI unsigned long long
 glfwAddTimer(monotonic_t interval, bool repeats, GLFWuserdatafun callback, void *callback_data, GLFWuserdatafun free_callback) {
-    return _glfwPlatformAddTimer(interval, repeats, callback, callback_data, free_callback);
+    return _glfwPlatformAddClientTimer(interval, repeats, callback, callback_data, free_callback);
 }
 
 GLFWAPI void
@@ -327,21 +328,21 @@ glfwRemoveTimer(unsigned long long timer_id) {
 GLFWAPI GLFWapplicationclosefun
 glfwSetApplicationCloseCallback(GLFWapplicationclosefun cbfun) {
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(_glfw.callbacks.application_close, cbfun);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.application_close.fn, cbfun);
     return cbfun;
 }
 
 GLFWAPI GLFWsystemcolorthemechangefun
 glfwSetSystemColorThemeChangeCallback(GLFWsystemcolorthemechangefun cbfun) {
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(_glfw.callbacks.system_color_theme_change, cbfun);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.system_color_theme_change.fn, cbfun);
     return cbfun;
 }
 
 GLFWAPI GLFWclipboardlostfun
 glfwSetClipboardLostCallback(GLFWclipboardlostfun cbfun) {
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(_glfw.callbacks.clipboard_lost, cbfun);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.clipboard_lost.fn, cbfun);
     return cbfun;
 }
 

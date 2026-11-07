@@ -72,7 +72,7 @@ activation_token_done(void *data, struct xdg_activation_token_v1 *xdg_token, con
         glfw_wl_xdg_activation_request *r = _glfw.wl.activation_requests.array + i;
         if (r->request_id == (uintptr_t)data) {
             _GLFWwindow *window = _glfwWindowForId(r->window_id);
-            if (r->callback) r->callback((GLFWwindow *)window, token, r->callback_data);
+            _glfwDeliver(r->callback, (GLFWwindow *)window, token, r->callback_data);
             remove_i_from_array(_glfw.wl.activation_requests.array, i, _glfw.wl.activation_requests.sz);
             break;
         }
@@ -91,7 +91,7 @@ get_activation_token(_GLFWwindow *window, uint32_t serial, GLFWactivationcallbac
 #define fail(msg)                                        \
     {                                                    \
         _glfwInputError(GLFW_PLATFORM_ERROR, msg);       \
-        if (cb) cb((GLFWwindow *)window, NULL, cb_data); \
+        _glfwDeliver(((_GLFW_EVENT(GLFWactivationcallback)){.fn = cb}), (GLFWwindow *)window, NULL, cb_data); \
         return false;                                    \
     }
     if (_glfw.wl.xdg_activation_v1 == NULL) fail("Wayland: activation requests not supported by this Wayland compositor");
@@ -110,7 +110,7 @@ get_activation_token(_GLFWwindow *window, uint32_t serial, GLFWactivationcallbac
     memset(r, 0, sizeof(*r));
     static uintptr_t rq = 0;
     r->window_id = window->id;
-    r->callback = cb;
+    r->callback.fn = cb;
     r->callback_data = cb_data;
     r->request_id = ++rq;
     r->token = token;
@@ -462,7 +462,8 @@ update_copy_mime(GLFWClipboardType t) {
     snprintf(buf, sizeof(_glfw.wl.clipboard_copy_mime), "%s%llu", prefix, (unsigned long long)copy_id);
 }
 
-static GLFWwaylandinitialsizefun initial_window_size_callback = NULL;
+// Asked for the window's size before it is mapped: a query
+static _GLFW_NO_TICK(GLFWwaylandinitialsizefun) initial_window_size_callback = NULL;
 
 GLFWAPI void
 glfwWaylandSetInitialWindowSizeCallback(GLFWwaylandinitialsizefun callback) {
@@ -576,7 +577,7 @@ _glfwWaylandSurfaceOutputsChanged(_GLFWwindow *window) {
     if (!window->wl.frameCallbackData.current_wl_callback) return;
     wl_callback_destroy(window->wl.frameCallbackData.current_wl_callback);
     window->wl.frameCallbackData.current_wl_callback = NULL;
-    if (window->wl.frameCallbackData.callback) window->wl.frameCallbackData.callback(window->wl.frameCallbackData.id);
+    _glfwDeliver(window->wl.frameCallbackData.callback, window->wl.frameCallbackData.id);
 }
 
 static void
@@ -1384,7 +1385,7 @@ abortOnFatalError(int last_error) {
     if (!abort_called) {
         abort_called = true;
         _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: fatal display error: %s", strerror(last_error));
-        if (_glfw.callbacks.application_close) _glfw.callbacks.application_close(GLFW_APPLICATION_CLOSE_FATAL_ERROR);
+        _glfwDeliver(_glfw.callbacks.application_close, GLFW_APPLICATION_CLOSE_FATAL_ERROR);
         else {
             _GLFWwindow *window = _glfw.windowListHead;
             while (window) {
@@ -1899,7 +1900,7 @@ static bool
 has_activation_in_flight(_GLFWwindow *window, GLFWactivationcallback callback) {
     for (size_t i = 0; i < _glfw.wl.activation_requests.sz; i++) {
         glfw_wl_xdg_activation_request *r = _glfw.wl.activation_requests.array + i;
-        if (r->window_id == window->id && r->callback == callback) return true;
+        if (r->window_id == window->id && r->callback.fn == callback) return true;
     }
     return false;
 }
@@ -2998,7 +2999,7 @@ static void
 frame_handle_redraw(void *data, struct wl_callback *callback, uint32_t time UNUSED) {
     _GLFWwindow *window = (_GLFWwindow *)data;
     if (callback == window->wl.frameCallbackData.current_wl_callback) {
-        window->wl.frameCallbackData.callback(window->wl.frameCallbackData.id);
+        _glfwDeliver(window->wl.frameCallbackData.callback, window->wl.frameCallbackData.id);
         window->wl.frameCallbackData.current_wl_callback = NULL;
     }
     wl_callback_destroy(callback);
@@ -3085,18 +3086,18 @@ glfwGetNativeKeyForName(const char *keyName, bool caseSensitive) {
 }
 
 GLFWAPI void
-glfwRequestWaylandFrameEvent(GLFWwindow *handle, unsigned long long id, void (*callback)(unsigned long long id)) {
+glfwRequestWaylandFrameEvent(GLFWwindow *handle, unsigned long long id, GLFWwaylandframecallbackfunc callback) {
     _GLFWwindow *window = (_GLFWwindow *)handle;
     static const struct wl_callback_listener frame_listener = {.done = frame_handle_redraw};
     if (window->wl.frameCallbackData.current_wl_callback) wl_callback_destroy(window->wl.frameCallbackData.current_wl_callback);
     if (window->wl.waiting_for_swap_to_commit) {
         callback(id);
         window->wl.frameCallbackData.id = 0;
-        window->wl.frameCallbackData.callback = NULL;
+        window->wl.frameCallbackData.callback.fn = NULL;
         window->wl.frameCallbackData.current_wl_callback = NULL;
     } else {
         window->wl.frameCallbackData.id = id;
-        window->wl.frameCallbackData.callback = callback;
+        window->wl.frameCallbackData.callback.fn = callback;
         window->wl.frameCallbackData.current_wl_callback = wl_surface_frame(window->wl.surface);
         if (window->wl.frameCallbackData.current_wl_callback) {
             wl_callback_add_listener(window->wl.frameCallbackData.current_wl_callback, &frame_listener, window);

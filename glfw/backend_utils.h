@@ -45,10 +45,9 @@
 #include <sys/eventfd.h>
 #endif
 
-typedef unsigned long long id_type;
+#include "callback_kinds.h"
+
 typedef void (*watch_callback_func)(int, int, void *);
-typedef void (*timer_callback_func)(id_type, void *);
-typedef void (*GLFWuserdatafreefun)(id_type, void *);
 
 typedef struct {
     int fd, events, enabled, ready;
@@ -62,7 +61,7 @@ typedef struct {
 typedef struct {
     id_type id;
     monotonic_t interval, trigger_at;
-    timer_callback_func callback;
+    TimerFire fire;
     void *callback_data;
     GLFWuserdatafreefun free;
     const char *name;
@@ -95,6 +94,8 @@ id_type addWatch(EventLoopData *eld, const char *name, int fd, int events, int e
 void removeWatch(EventLoopData *eld, id_type watch_id);
 void toggleWatch(EventLoopData *eld, id_type watch_id, int enabled);
 id_type addTimer(
+    EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, timer_callback_func cb, void *cb_data, GLFWuserdatafreefun free);
+id_type addClientTimer(
     EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, timer_callback_func cb, void *cb_data, GLFWuserdatafreefun free);
 void removeTimer(EventLoopData *eld, id_type timer_id);
 void removeAllTimers(EventLoopData *eld);

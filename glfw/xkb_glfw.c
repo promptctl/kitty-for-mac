@@ -968,11 +968,11 @@ glfw_xkb_update_ime_state(_GLFWwindow *w, _GLFWXKBData *xkb, const GLFWIMEUpdate
 void
 glfw_xkb_key_from_ime(_GLFWIBUSKeyEvent *ev, bool handled_by_ime, bool failed) {
     _GLFWwindow *window = _glfwWindowForId(ev->window_id);
-    if (failed && window && window->callbacks.keyboard) {
+    if (failed && window) {
         // notify application to remove any existing pre-edit text
         GLFWkeyevent fake_ev = {.action = GLFW_PRESS};
         fake_ev.ime_state = GLFW_IME_PREEDIT_CHANGED;
-        window->callbacks.keyboard((GLFWwindow *)window, &fake_ev);
+        _glfwDeliver(window->callbacks.keyboard, (GLFWwindow *)window, &fake_ev);
     }
     static xkb_keycode_t last_handled_press_keycode = 0;
     // We filter out release events that correspond to the last press event
@@ -1008,13 +1008,13 @@ glfw_xkb_key_from_ime(_GLFWIBUSKeyEvent *ev, bool handled_by_ime, bool failed) {
 void
 glfw_xkb_forwarded_key_from_ime(xkb_keysym_t keysym, unsigned int glfw_mods) {
     _GLFWwindow *w = _glfwFocusedWindow();
-    if (w && w->callbacks.keyboard) {
+    if (w) {
         GLFWkeyevent fake_ev = {.action = GLFW_PRESS};
         fake_ev.native_key = keysym;
         fake_ev.key = glfw_key_for_sym(keysym);
         fake_ev.mods = glfw_mods;
         fake_ev.ime_state = GLFW_IME_NONE;
-        w->callbacks.keyboard((GLFWwindow *)w, &fake_ev);
+        _glfwDeliver(w->callbacks.keyboard, (GLFWwindow *)w, &fake_ev);
     }
 }
 

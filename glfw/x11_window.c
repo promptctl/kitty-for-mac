@@ -1392,7 +1392,7 @@ handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
 
                 // Start timer
                 x11_momentum_scroll_state.timer_id =
-                    glfwAddTimer(ms_to_monotonic_t(momentum_scroll_gesture_detection_timeout_ms), false, x11_scroll_stop_timer_callback, NULL, NULL);
+                    _glfwPlatformAddTimer(ms_to_monotonic_t(momentum_scroll_gesture_detection_timeout_ms), false, x11_scroll_stop_timer_callback, NULL, NULL);
 
                 // Send the scroll event through momentum handler
                 glfw_handle_scroll_event_for_momentum(window, &ev, false, true);

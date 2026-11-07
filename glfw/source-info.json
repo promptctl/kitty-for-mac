@@ -23,6 +23,7 @@
   "common": {
     "headers": [
       "internal.h",
+      "callback_kinds.h",
       "mappings.h"
     ],
     "sources": [
