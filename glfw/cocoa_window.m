@@ -905,6 +905,27 @@ static void flush_focus_loss_text(_GLFWwindow *window);
 
 // Content view class for the GLFW window {{{
 
+// What is running the text input system, which decides where the text
+// insertText receives goes.
+typedef enum {
+    // No key handler: the text is sent to the program on its own.
+    TEXT_INPUT_FROM_EVENT_LOOP = 0,
+    // A key press: the text is gathered in _glfw.ns.text for the press to carry.
+    TEXT_INPUT_FROM_KEY_DOWN,
+    // A modifier change: the text is sent to the program as it arrives.
+    TEXT_INPUT_FROM_FLAGS_CHANGED,
+} TextInputCaller;
+
+static const char *
+text_input_caller_name(TextInputCaller caller) {
+    switch (caller) {
+        case TEXT_INPUT_FROM_EVENT_LOOP: return "event loop";
+        case TEXT_INPUT_FROM_KEY_DOWN: return "keyDown";
+        case TEXT_INPUT_FROM_FLAGS_CHANGED: return "flagsChanged";
+    }
+    return "unknown";
+}
+
 @interface GLFWContentView : NSView <NSTextInputClient, GLFWTerminalKeyInput> {
     _GLFWwindow *window;
     NSTrackingArea *trackingArea;
@@ -916,7 +937,7 @@ static void flush_focus_loss_text(_GLFWwindow *window);
     bool committing_marked_text, marked_text_committed_by_ime;
     NSString *focus_loss_text;
     bool focus_loss_text_sent;
-    int in_key_handler;
+    TextInputCaller text_input_caller;
     NSString *input_source_at_last_key_event;
     GLFWDraggingSource *dragging_source;
 }
@@ -941,7 +962,7 @@ static void flush_focus_loss_text(_GLFWwindow *window);
         markedTextSelectedRange = kEmptyRange;
         markedRect = NSMakeRect(0.0, 0.0, 0.0, 0.0);
         input_source_at_last_key_event = nil;
-        in_key_handler = 0;
+        text_input_caller = TEXT_INPUT_FROM_EVENT_LOOP;
         self.identifier = @"kitty-content-view";
 
         [self updateTrackingAreas];
@@ -1287,17 +1308,21 @@ is_ascii_control_char(char x) {
     return x == 0 || (1 <= x && x <= 31) || x == 127;
 }
 
-// [LAW:single-enforcer] The one place a key press runs the text input system.
-// While it runs, in_key_handler tells insertText and setMarkedText that a press
-// is waiting to carry their text, so they hold it in _glfw.ns.text instead of
-// sending it to the program on its own.
-- (void)interpretKeyEventsForPress:(NSEvent *)event {
-    in_key_handler = 1;
+// [LAW:single-enforcer] The one writer of text_input_caller. It holds caller
+// while body runs and then restores the caller it found, even if an input
+// method throws or a nested event loop runs another key handler.
+- (void)runTextInputFrom:(TextInputCaller)caller body:(void (^)(void))body {
+    const TextInputCaller previous = text_input_caller;
+    text_input_caller = caller;
     @try {
-        [self interpretKeyEvents:@[ event ]];
+        body();
     } @finally {
-        in_key_handler = 0;
+        text_input_caller = previous;
     }
+}
+
+- (void)interpretKeyEventsForPress:(NSEvent *)event {
+    [self runTextInputFrom:TEXT_INPUT_FROM_KEY_DOWN body:^{ [self interpretKeyEvents:@[ event ]]; }];
 }
 
 - (void)terminalKeyDown:(NSEvent *)event {
@@ -1459,10 +1484,7 @@ is_ascii_control_char(char x) {
         format_mods(mods));
     marked_text_cleared_by_insert = false;
     if (process_text && input_context) {
-        // this will call insertText which will fill up _glfw.ns.text
-        in_key_handler = 2;
-        [input_context handleEvent:event];
-        in_key_handler = 0;
+        [self runTextInputFrom:TEXT_INPUT_FROM_FLAGS_CHANGED body:^{ [input_context handleEvent:event]; }];
         if (marked_text_cleared_by_insert) {
             debug_input("Clearing pre-edit text because insertText called from flagsChanged\n");
             CLEAR_PRE_EDIT_TEXT;
@@ -2156,8 +2178,8 @@ glfwCocoaPreserveDroppedFilePromises(GLFWwindow *w) {
     if (string == nil || !s[0]) {
         bool had_marked_text = [self hasMarkedText];
         [self unmarkText];
-        if (had_marked_text && (!in_key_handler || in_key_handler == 2)) {
-            debug_input("Clearing pre-edit because setMarkedText called from %s\n", in_key_handler ? "flagsChanged" : "event loop");
+        if (had_marked_text && text_input_caller != TEXT_INPUT_FROM_KEY_DOWN) {
+            debug_input("Clearing pre-edit because setMarkedText called from %s\n", text_input_caller_name(text_input_caller));
             GLFWkeyevent glfw_keyevent = {.ime_state = GLFW_IME_PREEDIT_CHANGED};
             _glfwInputKeyboard(window, &glfw_keyevent);
             _glfw.ns.text[0] = 0;
@@ -2181,8 +2203,8 @@ glfwCocoaPreserveDroppedFilePromises(GLFWwindow *w) {
         markedText = [[NSMutableAttributedString alloc] initWithString:string];
         markedTextSelectedRange = selectedRange;
     }
-    if (!in_key_handler || in_key_handler == 2) {
-        debug_input("Updating IME text in kitty from setMarkedText called from %s: %s\n", in_key_handler ? "flagsChanged" : "event loop", _glfw.ns.text);
+    if (text_input_caller != TEXT_INPUT_FROM_KEY_DOWN) {
+        debug_input("Updating IME text in kitty from setMarkedText called from %s: %s\n", text_input_caller_name(text_input_caller), _glfw.ns.text);
         GLFWkeyevent glfw_keyevent = {.text = [[markedText string] UTF8String], .ime_state = GLFW_IME_PREEDIT_CHANGED};
         [self setPreEditCursorInEvent:&glfw_keyevent];
         _glfwInputKeyboard(window, &glfw_keyevent);
@@ -2347,7 +2369,7 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     }
     const char *utf8 = polymorphic_string_as_utf8(string);
     debug_input("\n\tinsertText: %s replacementRange: (%lu, %lu)\n", utf8, replacementRange.location, replacementRange.length);
-    if (focus_loss_text && !in_key_handler && !committing_marked_text) {
+    if (focus_loss_text && text_input_caller == TEXT_INPUT_FROM_EVENT_LOOP && !committing_marked_text) {
         // The input method delivered its result after the OS window lost focus
         NSString *text = [string isKindOfClass:[NSAttributedString class]] ? [(NSAttributedString *)string string] : (NSString *)string;
         if (focus_loss_text_sent) {
@@ -2366,16 +2388,16 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     if ([self hasMarkedText] && !is_ascii_control_char(utf8[0])) {
         [self unmarkText];
         marked_text_cleared_by_insert = true;
-        if (!in_key_handler) {
+        if (text_input_caller == TEXT_INPUT_FROM_EVENT_LOOP) {
             debug_input("Clearing pre-edit because insertText called from event loop\n");
             GLFWkeyevent glfw_keyevent = {.ime_state = GLFW_IME_PREEDIT_CHANGED};
             _glfwInputKeyboard(window, &glfw_keyevent);
             _glfw.ns.text[0] = 0;
         }
     }
-    // Outside key handling there is no key press to carry the text, so it is
-    // sent on its own.
-    if (!in_key_handler || committing_marked_text) {
+    // With no key press to carry the text, or when kitty itself is committing
+    // the marked text, it is sent on its own.
+    if (text_input_caller == TEXT_INPUT_FROM_EVENT_LOOP || committing_marked_text) {
         if (!is_ascii_control_char(utf8[0])) {
             debug_input("Sending text to kitty from insertText called from event loop: %s\n", utf8);
             GLFWkeyevent glfw_keyevent = {.text = utf8, .ime_state = GLFW_IME_COMMIT_TEXT};
@@ -2389,16 +2411,17 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     const size_t existing_length = strlen(_glfw.ns.text);
     const size_t required_capacity = existing_length + strlen(utf8) + 1;
     if (required_capacity > _glfw.ns.text_capacity) {
-        char *grown = realloc(_glfw.ns.text, required_capacity);
+        const size_t capacity = MAX(required_capacity, 2 * _glfw.ns.text_capacity);
+        char *grown = realloc(_glfw.ns.text, capacity);
         if (!grown) {
             _glfwInputError(GLFW_OUT_OF_MEMORY, "Cocoa: Out of memory gathering a key press's text, dropped %zu bytes of it", strlen(utf8));
             return;
         }
         _glfw.ns.text = grown;
-        _glfw.ns.text_capacity = required_capacity;
+        _glfw.ns.text_capacity = capacity;
     }
     memcpy(_glfw.ns.text + existing_length, utf8, required_capacity - existing_length); // copies the null terminator from utf8 as well
-    if (in_key_handler == 2 && _glfw.ns.text[0]) {
+    if (text_input_caller == TEXT_INPUT_FROM_FLAGS_CHANGED && _glfw.ns.text[0]) {
         if (!is_ascii_control_char(_glfw.ns.text[0])) {
             debug_input("Sending text to kitty from insertText called from flagsChanged: %s\n", _glfw.ns.text);
             GLFWkeyevent glfw_keyevent = {.text = _glfw.ns.text, .ime_state = GLFW_IME_COMMIT_TEXT};
@@ -2413,7 +2436,7 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     if (forward_dictation_selector_to_app(selector, self)) return;
     // A command from a native view inside this one goes on up to the window.
     // One from this view's own keyDown is not: kitty takes that key there.
-    if (!in_key_handler && glfwCocoaNativeViewHasFocus()) [super doCommandBySelector:selector];
+    if (text_input_caller == TEXT_INPUT_FROM_EVENT_LOOP && glfwCocoaNativeViewHasFocus()) [super doCommandBySelector:selector];
 }
 
 - (void)startDictation:(id)sender {
