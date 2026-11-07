@@ -311,12 +311,18 @@ class AwaitExitTest(BaseTest):
 
 class PTYTeardownTest(BaseTest):
     def _reaped_here(self, pty: PTY) -> None:
-        self.ae(await_pid_exit(pty.child_pid, patience=10), Exited(0))
+        self.ae(await_pid_exit(pty.child_pid, patience=30 if self.is_ci else 10), Exited(0))
 
     def test_a_with_block_whose_child_was_reaped_elsewhere_fails_naming_it(self):
         with self.assertRaises(AssertionError) as cm, PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
             self._reaped_here(pty)
         self.ae(str(cm.exception), f'PTY child {pty.child_pid} {ReapedElsewhere()}')
+
+    def test_a_failing_with_block_keeps_its_failure_and_notes_the_reap(self):
+        with self.assertRaises(ValueError) as cm, PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
+            self._reaped_here(pty)
+            raise ValueError('the test failed')
+        self.ae(cm.exception.__notes__, [f'PTY child {pty.child_pid} {ReapedElsewhere()}'])
 
     def test_a_collected_pty_whose_child_was_reaped_elsewhere_names_it_on_stderr(self):
         pty = PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)'])

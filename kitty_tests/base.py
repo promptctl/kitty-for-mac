@@ -556,11 +556,15 @@ class PTY:
     def __enter__(self):
         return self
 
-    def __exit__(self, *a):
+    def __exit__(self, exc_type, exc, tb):
         # [LAW:no-silent-failure] teardown here runs inside the test, so the test fails
-        # and the result pipe carries the name; worker stderr is /dev/null in parallel runs
+        # and the result pipe carries the name; worker stderr is /dev/null in parallel runs.
+        # A failure already in flight stays the reported one and carries the name as a note.
         if isinstance(end := self._teardown(), ReapedElsewhere):
-            raise AssertionError(f'PTY child {self.child_pid} {end}')
+            msg = f'PTY child {self.child_pid} {end}'
+            if exc is None:
+                raise AssertionError(msg)
+            exc.add_note(msg)
 
     def __del__(self):
         # GC runs outside any test, so stderr is the only place left to name it
@@ -577,12 +581,13 @@ class PTY:
             os.close(self.slave_fd)
             del self.slave_fd
         # [LAW:no-ambient-temporal-coupling] a PTY in a with block is torn down twice, by
-        # __exit__ and then by GC; the flag is set before reaping, so the second run, or one
-        # after an interrupted reap, reaps nothing
+        # __exit__ and then by GC; the flag is set once the reap returns, so the second run
+        # reaps nothing, while one after an interrupted reap still kills the child
         if getattr(self, 'child_pid', 0) <= 0 or self.child_waited_for:
             return None
+        end = await_pid_exit(self.child_pid, patience=2)
         self.child_waited_for = True
-        return await_pid_exit(self.child_pid, patience=2)
+        return end
 
     def write_to_child(self, data, flush=False):
         if isinstance(data, str):
