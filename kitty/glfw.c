@@ -1191,6 +1191,7 @@ request_drop_data(OSWindow *w, id_type wid, const char *mime) {
 static void
 drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
     if (!set_callback_window(window)) return;
+    request_tick_callback();
     OSWindow *os_window = global_state.callback_os_window;
     Window *w = NULL;
     id_type wid = global_state.mouse_hover_in_window;
@@ -1367,6 +1368,7 @@ drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
             ds.was_dropped && global_state.drop_dest.os_window_id ? Py_True : Py_False); \
         free_drag_source();                                                              \
     }
+    request_tick_callback();
     Window *w = NULL;
     bool is_client_drag = false;
     if (ds.from_window && (w = window_for_window_id(ds.from_window)) && w->drag_source.state) { is_client_drag = true; }
