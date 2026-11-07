@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+x = {  "a":1}
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 # Find has two places to search, and the find bar drives whichever sees what the user is looking at:
