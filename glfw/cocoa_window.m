@@ -1287,8 +1287,21 @@ is_ascii_control_char(char x) {
     return x == 0 || (1 <= x && x <= 31) || x == 127;
 }
 
+// [LAW:single-enforcer] The one place a key press runs the text input system.
+// While it runs, in_key_handler tells insertText and setMarkedText that a press
+// is waiting to carry their text, so they hold it in _glfw.ns.text instead of
+// sending it to the program on its own.
+- (void)interpretKeyEventsForPress:(NSEvent *)event {
+    in_key_handler = 1;
+    @try {
+        [self interpretKeyEvents:@[ event ]];
+    } @finally {
+        in_key_handler = 0;
+    }
+}
+
 - (void)terminalKeyDown:(NSEvent *)event {
-#define CLEAR_PRE_EDIT_TEXT                             \
+#define CLEAR_PRE_EDIT_TEXT                            \
     glfw_keyevent.text = NULL;                          \
     glfw_keyevent.ime_state = GLFW_IME_PREEDIT_CHANGED; \
     _glfwInputKeyboard(window, &glfw_keyevent);
@@ -1322,17 +1335,19 @@ is_ascii_control_char(char x) {
     _glfw.ns.text[0] = 0;
     if (keycode == 0x33 /* backspace */ || keycode == 0x35 /* escape */ || (keycode == 0x04 /* h */ && mods == GLFW_MOD_CONTROL)) [self unmarkText];
     GLFWkeyevent glfw_keyevent = {.key = key, .native_key = keycode, .native_key_id = keycode, .action = GLFW_PRESS, .mods = mods};
+    debug_input(
+        "\x1b[31mPress:\x1b[m native_key: 0x%x (%s) glfw_key: 0x%x %srepeat: %d ",
+        keycode,
+        safe_name_for_keycode(keycode),
+        key,
+        format_mods(mods),
+        event.ARepeat);
     marked_text_cleared_by_insert = false;
     if (!_glfw.ns.unicodeData) {
         // Using the cocoa API for key handling is disabled, as there is no
         // reliable way to handle dead keys using it. Only use it if the
         // keyboard unicode data is not available.
-        if (process_text) {
-            in_key_handler = 1;
-            // this will call insertText which will fill up _glfw.ns.text
-            [self interpretKeyEvents:@[ event ]];
-            in_key_handler = 0;
-        }
+        if (process_text) [self interpretKeyEventsForPress:event];
     } else {
         static UniChar text[256];
         UniCharCount char_count = 0;
@@ -1352,20 +1367,9 @@ is_ascii_control_char(char x) {
             window->ns.deadKeyState = 0;
             return;
         }
-        debug_input(
-            "\x1b[31mPress:\x1b[m native_key: 0x%x (%s) glfw_key: 0x%x %schar_count: %lu deadKeyState: %u repeat: %d ",
-            keycode,
-            safe_name_for_keycode(keycode),
-            key,
-            format_mods(mods),
-            char_count,
-            window->ns.deadKeyState,
-            event.ARepeat);
+        debug_input("char_count: %lu deadKeyState: %u ", char_count, window->ns.deadKeyState);
         if (process_text) {
-            in_key_handler = 1;
-            // this will call insertText which will fill up _glfw.ns.text
-            [self interpretKeyEvents:@[ event ]];
-            in_key_handler = 0;
+            [self interpretKeyEventsForPress:event];
         } else {
             window->ns.deadKeyState = 0;
         }
@@ -2397,6 +2401,10 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
             }
             _glfw.ns.text[0] = 0;
         }
+    } else {
+        _glfwInputError(
+            GLFW_PLATFORM_ERROR, "Cocoa: Dropped %zu bytes of key text from insertText, as only %zu bytes of the key's text buffer are left",
+            required_length - 1, available_length);
     }
 }
 
