@@ -200,11 +200,15 @@ class ExternalTestProc:
         os.mkdir(env['XDG_CACHE_HOME'])
         # start_new_session so that the tests cannot touch the terminal the test
         # suite is being run from, see detach_from_controlling_terminal()
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, stdin=subprocess.DEVNULL, start_new_session=True)
-        if self.proc.stdout is None:
-            raise AssertionError(f'{label}: Popen with stdout=PIPE returned no stdout pipe')
-        self.stdout = self.proc.stdout
-        self.stdout_fd = self.stdout.fileno()
+        self.stdout_fd, write_fd = os.pipe()
+        try:
+            self.proc = subprocess.Popen(cmd, stdout=write_fd, stderr=subprocess.STDOUT, env=env, stdin=subprocess.DEVNULL, start_new_session=True)
+        except BaseException:
+            os.close(self.stdout_fd)
+            shutil.rmtree(self.tdir, ignore_errors=True)
+            raise
+        finally:
+            os.close(write_fd)
         self.buffer = b''
         self.active = True
         self.run = 0
@@ -258,7 +262,7 @@ class ExternalTestProc:
 
     def finish(self) -> None:
         """Reap the process after its stdout has been fully drained."""
-        self.stdout.close()
+        os.close(self.stdout_fd)
         self.proc.wait()
         self.end_time = time.monotonic()
         shutil.rmtree(self.tdir, ignore_errors=True)

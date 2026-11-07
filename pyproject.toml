@@ -40,8 +40,10 @@ mypy-init-return = true
 "kitty_tests/*.py" = ["ANN"]
 "bypy/*" = ["ANN"]
 "3rdparty/*" = ["ANN"]
-# The test launcher runs at -OO, which strips assert statements: a guard in the fork's own test modules must raise
-"!kitty_tests/{tmux_find,claude_find,fake_claude,external,external_output}.py" = ["S101"]
+# The test launcher runs at -OO, which strips assert statements: a guard in a test must raise.
+# The upstream modules listed still hold bare asserts.
+"!kitty_tests/*.py" = ["S101"]
+"kitty_tests/{fonts,options,remote_control,sessions,slang}.py" = ["S101"]
 
 [tool.ruff.lint.isort]
 detect-same-package = true
