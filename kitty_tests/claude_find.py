@@ -679,7 +679,7 @@ class OperationTest(BaseTest):
             return ''
 
         sent = Sent(run, clock=lambda: clock[0])
-        op = TmuxOperation(sent, now=sent.now, sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        op = sent.operation(sleep=lambda s: clock.__setitem__(0, clock[0] + s))
         client = mock.Mock(exe='sh', server_args=(), tmpdir=None, path=os.environ.get('PATH'))
         op.tmux(client, 'a')
         op.tmux(client, 'b')

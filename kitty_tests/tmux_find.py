@@ -65,7 +65,7 @@ TMUX = shutil.which('tmux')
 PATIENT_DEADLINE = 30.0
 # A test of the deadline itself bounds its wall time by the operation's own deadline plus what the machine takes to
 # kill and reap the tmux client cut off at it: at most 25 ms under 3x CPU saturation, but a scheduler stall on a
-# machine busy with other builds has added 0.7 s
+# machine busy with other builds has added 0.7 s (both measured for PR #47, which describes how)
 CUT_OFF_ALLOWANCE = 1.0
 
 
@@ -74,10 +74,9 @@ def patient() -> TmuxOperation:
 
 
 class Command(NamedTuple):
-    "One command a deadline test's operation sent: the clock reading its timeout was worked out from, the timeout, and whether it was cut off at it"
+    "One command a deadline test's operation sent: the clock reading its timeout was worked out from, and the timeout"
     at: float
     timeout: float
-    cut_off: bool
 
 
 class Sent:
@@ -85,8 +84,12 @@ class Sent:
 
     def __init__(self, run: Runner, clock: Callable[[], float] = time.monotonic) -> None:
         self.run, self.clock = run, clock
-        self.read_at = clock()
+        self.read_at: float
         self.commands: list[Command] = []
+
+    def operation(self, sleep: Callable[[float], None] = time.sleep) -> TmuxOperation:
+        "An operation of FIND_DEADLINE that sends through this runner and reads this clock"
+        return TmuxOperation(self, now=self.now, sleep=sleep)
 
     def now(self) -> float:
         self.read_at = self.clock()
@@ -98,14 +101,8 @@ class Sent:
 
     def __call__(self, argv: Sequence[str], env: Mapping[str, str], timeout: float) -> str:
         # the operation reads its clock, then sends with what is left: the last reading is this command's
-        at, cut_off = self.read_at, False
-        try:
-            return self.run(argv, env, timeout)
-        except TmuxError as e:
-            cut_off = e.timed_out
-            raise
-        finally:
-            self.commands.append(Command(at, timeout, cut_off))
+        self.commands.append(Command(self.read_at, timeout))
+        return self.run(argv, env, timeout)
 
 
 def default_query(text: str) -> FindQuery:
@@ -533,10 +530,12 @@ class TmuxFindIntegrationTest(BaseTest):
 
     def assert_ended_by_its_deadline(self, op: TmuxOperation, sent: Sent) -> None:
         """Each command was given the time left, the deadline is what ended the operation, and tmux honoured it: the
-        operation returned at its deadline, give or take killing the command it cut off"""
+        operation returned once its budget was spent, whether a command was cut off at it or none was sent after it,
+        and by its deadline, give or take killing the command it cut off"""
         returned_at = op.now()
+        self.assertTrue(sent.commands, 'no command was sent')
         self.ae(sent.overspent(op), [])
-        self.assertTrue(sent.commands and sent.commands[-1].cut_off, f'the last command was not cut off at the deadline: {sent.commands}')
+        self.assertGreaterEqual(returned_at, op.expires_at, 'the operation ended before its deadline')
         self.assertLessEqual(returned_at, op.expires_at + CUT_OFF_ALLOWANCE)
 
     def test_a_pipe_that_cannot_run_ends_in_the_deadline_with_a_typed_error(self):
@@ -551,7 +550,7 @@ class TmuxFindIntegrationTest(BaseTest):
                 return tf.run_tmux(argv, env, timeout)
 
             sent = Sent(run)
-            op = TmuxOperation(sent, now=sent.now)
+            op = sent.operation()
             self.assertIsNone(TmuxFind(client, state, op).program_selection_text())
             self.assert_ended_by_its_deadline(op, sent)
             # and the next read works
@@ -565,7 +564,7 @@ class TmuxFindIntegrationTest(BaseTest):
             os.kill(server, signal.SIGSTOP)
             try:
                 sent = Sent(tf.run_tmux)
-                op = TmuxOperation(sent, now=sent.now)
+                op = sent.operation()
                 t.finder(state, op).step(default_query('needle-5'), False)
                 self.assert_ended_by_its_deadline(op, sent)
                 self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
@@ -941,7 +940,7 @@ class TmuxFindWindowTest(BaseTest):
             return fake(argv, env, timeout)
 
         sent = Sent(run, clock=lambda: clock[0])
-        op = TmuxOperation(sent, now=sent.now, sleep=lambda s: None)
+        op = sent.operation(sleep=lambda s: None)
         backend = w.find_backend_to_search(op)
         backend.find(default_query('x'))
         self.assertGreater(len(sent.commands), 1)
