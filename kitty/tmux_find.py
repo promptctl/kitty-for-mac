@@ -8,6 +8,7 @@
 # paste buffers are left alone.
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -40,8 +41,11 @@ LIVE_SELECTION = '#{||:#{selection_present},#{selection_active}}'
 # a pane as the find backends need to tell it apart: the address is the one Claude Code records for
 # its pane (~/.claude/sessions/<pid>.json), and it ends the line because a session name may hold spaces
 PANE_FORMAT = '#{pane_id} #{pane_in_mode} #{alternate_on} #{pane_pid} #{session_name}:#{window_id}.#{pane_id}'
-CLIENT_FORMAT = '#{client_pid} ' + PANE_FORMAT
+# the version is the server's, and rides on the one list-clients of an operation so asking it costs nothing
+CLIENT_FORMAT = '#{client_pid} #{version} ' + PANE_FORMAT
 T = TypeVar('T')
+# a release (3.5a), a build from git on the way to a release (next-3.7) or a release candidate (3.6-rc2)
+VERSION_SHAPE = re.compile(r'(next-)?(\d+)\.(\d+)[a-z]?(?:-rc\d*)?')
 
 
 class TmuxError(Exception):
@@ -62,6 +66,18 @@ class TmuxClient:
     path: str | None  # the client's PATH, where exe is looked up
 
 
+class TmuxVersion(NamedTuple):
+    major: int
+    minor: int
+    released: bool  # a next-X.Y build is code from before X.Y, which may not have all of it yet, and sorts below it
+
+
+# search_count and search_count_partial arrived in 3.5: an older server has no count for the bar
+COUNTING = TmuxVersion(3, 5, True)
+# 3.6 parses the options of copy-mode commands: before it, a -- is taken as the search text itself
+COPY_MODE_OPTIONS = TmuxVersion(3, 6, True)
+
+
 class PaneRef(NamedTuple):
     id: str
     in_mode: bool
@@ -74,6 +90,12 @@ class Counted(NamedTuple):
     present: bool
     total: int | None
     partial: bool
+
+
+class ClientPane(NamedTuple):
+    "What list-clients says of one client: the pane it shows, and its server's #{version} as tmux wrote it, parsed only where find needs it"
+    pane: PaneRef
+    version: str
 
 
 class Held(NamedTuple):
@@ -117,6 +139,13 @@ def tmux_client_of(
     return None
 
 
+def find_version(text: str) -> TmuxVersion:
+    "[LAW:single-enforcer] the server's version, from #{version}, where find can work with it: 3.5 or later, as tmux numbers it"
+    if (m := VERSION_SHAPE.fullmatch(text)) is None or (version := TmuxVersion(int(m[2]), int(m[3]), m[1] is None)) < COUNTING:
+        raise TmuxError(f'find in tmux needs tmux 3.5 or later for its match count; this server reports {text!r}')
+    return version
+
+
 def parse_pane_fields(fields: Sequence[str]) -> PaneRef:
     "A pane from the fields of PANE_FORMAT"
     pane_id, in_mode, alternate, pid, address = fields
@@ -125,12 +154,12 @@ def parse_pane_fields(fields: Sequence[str]) -> PaneRef:
     return PaneRef(pane_id, in_mode == '1', alternate == '1', int(pid), address)
 
 
-def parse_pane(output: str, client_pid: int) -> PaneRef:
-    "The pane the client shows, from list-clients -F CLIENT_FORMAT"
+def parse_pane(output: str, client_pid: int) -> ClientPane:
+    "The pane the client shows and its server's version, from list-clients -F CLIENT_FORMAT"
     for line in output.splitlines():
-        fields = line.split(' ', 5)
-        if len(fields) == 6 and fields[0] == str(client_pid):
-            return parse_pane_fields(fields[1:])
+        fields = line.split(' ', 6)
+        if len(fields) == 7 and fields[0] == str(client_pid):
+            return ClientPane(parse_pane_fields(fields[2:]), fields[1])
     raise TmuxError(f'tmux client {client_pid} is not among its server\'s clients')
 
 
@@ -180,9 +209,10 @@ def find_command(pane: str, text: str) -> list[str]:
     return ['send', '-t', pane, '-X', 'search-backward-incremental', query_argument('=' + text)]
 
 
-def step_command(pane: str, text: str, backwards: bool) -> list[str]:
-    "Later in the buffer is forward, earlier backward; the -- keeps a query like -n from being an option"
-    return ['send', '-t', pane, '-X', 'search-backward-text' if backwards else 'search-forward-text', '--', query_argument(text)]
+def step_command(pane: str, text: str, backwards: bool, version: TmuxVersion) -> list[str]:
+    "Later in the buffer is forward, earlier backward; where tmux parses options, the -- keeps a query like -n from being one"
+    end_of_options = ['--'] if version >= COPY_MODE_OPTIONS else []
+    return ['send', '-t', pane, '-X', 'search-backward-text' if backwards else 'search-forward-text', *end_of_options, query_argument(text)]
 
 
 def search_batch(pane: str, search: Sequence[str]) -> list[str]:
@@ -201,9 +231,9 @@ def cancel_batch(pane: str) -> list[str]:
 
 
 def selection_batch(pane: str, pipe: str, channel: str) -> list[str]:
-    # -C: no terminal clipboard write, -P: no paste buffer, no-clear: the selection stays. The pipe is a
-    # job tmux runs on its own, so the wait-for is what returns when it is done.
-    return batch(['send', '-t', pane, '-X', 'copy-pipe-no-clear', '-CP', pipe], ['wait-for', channel])
+    # pipe, not copy-pipe: no paste buffer and no terminal clipboard write; no-clear: the selection stays.
+    # The pipe is a job tmux runs on its own, so the wait-for is what returns when it is done.
+    return batch(['send', '-t', pane, '-X', 'pipe-no-clear', pipe], ['wait-for', channel])
 
 
 # The one effect: spawn tmux
@@ -310,7 +340,7 @@ class TmuxFind:
         self.client = client
         self.state = state
         self.op = op
-        self.pane: PaneRef | TmuxError | None = None  # not asked until something needs it
+        self.client_pane: ClientPane | TmuxError | None = None  # not asked until something needs it
 
     @classmethod
     def holding(cls, state: TmuxFindState, op: TmuxOperation) -> 'TmuxFind | None':
@@ -320,27 +350,33 @@ class TmuxFind:
     def tmux(self, client: TmuxClient, *args: str) -> str:
         return self.op.tmux(client, *args)
 
-    def lookup(self) -> PaneRef | TmuxError:
+    def listed(self) -> ClientPane | TmuxError:
         "[LAW:one-source-of-truth] the one list-clients of an operation: whoever routes on the pane and whoever searches it read this answer, so a pane switch inside tmux is followed by the next operation and never splits one"
-        if self.pane is None:
+        if self.client_pane is None:
             try:
-                self.pane = parse_pane(self.tmux(self.client, 'list-clients', '-F', CLIENT_FORMAT), self.client.pid)
+                self.client_pane = parse_pane(self.tmux(self.client, 'list-clients', '-F', CLIENT_FORMAT), self.client.pid)
             except TmuxError as e:
-                self.pane = e
-        return self.pane
+                self.client_pane = e
+        return self.client_pane
 
-    def resolved(self) -> PaneRef:
-        pane = self.lookup()
-        if isinstance(pane, TmuxError):
-            raise TmuxError(str(pane), pane.timed_out) from pane
-        return pane
+    def lookup(self) -> PaneRef | TmuxError:
+        "The pane, whatever the server's version: routing to Claude's find never depends on it"
+        listed = self.listed()
+        return listed if isinstance(listed, TmuxError) else listed.pane
+
+    def resolved(self) -> tuple[PaneRef, TmuxVersion]:
+        "The pane, on a server find can work with, for whoever sends it copy-mode commands"
+        listed = self.listed()
+        if isinstance(listed, TmuxError):
+            raise TmuxError(str(listed), listed.timed_out) from listed
+        return listed.pane, find_version(listed.version)
 
     def can_search(self) -> bool:
         return True
 
     # tmux's text search is literal, ignoring case unless the text has an uppercase letter
     def find(self, query: FindQuery) -> None:
-        self.search(query.text, lambda pane: find_command(pane, query.text))
+        self.search(query.text, lambda pane, version: find_command(pane, query.text))
 
     def use_selection(self, query: FindQuery) -> str:
         self.find(query)
@@ -350,16 +386,16 @@ class TmuxFind:
         self.find(query)
 
     def step(self, query: FindQuery, backwards: bool) -> None:
-        self.search(query.text, lambda pane: step_command(pane, query.text, backwards))
+        self.search(query.text, lambda pane, version: step_command(pane, query.text, backwards, version))
 
-    def search(self, text: str, command: Callable[[str], Sequence[str]]) -> None:
+    def search(self, text: str, command: Callable[[str, TmuxVersion], Sequence[str]]) -> None:
         if not text:  # an empty query searches nothing, as the engine's does
             self.clear()
             return
         try:
-            pane = self.resolved()
+            pane, version = self.resolved()
             self.move_to(pane.id)
-            counted = parse_count(self.tmux(self.client, *search_batch(pane.id, command(pane.id))))
+            counted = parse_count(self.tmux(self.client, *search_batch(pane.id, command(pane.id, version))))
             self.state.status = self.status_of(pane.id, text, counted)
         except TmuxError as e:
             log_error(f'Find in tmux: {e}')
@@ -403,13 +439,14 @@ class TmuxFind:
 
     def program_selection_text(self) -> str | None:
         try:
-            pane = self.resolved()
-            return self.read_selection(pane.id) if pane.in_mode else None
+            pane, _ = self.resolved()  # pipe-no-clear is in every server find can work with
+            return parse_selection(self.read_selection(pane.id)) if pane.in_mode else None
         except TmuxError as e:
             log_error(f'Find in tmux: could not read the selection: {e}')
             return None
 
-    def read_selection(self, pane: str) -> str | None:
+    def read_selection(self, pane: str) -> str:
+        "The selection's text as tmux pipes it, which is what it would copy"
         with tempfile.TemporaryDirectory(prefix='kitty-find-') as d:
             out = os.path.join(d, 'selection')
             channel = f'kitty-find-{uuid.uuid4().hex}'
@@ -417,6 +454,6 @@ class TmuxFind:
             self.tmux(self.client, *selection_batch(pane, f'cat > {shlex.quote(out)}; {signal}', channel))
             try:
                 with open(out, encoding='utf-8', errors='replace') as f:
-                    return parse_selection(f.read())
+                    return f.read()
             except OSError as e:
                 raise TmuxError(f'the selection tmux piped cannot be read: {e}') from e
