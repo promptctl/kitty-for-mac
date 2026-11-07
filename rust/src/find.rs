@@ -84,12 +84,13 @@ pub struct FindRefeed {
 
 impl FindRefeed {
     /// Adds the matches in one logical line of `rows` physical lines, whose byte i of `text`
-    /// came from `cells[i]`, and which starts a line or continues one gone from the buffer. Rows
-    /// past its last text are still its rows: an erased row keeps the wrap flag of the row above.
+    /// came from `cells[i]`, and which `before` precedes: the UTF-8 of the last character of a
+    /// line gone from the buffer that it continues, empty when nothing precedes it. Rows past
+    /// its last text are still its rows: an erased row keeps the wrap flag of the row above.
     pub fn feed_line(
         &mut self,
         abs_first_line: u64,
-        start: FindLineStart,
+        before: &[u8],
         rows: u32,
         text: &[u8],
         cells: &[FindCellSpan],
@@ -115,12 +116,13 @@ impl FindRefeed {
             "a logical line's cells lie in its rows"
         );
         self.next_line = abs_first_line + u64::from(rows);
-        // a line that continues one gone from the buffer is searched from just past one byte of
-        // context, never valid UTF-8: ^ and \A match only at the haystack's start, so not at the
-        // line's first byte, and starting past it keeps every match in the line's own text
-        let (haystack, offset) = match start {
-            FindLineStart::StartsLine => (Cow::Borrowed(text), 0),
-            FindLineStart::ContinuesEvicted => (Cow::Owned([&[0xFF], text].concat()), 1),
+        // the line is searched from just past what precedes it: \b and \B at its first byte read
+        // the character the text had there, ^ and \A match only at the haystack's start, and no
+        // match starts outside the line's own text
+        let (haystack, offset) = if before.is_empty() {
+            (Cow::Borrowed(text), 0)
+        } else {
+            (Cow::Owned([before, text].concat()), before.len())
         };
         let found = self
             .regex
@@ -141,15 +143,6 @@ impl FindRefeed {
     const fn walked(&self) -> Range<u64> {
         self.lines.from..self.next_line
     }
-}
-
-/// Whether a logical line's first row starts a line, or continues a line that left the top
-/// of scrollback: kitty/find.h's `FindLineStart`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FindLineStart {
-    StartsLine,
-    ContinuesEvicted,
 }
 
 /// The matches of `re` in `haystack` starting at `from` or later, in order and disjoint, the
@@ -913,7 +906,7 @@ mod tests {
                     &[&self.0[usize::try_from(abs).expect("a test buffer line")]],
                     narrow,
                 );
-                r.feed_line(abs, FindLineStart::StartsLine, rows, &text, &cells);
+                r.feed_line(abs, b"", rows, &text, &cells);
             }
             r
         }
@@ -955,7 +948,7 @@ mod tests {
     /// One logical line, fed as a fill walks it: the line was unsearched.
     fn append(e: &mut FindEngine, abs: u64, rows: u32, text: &[u8], cells: &[FindCellSpan]) {
         let mut r = e.refeed(onward(abs));
-        r.feed_line(abs, FindLineStart::StartsLine, rows, text, cells);
+        r.feed_line(abs, b"", rows, text, cells);
         e.add_searched(r);
     }
 
@@ -1103,34 +1096,37 @@ mod tests {
     }
 
     #[test]
-    fn a_line_that_continues_an_evicted_one_does_not_start_a_line() {
+    fn a_line_that_continues_an_evicted_one_reads_its_last_character_before_it() {
         let regex = FindMode {
             case_rule: FindCaseRule::Match,
             syntax: FindSyntax::Regex,
         };
-        let found = |query, start| {
+        let found = |query, before: &str| {
             let mut e = FindEngine::default();
             e.set_query(query, regex);
             let (text, cells, rows) = line(&["ab", "xa"], narrow);
             let mut r = e.refeed(onward(4));
-            r.feed_line(4, start, rows, &text, &cells);
+            r.feed_line(4, before.as_bytes(), rows, &text, &cells);
             e.add_searched(r);
             e.matches()
         };
-        assert_eq!(found("^a", FindLineStart::StartsLine), [m(4, 0, 4, 0)]);
-        assert_eq!(found("^a", FindLineStart::ContinuesEvicted), []);
-        assert_eq!(found(r"\Aa", FindLineStart::ContinuesEvicted), []);
-        // every other match is where it was, on the line's own cells
-        assert_eq!(
-            found("a", FindLineStart::ContinuesEvicted),
-            [m(4, 0, 4, 0), m(5, 1, 5, 1)]
-        );
-        // not even a pattern for the byte before the line matches it
-        assert_eq!(found(r"(?-u:\xFF)a", FindLineStart::ContinuesEvicted), []);
-        assert_eq!(
-            found("b*", FindLineStart::ContinuesEvicted),
-            [m(4, 1, 4, 1)]
-        );
+        // nothing before: the line starts a line
+        assert_eq!(found("^a", ""), [m(4, 0, 4, 0)]);
+        assert_eq!(found(r"\ba", ""), [m(4, 0, 4, 0)]);
+        // a character before: the line starts mid-line
+        assert_eq!(found("^a", "z"), []);
+        assert_eq!(found(r"\Aa", " "), []);
+        // \b and \B read the character before as the text had it, word or not, in either mode
+        assert_eq!(found(r"\ba", "z"), []);
+        assert_eq!(found(r"\Ba", "z"), [m(4, 0, 4, 0), m(5, 1, 5, 1)]);
+        assert_eq!(found(r"\ba", " "), [m(4, 0, 4, 0)]);
+        assert_eq!(found(r"\Ba", " "), [m(5, 1, 5, 1)]);
+        assert_eq!(found(r"\ba", "é"), []);
+        assert_eq!(found(r"(?-u:\b)a", "é"), [m(4, 0, 4, 0)]);
+        // every other match is where it was, on the line's own cells, and none starts before it
+        assert_eq!(found("a", "z"), [m(4, 0, 4, 0), m(5, 1, 5, 1)]);
+        assert_eq!(found("za", "z"), []);
+        assert_eq!(found("b*", "z"), [m(4, 1, 4, 1)]);
     }
 
     #[test]
@@ -1712,7 +1708,7 @@ mod tests {
         let e = FindEngine::default();
         let mut r = buf.walk(&e, onward(3), 3..4);
         let (text, cells, rows) = line(&["x"], narrow);
-        r.feed_line(2, FindLineStart::StartsLine, rows, &text, &cells);
+        r.feed_line(2, b"", rows, &text, &cells);
     }
 
     #[test]
@@ -1721,6 +1717,6 @@ mod tests {
         let e = FindEngine::default();
         let mut r = e.refeed(FindRefeedRange { from: 2, limit: 3 });
         let (text, cells, rows) = line(&["x"], narrow);
-        r.feed_line(3, FindLineStart::StartsLine, rows, &text, &cells);
+        r.feed_line(3, b"", rows, &text, &cells);
     }
 }

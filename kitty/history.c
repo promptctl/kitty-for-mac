@@ -242,6 +242,7 @@ historybuf_clear(HistoryBuf *self) {
     pagerhist_clear(self);
     self->abs_oldest_line += self->count;
     self->oldest_line_continues_evicted = false;
+    self->evicted_head_last_char = 0;
     self->count = 0;
     self->start_of_data = 0;
     for (size_t i = 0; i < self->num_segments; i++) free_segment(self->segments + i);
@@ -319,6 +320,12 @@ historybuf_push(HistoryBuf *self, ANSIBuf *as_ansi_buf, bool *needs_clear) {
     if (self->count == self->ynum) {
         pagerhist_push(self, as_ansi_buf);
         self->oldest_line_continues_evicted = cpu_lineptr(self, self->start_of_data)[self->xnum - 1].next_char_was_wrapped;
+        Line l = {.xnum = self->xnum, .text_cache = self->text_cache};
+        init_line(self, self->start_of_data, &l);
+        // only a wrapped row's text is read: the hot path of pushing unwrapped lines pays nothing.
+        // A wrapped row with no text leaves the character the rows evicted before it ended on.
+        const char_type last = self->oldest_line_continues_evicted ? line_last_text_char(&l) : 0;
+        self->evicted_head_last_char = self->oldest_line_continues_evicted && !last ? self->evicted_head_last_char : last;
         self->start_of_data = (self->start_of_data + 1) % self->ynum;
         self->abs_oldest_line++;
         *needs_clear = true;
@@ -377,6 +384,7 @@ historybuf_delete_newest_lines(HistoryBuf *self, index_type count) {
     self->count--;
     // deleting the oldest line takes the line the evicted one wrapped onto with it
     self->oldest_line_continues_evicted = self->oldest_line_continues_evicted && self->count;
+    self->evicted_head_last_char = self->count ? self->evicted_head_last_char : 0;
     // the numbers from the first deleted line on are free for other text; the multicell rows
     // nuked above it lie within find's reach band below this
     self->abs_lowest_rewritten_line = MIN(self->abs_lowest_rewritten_line, self->abs_oldest_line + self->count);
@@ -735,6 +743,7 @@ historybuf_alloc_for_rewrap(unsigned int columns, HistoryBuf *self) {
         ans->start_of_data = 0;
         ans->abs_oldest_line = self->abs_oldest_line;
         ans->oldest_line_continues_evicted = self->oldest_line_continues_evicted;
+        ans->evicted_head_last_char = self->evicted_head_last_char;
         // a rewrap re-cuts, and so renumbers, every line it keeps
         ans->abs_lowest_rewritten_line = self->abs_oldest_line;
     }

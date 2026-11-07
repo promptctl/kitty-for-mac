@@ -7,16 +7,17 @@ mod find;
 use std::ffi::c_void;
 
 use find::{
-    Direction, FindBufferBounds, FindCellSpan, FindEngine, FindFill, FindLineStart, FindMatch,
-    FindMode, FindOrigin, FindPos, FindQueryChange, FindRefeed, FindRefeedRange, FindStatus,
-    FindWant, StepOutcome,
+    Direction, FindBufferBounds, FindCellSpan, FindEngine, FindFill, FindMatch, FindMode,
+    FindOrigin, FindPos, FindQueryChange, FindRefeed, FindRefeedRange, FindStatus, FindWant,
+    StepOutcome,
 };
 
 /// `kitty/find.h`'s `FindLogicalLine`: the walker's view of one logical line.
 #[repr(C)]
 pub struct FindLogicalLine {
     abs_first_line: u64,
-    start: FindLineStart,
+    before: *const u8,
+    before_len: usize,
     rows: u32,
     text: *const u8,
     text_len: usize,
@@ -112,8 +113,9 @@ pub unsafe extern "C" fn kitty_rs_find_refeed_new(
 }
 
 /// # Safety
-/// `refeed` is live; `line` points to a `FindLogicalLine` whose text and cells each hold
-/// `text_len` entries (non-null even when `text_len` is 0).
+/// `refeed` is live; `line` points to a `FindLogicalLine` whose before holds `before_len`
+/// bytes and whose text and cells each hold `text_len` entries (each pointer non-null even
+/// when its length is 0).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kitty_rs_find_refeed_line(
     refeed: *mut FindRefeed,
@@ -121,13 +123,14 @@ pub unsafe extern "C" fn kitty_rs_find_refeed_line(
 ) {
     // SAFETY: the caller's contract above.
     let (refeed, l) = unsafe { (&mut *refeed, &*line) };
-    let (text, cells) = unsafe {
+    let (before, text, cells) = unsafe {
         (
+            std::slice::from_raw_parts(l.before, l.before_len),
             std::slice::from_raw_parts(l.text, l.text_len),
             std::slice::from_raw_parts(l.cells, l.text_len),
         )
     };
-    refeed.feed_line(l.abs_first_line, l.start, l.rows, text, cells);
+    refeed.feed_line(l.abs_first_line, before, l.rows, text, cells);
 }
 
 /// Replaces the matches starting in the refeed's lines, all of them searched, with its own,
@@ -386,7 +389,8 @@ mod tests {
         let cells = [span(0), span(1), span(1)];
         let line = FindLogicalLine {
             abs_first_line: 5,
-            start: FindLineStart::StartsLine,
+            before: [].as_ptr(),
+            before_len: 0,
             rows: 1,
             text: text.as_ptr(),
             text_len: text.len(),

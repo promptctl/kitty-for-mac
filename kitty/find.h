@@ -14,17 +14,16 @@ typedef struct {
     uint32_t row, x, x_last;
 } FindCellSpan;
 
-// Whether a logical line's first row starts a line or continues one that left the top of
-// scrollback, as only the oldest line can. Rust's FindLineStart.
-typedef enum { FIND_LINE_STARTS_LINE, FIND_LINE_CONTINUES_EVICTED } FindLineStart;
-
 // One logical line (physical lines joined through the wrapped-line flag) as UTF-8 text with
 // one FindCellSpan per byte, so a regex match on bytes [s, e) covers cells[s] .. cells[e - 1].
 // It is rows physical lines from abs_first_line, its rows past the last text included.
-// text and cells belong to the walker and are valid only for the duration of the sink call.
+// before is the UTF-8 of the character before it in a logical line that began above the top
+// of scrollback, as only the oldest line's can; before_len is 0 when there is none.
+// before, text and cells belong to the walker and are valid only for the duration of the sink call.
 typedef struct {
     uint64_t abs_first_line;
-    FindLineStart start;
+    const char *before;
+    size_t before_len;
     uint32_t rows;
     const char *text;
     size_t text_len;

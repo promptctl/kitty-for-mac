@@ -132,6 +132,8 @@ cleanup_ansibuf(ANSIBuf *b) {
 #define RAII_ANSIBuf(name) __attribute__((cleanup(cleanup_ansibuf))) ANSIBuf name = {0}
 
 Line *alloc_line(TextCache *text_cache);
+// The last codepoint of the line's text under line_text_cell's rules, 0 when it has none.
+char_type line_last_text_char(const Line *line);
 void apply_sgr_to_cells(GPUCell *first_cell, unsigned int cell_count, int *params, unsigned int count, bool is_group);
 const char *cell_as_sgr(const GPUCell *, const GPUCell *);
 static inline bool
@@ -192,6 +194,29 @@ text_in_cell_without_alloc(const CPUCell *c, const TextCache *tc, ListOfChars *a
     if (ans->capacity < 1) return false;
     ans->chars[0] = c->ch_or_idx;
     return true;
+}
+
+// The text a walk of the line emits for its cell x, below limit, into lc (none for a cell
+// whose text belongs to another), and the last cell that text covers: a wide char's or a
+// tab's padding are covered by it. Inline: line_last_text_char runs it over every cell of
+// each wrapped row evicted from scrollback.
+static inline index_type
+line_text_cell(const Line *line, index_type x, index_type limit, ListOfChars *lc) {
+    // [LAW:one-source-of-truth] the text rules of unicode_in_range (as line_as_unicode applies
+    // them) and apply_mark, the one statement find's walker and line_last_text_char share
+    const CPUCell *c = line->cpu_cells + x;
+    // wide-char continuation cells and the lower rows of scaled text carry no text of their own
+    if (c->is_multicell && (c->x || c->y)) { lc->count = 0; return x; }
+    text_in_cell(c, line->text_cache, lc);
+    // a never-written interior cell reads as one space
+    if (!lc->chars[0]) lc->chars[0] = ' ';
+    if (lc->chars[0] == '\t') {
+        const index_type end = tab_padding_end(line->cpu_cells, x, limit, lc->count > 1 ? lc->chars[1] : 0);
+        // the tab's second char is its padding count, not text
+        lc->count = 1;
+        return end;
+    }
+    return c->is_multicell ? MIN(line->xnum, x + mcd_x_limit(c)) - 1 : x;
 }
 
 static inline void
