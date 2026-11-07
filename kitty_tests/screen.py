@@ -2408,6 +2408,17 @@ class TestScreen(BaseTest):
         self.ae(s.find_matches(), ((2, 0, 2, 0),))
         s.clear_scrollback()
         self.ae(live_is_fresh(s, '^[a-f]', REGEX), ((1, 0, 1, 0), (2, 0, 2, 0)))
+        # erasing a command that holds every history line leaves the live prompt the oldest line,
+        # starting a line
+        s = self.create_screen(cols=5, lines=3, scrollback=3)
+        s.draw('abcde$'), s.carriage_return(), mark_prompt(s), s.draw('$ p1\r\n')
+        lines_of(s, 'x0', 'x1', 'x2', 'x3')
+        mark_prompt(s), s.draw('$ ')
+        self.assertTrue(s.historybuf.is_continued(0), 'the command continues the evicted line')
+        s.find_set_query('^\\$', *REGEX)
+        self.assertTrue(s.erase_last_command())
+        self.ae(s.historybuf.count, 0)
+        self.ae(live_is_fresh(s, '^\\$', REGEX), ((1, 0, 1, 0),))
         # a rewrap keeps the oldest line continuing the evicted one, and a narrower one that
         # evicts a wrapped row leaves the rest of its line continuing it
         for cols, matches in ((6, ((2, 0, 2, 0), (3, 0, 3, 0))), (2, ((3, 0, 3, 0), (4, 0, 4, 0)))):

@@ -375,6 +375,8 @@ historybuf_delete_newest_lines(HistoryBuf *self, index_type count) {
     init_line(self, idx, self->line);
     CPUCell *cells = self->line->cpu_cells;
     self->count--;
+    // deleting the oldest line takes the line the evicted one wrapped onto with it
+    self->oldest_line_continues_evicted = self->oldest_line_continues_evicted && self->count;
     // the numbers from the first deleted line on are free for other text; the multicell rows
     // nuked above it lie within find's reach band below this
     self->abs_lowest_rewritten_line = MIN(self->abs_lowest_rewritten_line, self->abs_oldest_line + self->count);

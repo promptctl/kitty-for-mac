@@ -4659,7 +4659,7 @@ sync_find_engine(Screen *self) {
     // unchanged in its cells but able to hold matches the cut line did not; it needs searching
     // again only when the engine searched it, and a change inside it is the refresh's to search
     const FindRefeedRange cut = find_logical_line_range(self, oldest);
-    const bool refeed_cut_line = kitty_rs_find_evict_before(self->find_engine, oldest) && oldest_line_differs && changed >= cut.limit;
+    const bool refeed_cut_line = oldest_line_differs && kitty_rs_find_evict_before(self->find_engine, oldest) && changed >= cut.limit;
     const bool fed = (!refeed_cut_line || refeed_find_engine(self, cut)) &&
         (changed == UINT64_MAX || refresh_find_engine(self, changed));
     if (fed && record_fed_buffer(self)) return;
@@ -6753,7 +6753,7 @@ static index_type
 continue_line_upwards_scrollback(Screen *self, int top_line, SelectionBoundary *start, SelectionBoundary *end) {
     index_type num_in_scrollback = 0;
     Line *line = NULL;
-    while (range_line_is_continued(self, top_line) && (line = range_line_(self, top_line - 1))) {
+    while (range_line_is_continued(self, top_line) && (line = checked_range_line(self, top_line - 1))) {
         screen_selection_range_for_line_(line, &start->x, &end->x);
         top_line--;
         num_in_scrollback++;
