@@ -191,9 +191,9 @@ def _storage_statements(src: str):
 
 
 def is_wayland_scanner_output(name: str) -> bool:
-    # a Linux build generates these into glfw/ (the shape .gitignore and setup.py clean match, so a stale
-    # one from a dropped protocol counts too): their listener structs are libwayland's callbacks into
-    # GLFW, not GLFW's into its client
+    # a Linux build generates these into glfw/ (the shape .gitignore matches, so a stale one from a
+    # dropped protocol counts too): their listener structs are libwayland's callbacks into GLFW, not
+    # GLFW's into its client
     return fnmatch.fnmatchcase(name, 'wayland-*-client-protocol.[ch]')
 
 
@@ -261,7 +261,8 @@ class TestGLFWCallbackKinds(BaseTest):
         import tempfile
         unclassified = 'typedef void (* GLFWfixturefun)(int);\nstatic GLFWfixturefun held;\n'
         with tempfile.TemporaryDirectory() as d:
-            for name in ('wayland-dropped-v1-client-protocol.h', 'wayland-xdg-shell-client-protocol.c', 'hand_written.h'):
+            for name in ('wayland-dropped-v1-client-protocol.h', 'wayland-xdg-shell-client-protocol.c', 'hand_written.h',
+                         'wayland-xdg-shell-server-protocol.h'):
                 with open(os.path.join(d, name), 'w') as f:
                     f.write(unclassified)
-            self.assertEqual(['hand_written.h'], [p.partition(':')[0] for p in unclassified_glfw_callbacks(d)])
+            self.assertEqual(['hand_written.h', 'wayland-xdg-shell-server-protocol.h'], [p.partition(':')[0] for p in unclassified_glfw_callbacks(d)])
