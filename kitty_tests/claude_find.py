@@ -35,10 +35,10 @@ from kitty.claude_find import (
     refusal,
 )
 from kitty.find_backends import FindCount, FindMode, FindQuery, FindStatus
-from kitty.tmux_find import FIND_DEADLINE, PaneRef, TmuxError, TmuxOperation
+from kitty.tmux_find import FIND_DEADLINE, PaneRef, TmuxError, TmuxOperation, run_tmux
 
 from .base import BaseTest
-from .tmux_find import PATIENT_DEADLINE, PrivateTmux, patient, private_tmux
+from .tmux_find import PATIENT_DEADLINE, PrivateTmux, Script, patient, private_tmux
 
 RULE = '─' * 100
 PYTHON = shutil.which('python3')
@@ -249,6 +249,10 @@ class FakeClaudeSession:
         return f
 
 
+# the view each mode of the fake draws when it starts
+FIRST_VIEW = {'': Prompt(), 'sticky': Prompt(), 'dialog': Unrecognised('  2. No, and tell Claude what to do differently')}
+
+
 @contextmanager
 def fake_claude(*initial: str, mode: str = '', then: str = 'sleep 600') -> Any:
     assert PYTHON
@@ -256,14 +260,14 @@ def fake_claude(*initial: str, mode: str = '', then: str = 'sleep 600') -> Any:
         conversation, keylog = os.path.join(d, 'conversation.txt'), os.path.join(d, 'keys.log')
         with open(conversation, 'w') as f:
             f.write('\n'.join(initial) + '\n')
-        with private_tmux(f'{PYTHON} {FAKE} {conversation} {keylog} {mode}; {then}') as t:
+        with private_tmux(Script(f'{PYTHON} {FAKE} {conversation} {keylog} {mode}; {then}')) as t:
             session = FakeClaudeSession(t, d)
             os.makedirs(os.path.dirname(session.transcript))
             with open(session.transcript, 'w') as f:  # Claude Code has written the conversation so far
                 f.write('\n'.join(initial) + '\n')
-            # drawn, which the fake does after it puts the tty in raw mode: a blank pane is Unrecognised('')
+            # the fake draws a whole view after it puts the tty in raw mode, and tmux can be read part way through one
             deadline = time.monotonic() + 10
-            while session.view() == Unrecognised('') and time.monotonic() < deadline:
+            while session.view() != FIRST_VIEW[mode] and time.monotonic() < deadline:
                 time.sleep(0.02)
             yield session
 
@@ -489,11 +493,9 @@ class ClaudeFindIntegrationTest(BaseTest):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
             clock = [0.0]
-            real = patient()
-
             # Ctrl+o goes out, then the clock runs past the deadline while the pane is awaited
             def run(argv, env, timeout):
-                out = real.run(argv, env, timeout)
+                out = run_tmux(argv, env, timeout)
                 if 'send-keys' in argv:
                     clock[0] += FIND_DEADLINE * 2
                 return out
@@ -626,7 +628,7 @@ class SelectionTest(BaseTest):
     def test_what_tmux_holds_is_the_selection_only_when_made_by_the_release(self):
         if not shutil.which('tmux'):
             self.skipTest('needs tmux')
-        with private_tmux('sleep 600') as t:
+        with private_tmux(Script('sleep 600')) as t:
             state = ClaudeFindState()
 
             def newest_copy_made_at() -> float:
