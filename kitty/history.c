@@ -320,12 +320,16 @@ historybuf_push(HistoryBuf *self, ANSIBuf *as_ansi_buf, bool *needs_clear) {
     if (self->count == self->ynum) {
         pagerhist_push(self, as_ansi_buf);
         self->oldest_line_continues_evicted = cpu_lineptr(self, self->start_of_data)[self->xnum - 1].next_char_was_wrapped;
-        Line l = {.xnum = self->xnum, .text_cache = self->text_cache};
-        init_line(self, self->start_of_data, &l);
-        // only a wrapped row's text is read: the hot path of pushing unwrapped lines pays nothing.
-        // A wrapped row with no text leaves the character the rows evicted before it ended on.
-        const char_type last = self->oldest_line_continues_evicted ? line_last_text_char(&l) : 0;
-        self->evicted_head_last_char = self->oldest_line_continues_evicted && !last ? self->evicted_head_last_char : last;
+        // a wrapped row hands its last character on to the line it wraps onto, and one with no
+        // text hands on the character the rows evicted before it ended on. Only a wrapped row's
+        // text is read: the hot path of pushing unwrapped lines pays nothing.
+        if (!self->oldest_line_continues_evicted) self->evicted_head_last_char = 0;
+        else {
+            Line l = {.xnum = self->xnum, .text_cache = self->text_cache};
+            init_line(self, self->start_of_data, &l);
+            const char_type last = line_last_text_char(&l);
+            if (last) self->evicted_head_last_char = last;
+        }
         self->start_of_data = (self->start_of_data + 1) % self->ynum;
         self->abs_oldest_line++;
         *needs_clear = true;

@@ -2433,18 +2433,21 @@ class TestScreen(BaseTest):
                 # a rewrap keeps the character, and so does a resize that evicts nothing more
                 s.resize(2, 6)
                 self.ae(live_is_fresh(s, q, REGEX), before, (head, q, 'rewrap'))
-        # an evicted wrapped row with no text leaves the character the row above it ended on
-        s = self.create_screen(cols=5, lines=3, scrollback=1)
-        s.draw('abcdefghijklm')
-        s.cursor_position(2, 1), s.erase_in_line(2), s.linebuf.set_continued(2, True)
-        s.cursor_position(3, 4), s.carriage_return(), s.linefeed()
-        s.find_set_query('\\Bklm', *REGEX)
-        before = s.find_matches()
-        self.ae(len(before), 1)
-        lines_of(s, 'c', 'd', 'e', 'f')
-        self.ae(str(s.historybuf.line(s.historybuf.count - 1)), 'klm')
-        self.assertTrue(s.historybuf.is_continued(0), 'klm continues the evicted rows')
-        self.ae(live_is_fresh(s, '\\Bklm', REGEX), before)
+        # an evicted wrapped row with no text leaves the character the row above it ended on,
+        # and evicted rows that held no text at all leave none: the rest starts its line's text
+        for erased, q in (((2,), '\\Bklm'), ((1, 2), '^klm')):
+            s = self.create_screen(cols=5, lines=3, scrollback=1)
+            s.draw('abcdefghijklm')
+            for y in erased:
+                s.cursor_position(y, 1), s.erase_in_line(2), s.linebuf.set_continued(y, True)
+            s.cursor_position(3, 4), s.carriage_return(), s.linefeed()
+            s.find_set_query(q, *REGEX)
+            before = s.find_matches()
+            self.ae(len(before), 1, q)
+            lines_of(s, 'c', 'd', 'e', 'f')
+            self.ae(str(s.historybuf.line(s.historybuf.count - 1)), 'klm')
+            self.assertTrue(s.historybuf.is_continued(0), 'klm continues the evicted rows')
+            self.ae(live_is_fresh(s, q, REGEX), before, q)
         # a rewrap keeps the oldest line continuing the evicted one, and a narrower one that
         # evicts a wrapped row leaves the rest of its line continuing it
         for cols, matches in ((6, ((2, 0, 2, 0), (3, 0, 3, 0))), (2, ((3, 0, 3, 0), (4, 0, 4, 0)))):
