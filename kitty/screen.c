@@ -4652,13 +4652,14 @@ sync_find_engine(Screen *self) {
     const FindFedRecord *r = self->find_record;
     if (!r) return;
     const uint64_t oldest = self->historybuf->abs_oldest_line, changed = find_changed_from(self, r);
-    const bool moved = r->abs_oldest_line != oldest;
-    if (!moved && changed == UINT64_MAX) return;
+    // the oldest line moved, or a clear of an empty ring changed how it starts without moving it
+    const bool oldest_line_differs = r->abs_oldest_line != oldest || r->oldest_line_continues_evicted != self->historybuf->oldest_line_continues_evicted;
+    if (!oldest_line_differs && changed == UINT64_MAX) return;
     // eviction or a clear that cut a wrapped line leaves its rest a logical line of its own,
     // unchanged in its cells but able to hold matches the cut line did not; it needs searching
     // again only when the engine searched it, and a change inside it is the refresh's to search
     const FindRefeedRange cut = find_logical_line_range(self, oldest);
-    const bool refeed_cut_line = moved && kitty_rs_find_evict_before(self->find_engine, oldest) && changed >= cut.limit;
+    const bool refeed_cut_line = kitty_rs_find_evict_before(self->find_engine, oldest) && oldest_line_differs && changed >= cut.limit;
     const bool fed = (!refeed_cut_line || refeed_find_engine(self, cut)) &&
         (changed == UINT64_MAX || refresh_find_engine(self, changed));
     if (fed && record_fed_buffer(self)) return;

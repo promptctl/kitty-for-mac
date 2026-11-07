@@ -68,9 +68,11 @@ FindWalkResult find_walk_main_buffer(Screen *self, FindRefeedRange lines, FindLi
 
 // What the engine was last fed, so the next read can tell which lines' text may have changed:
 // the main buffer's CPU cells (which hold all of a cell's text) from FIND_MULTICELL_REACH
-// history rows above screen row 0 through the last screen row, and the oldest line then.
+// history rows above screen row 0 through the last screen row, and the oldest line then and
+// whether it continued an evicted one.
 typedef struct FindFedRecord {
     uint64_t first_line, abs_oldest_line;
+    bool oldest_line_continues_evicted;
     index_type rows, columns;
     CPUCell *cells;
 } FindFedRecord;

@@ -149,7 +149,7 @@ find_record_capture(Screen *self) {
     const index_type rows = buffer_limit(self) - first_line;
     FindFedRecord *r = malloc(sizeof(FindFedRecord));
     if (!r) return NULL;
-    *r = (FindFedRecord){.first_line = first_line, .abs_oldest_line = hb->abs_oldest_line, .rows = rows, .columns = columns};
+    *r = (FindFedRecord){.first_line = first_line, .abs_oldest_line = hb->abs_oldest_line, .oldest_line_continues_evicted = hb->oldest_line_continues_evicted, .rows = rows, .columns = columns};
     r->cells = malloc((size_t)rows * columns * sizeof(CPUCell));
     if (!r->cells) { free(r); return NULL; }
     for (index_type y = 0; y < rows; y++) memcpy(r->cells + (size_t)y * columns, cells_at(self, first_line + y), columns * sizeof(CPUCell));

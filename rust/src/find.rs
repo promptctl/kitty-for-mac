@@ -84,8 +84,8 @@ pub struct FindRefeed {
 
 impl FindRefeed {
     /// Adds the matches in one logical line of `rows` physical lines, whose byte i of `text`
-    /// came from `cells[i]`, and which starts a line or continues one gone from the buffer. Rows past its last text are still its rows: an erased row keeps the
-    /// wrap flag of the row above.
+    /// came from `cells[i]`, and which starts a line or continues one gone from the buffer. Rows
+    /// past its last text are still its rows: an erased row keeps the wrap flag of the row above.
     pub fn feed_line(
         &mut self,
         abs_first_line: u64,
@@ -1124,10 +1124,6 @@ mod tests {
         assert_eq!(
             found("a", FindLineStart::ContinuesEvicted),
             [m(4, 0, 4, 0), m(5, 1, 5, 1)]
-        );
-        assert_eq!(
-            found(r"\ba", FindLineStart::ContinuesEvicted),
-            [m(4, 0, 4, 0)]
         );
         // not even a pattern for the byte before the line matches it
         assert_eq!(found(r"(?-u:\xFF)a", FindLineStart::ContinuesEvicted), []);

@@ -2399,6 +2399,24 @@ class TestScreen(BaseTest):
         s.reset()
         s.draw('ab')
         self.ae(live_is_fresh(s, '^a', REGEX), ((3, 0, 3, 0),))
+        # with every history line back on the screen, a clear changes how the oldest line starts
+        # without moving it
+        s = head_evicted()
+        lines_of(s, 'c', 'd')
+        s.reverse_scroll(2, True)
+        s.find_set_query('^[a-f]', *REGEX)
+        self.ae(s.find_matches(), ((2, 0, 2, 0),))
+        s.clear_scrollback()
+        self.ae(live_is_fresh(s, '^[a-f]', REGEX), ((1, 0, 1, 0), (2, 0, 2, 0)))
+        # a rewrap keeps the oldest line continuing the evicted one, and a narrower one that
+        # evicts a wrapped row leaves the rest of its line continuing it
+        for cols, matches in ((6, ((2, 0, 2, 0), (3, 0, 3, 0))), (2, ((3, 0, 3, 0), (4, 0, 4, 0)))):
+            s = head_evicted()
+            lines_of(s, 'c', 'd')
+            s.find_set_query('^[a-h]', *REGEX)
+            s.resize(2, cols)
+            self.assertTrue(s.historybuf.is_continued(0), cols)
+            self.ae(live_is_fresh(s, '^[a-h]', REGEX), matches)
 
         # the buffer gets shorter, with a match on what is dropped and nothing output after
         s = self.create_screen(cols=5, lines=3, scrollback=10)
