@@ -67,11 +67,12 @@ init_encoding_data(EncodingData *ans, const KeyEvent *ev) {
 }
 
 static int
-serialize(const EncodingData *data, char *output, const char csi_trailer) {
+serialize(const EncodingData *data, char *output, const size_t capacity, const char csi_trailer) {
+    const int limit = (int)capacity - 2;  // room for the trailer and the NUL
     int pos = 0;
     bool second_field_not_empty = data->has_mods || data->add_actions;
     bool third_field_not_empty = data->add_text;
-#define P(fmt, ...) pos += snprintf(output + pos, KEY_BUFFER_SIZE - 2 <= pos ? 0 : KEY_BUFFER_SIZE - 2 - pos, fmt, __VA_ARGS__)
+#define P(fmt, ...) pos += snprintf(output + pos, limit <= pos ? 0 : limit - pos, fmt, __VA_ARGS__)
     P("\x1b%s", "[");
     if (data->key != 1 || data->add_alternates || second_field_not_empty || third_field_not_empty) P("%u", data->key);
     if (data->add_alternates) {
@@ -100,10 +101,21 @@ serialize(const EncodingData *data, char *output, const char csi_trailer) {
         }
     }
 #undef P
-    if (pos > KEY_BUFFER_SIZE - 2) pos = KEY_BUFFER_SIZE - 2;
+    if (pos > limit) {
+        // [LAW:no-silent-failure] callers size output with key_encoding_buffer_size(), so this is a sizing bug, not a long text
+        log_error("Encoding key %u needs %d bytes but its buffer holds %zu, the escape is cut short", data->key, pos + 2, capacity);
+        pos = limit;
+    }
     output[pos++] = csi_trailer;
     output[pos] = 0;
     return pos;
+}
+
+size_t
+key_encoding_buffer_size(const GLFWkeyevent *e) {
+    // serialize() writes each codepoint of the text as a separator and its decimal value: at most 4 bytes
+    // per UTF-8 byte (":127" for one byte; longer sequences write fewer per byte). The rest of the escape fits KEY_BUFFER_SIZE.
+    return KEY_BUFFER_SIZE + 4 * (e->text ? strlen(e->text) : 0);
 }
 
 static uint32_t
@@ -137,7 +149,7 @@ convert_kp_key_to_normal_key(uint32_t key_number) {
 }
 
 static int
-legacy_functional_key_encoding_with_modifiers(uint32_t key_number, const KeyEvent *ev, char *output) {
+legacy_functional_key_encoding_with_modifiers(uint32_t key_number, const KeyEvent *ev, char *output, const size_t capacity) {
     const char *prefix = ev->mods.value & ALT ? "\x1b" : "";
     const char *main_bytes = "";
     switch (key_number) {
@@ -154,12 +166,12 @@ legacy_functional_key_encoding_with_modifiers(uint32_t key_number, const KeyEven
             break;
         default: return -1;
     }
-    return snprintf(output, KEY_BUFFER_SIZE, "%s%s", prefix, main_bytes);
+    return snprintf(output, capacity, "%s%s", prefix, main_bytes);
 }
 
 static int
-encode_function_key(const KeyEvent *ev, char *output) {
-#define SIMPLE(val) return snprintf(output, KEY_BUFFER_SIZE, "%s", val);
+encode_function_key(const KeyEvent *ev, char *output, const size_t capacity) {
+#define SIMPLE(val) return snprintf(output, capacity, "%s", val);
     char csi_trailer = 'u';
     uint32_t key_number = ev->key;
     bool legacy_mode = !ev->report_all_event_types && !ev->disambiguate && !ev->report_text;
@@ -202,7 +214,7 @@ encode_function_key(const KeyEvent *ev, char *output) {
             }
         }
     } else if (legacy_mode) {
-        int num = legacy_functional_key_encoding_with_modifiers(key_number, ev, output);
+        int num = legacy_functional_key_encoding_with_modifiers(key_number, ev, output, capacity);
         if (num > -1) return num;
     }
     if (!(ev->mods.value & ~LOCK_MASK) && !ev->report_text) {
@@ -266,7 +278,7 @@ encode_function_key(const KeyEvent *ev, char *output) {
     init_encoding_data(&ed, ev);
     ed.key = key_number;
     ed.add_alternates = false;
-    return serialize(&ed, output, csi_trailer);
+    return serialize(&ed, output, capacity, csi_trailer);
 }
 
 static char
@@ -326,9 +338,9 @@ ctrled_key(const char key) { // {{{
 } // }}}
 
 static int
-encode_printable_ascii_key_legacy(const KeyEvent *ev, char *output) {
+encode_printable_ascii_key_legacy(const KeyEvent *ev, char *output, const size_t capacity) {
     unsigned mods = ev->mods.value;
-    if (!mods) return snprintf(output, KEY_BUFFER_SIZE, "%c", (char)ev->key);
+    if (!mods) return snprintf(output, capacity, "%c", (char)ev->key);
 
     char key = ev->key;
     if (mods & SHIFT) {
@@ -339,13 +351,13 @@ encode_printable_ascii_key_legacy(const KeyEvent *ev, char *output) {
         }
     }
 
-    if (ev->mods.value == SHIFT) return snprintf(output, KEY_BUFFER_SIZE, "%c", key);
-    if (mods == ALT) return snprintf(output, KEY_BUFFER_SIZE, "\x1b%c", key);
-    if (mods == CTRL) return snprintf(output, KEY_BUFFER_SIZE, "%c", ctrled_key(key));
-    if (mods == (CTRL | ALT)) return snprintf(output, KEY_BUFFER_SIZE, "\x1b%c", ctrled_key(key));
+    if (ev->mods.value == SHIFT) return snprintf(output, capacity, "%c", key);
+    if (mods == ALT) return snprintf(output, capacity, "\x1b%c", key);
+    if (mods == CTRL) return snprintf(output, capacity, "%c", ctrled_key(key));
+    if (mods == (CTRL | ALT)) return snprintf(output, capacity, "\x1b%c", ctrled_key(key));
     if (key == ' ') {
-        if (mods == (CTRL | SHIFT)) return snprintf(output, KEY_BUFFER_SIZE, "%c", ctrled_key(key));
-        if (mods == (ALT | SHIFT)) return snprintf(output, KEY_BUFFER_SIZE, "\x1b%c", key);
+        if (mods == (CTRL | SHIFT)) return snprintf(output, capacity, "%c", ctrled_key(key));
+        if (mods == (ALT | SHIFT)) return snprintf(output, capacity, "\x1b%c", key);
     }
     return 0;
 }
@@ -395,21 +407,21 @@ is_legacy_ascii_key(uint32_t key) {
 }
 
 static int
-encode_key(const KeyEvent *ev, char *output) {
+encode_key(const KeyEvent *ev, char *output, const size_t capacity) {
     if (!ev->report_all_event_types && ev->action == RELEASE) return 0;
-    if (GLFW_FKEY_FIRST <= ev->key && ev->key <= GLFW_FKEY_LAST) return encode_function_key(ev, output);
+    if (GLFW_FKEY_FIRST <= ev->key && ev->key <= GLFW_FKEY_LAST) return encode_function_key(ev, output, capacity);
     EncodingData ed = {0};
     init_encoding_data(&ed, ev);
     bool simple_encoding_ok = !ed.add_actions && !ed.add_alternates && !ed.add_text;
 
     if (simple_encoding_ok) {
         if (!ed.has_mods) {
-            if (ev->report_text) return serialize(&ed, output, 'u');
+            if (ev->report_text) return serialize(&ed, output, capacity, 'u');
             return encode_utf8(ev->key, output);
         }
         if (!ev->disambiguate && !ev->report_text) {
             if (is_legacy_ascii_key(ev->key) || (ev->shifted_key && is_legacy_ascii_key(ev->shifted_key))) {
-                int ret = encode_printable_ascii_key_legacy(ev, output);
+                int ret = encode_printable_ascii_key_legacy(ev, output, capacity);
                 if (ret > 0) return ret;
             }
             unsigned mods = ev->mods.value;
@@ -419,13 +431,13 @@ encode_key(const KeyEvent *ev, char *output) {
                 alternate.key = ev->alternate_key;
                 alternate.alternate_key = 0;
                 alternate.shifted_key = 0;
-                int ret = encode_printable_ascii_key_legacy(&alternate, output);
+                int ret = encode_printable_ascii_key_legacy(&alternate, output, capacity);
                 if (ret > 0) return ret;
             }
         }
     }
 
-    return serialize(&ed, output, 'u');
+    return serialize(&ed, output, capacity, 'u');
 }
 
 static bool
@@ -442,7 +454,7 @@ startswith_ascii_control_char(const char *p) {
 }
 
 int
-encode_glfw_key_event(const GLFWkeyevent *e, const bool cursor_key_mode, const unsigned key_encoding_flags, char *output) {
+encode_glfw_key_event(const GLFWkeyevent *e, const bool cursor_key_mode, const unsigned key_encoding_flags, char *output, const size_t capacity) {
     KeyEvent ev = {
         .key = e->key,
         .shifted_key = e->shifted_key,
@@ -466,5 +478,5 @@ encode_glfw_key_event(const GLFWkeyevent *e, const bool cursor_key_mode, const u
     }
     if (send_text_standalone && ev.has_text && (ev.action == PRESS || ev.action == REPEAT)) return SEND_TEXT_TO_CHILD;
     convert_glfw_mods(e->mods, &ev, key_encoding_flags);
-    return encode_key(&ev, output);
+    return encode_key(&ev, output, capacity);
 }

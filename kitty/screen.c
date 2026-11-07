@@ -2887,7 +2887,7 @@ screen_fake_move_cursor_to_position(Screen *self, index_type start_x, index_type
             for (unsigned i = 0; i < count; i++) write_to_child(self, output, num);
         } else {
             GLFWkeyevent ev = {.key = key, .action = GLFW_PRESS};
-            int num = encode_glfw_key_event(&ev, false, 0, output);
+            int num = encode_glfw_key_event(&ev, false, 0, output, sizeof(output));
             if (num != SEND_TEXT_TO_CHILD) {
                 for (unsigned i = 0; i < count; i++) write_to_child(self, output, num);
             }

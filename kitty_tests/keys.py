@@ -478,6 +478,9 @@ class TestKeys(BaseTest):
         ae(eq(ord('a'), text='a'), csi(num='a', text='a'))
         ae(eq(ord('a'), mods=shift, text='A'), csi(shift, num='a', text='A'))
         ae(eq(ord('a'), mods=shift, text='AB'), csi(shift, num='a', text='AB'))
+        # text far longer than one key's escape, as an input method commits it
+        for text in ('あ' * 200, 'a\xe9あ\U0001F600\U0010FFFF~' * 40):
+            ae(eq(0, text=text), csi(num=0, text=text))
 
         # test roundtripping via KeyEvent
         for mods in range(64):

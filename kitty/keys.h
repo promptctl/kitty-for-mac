@@ -15,6 +15,8 @@
 #define SEND_TEXT_TO_CHILD INT_MIN
 #define debug debug_input
 
-int encode_glfw_key_event(const GLFWkeyevent *e, const bool cursor_key_mode, const unsigned flags, char *output);
+int encode_glfw_key_event(const GLFWkeyevent *e, const bool cursor_key_mode, const unsigned flags, char *output, const size_t capacity);
+// The output capacity that holds any encoding of e, however long its text
+size_t key_encoding_buffer_size(const GLFWkeyevent *e);
 
 bool is_modifier_key(const uint32_t key);

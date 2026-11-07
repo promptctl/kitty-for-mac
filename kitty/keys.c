@@ -209,8 +209,10 @@ send_key_to_child(id_type window_id, Screen *screen, const GLFWkeyevent *ev) {
     if ((screen->scrolled_by || screen->pixel_scroll_offset_y != 0) && action == GLFW_PRESS && !is_no_action_key(key, native_key)) {
         screen_history_scroll(screen, SCROLL_FULL, false); // scroll back to bottom
     }
-    char encoded_key[KEY_BUFFER_SIZE] = {0};
-    int size = encode_glfw_key_event(ev, screen->modes.mDECCKM, screen_current_key_encoding_flags(screen), encoded_key);
+    const size_t capacity = key_encoding_buffer_size(ev);
+    RAII_ALLOC(char, encoded_key, malloc(capacity));
+    if (!encoded_key) fatal("Out of memory");
+    int size = encode_glfw_key_event(ev, screen->modes.mDECCKM, screen_current_key_encoding_flags(screen), encoded_key, capacity);
     if (size == SEND_TEXT_TO_CHILD) {
         schedule_write_to_child(window_id, 1, text, strlen(text));
         debug("sent key as text to child (window_id: %llu): %s\n", window_id, text);
@@ -416,10 +418,10 @@ fake_scroll(Window *w, int amount, bool upwards) {
     uint8_t flags = screen_current_key_encoding_flags(screen);
     while (amount-- > 0) {
         ev.action = GLFW_PRESS;
-        int size = encode_glfw_key_event(&ev, screen->modes.mDECCKM, flags, encoded_key);
+        int size = encode_glfw_key_event(&ev, screen->modes.mDECCKM, flags, encoded_key, sizeof(encoded_key));
         if (size > 0) schedule_write_to_child(w->id, 1, encoded_key, size);
         ev.action = GLFW_RELEASE;
-        size = encode_glfw_key_event(&ev, screen->modes.mDECCKM, flags, encoded_key);
+        size = encode_glfw_key_event(&ev, screen->modes.mDECCKM, flags, encoded_key, sizeof(encoded_key));
         if (size > 0) schedule_write_to_child(w->id, 1, encoded_key, size);
     }
 }
@@ -452,8 +454,10 @@ pyencode_key_for_tty(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
             args, kw, "I|IIIIIzp", kwds, &key, &shifted_key, &alternate_key, &mods, &action, &key_encoding_flags, &text, &cursor_key_mode))
         return NULL;
     GLFWkeyevent ev = {.key = key, .shifted_key = shifted_key, .alternate_key = alternate_key, .text = text, .action = action, .mods = mods};
-    char output[KEY_BUFFER_SIZE + 1] = {0};
-    int num = encode_glfw_key_event(&ev, cursor_key_mode, key_encoding_flags, output);
+    const size_t capacity = key_encoding_buffer_size(&ev);
+    RAII_ALLOC(char, output, malloc(capacity));
+    if (!output) return PyErr_NoMemory();
+    int num = encode_glfw_key_event(&ev, cursor_key_mode, key_encoding_flags, output, capacity);
     if (num == SEND_TEXT_TO_CHILD) return PyUnicode_FromString(text);
     return PyUnicode_FromStringAndSize(output, MAX(0, num));
 }
