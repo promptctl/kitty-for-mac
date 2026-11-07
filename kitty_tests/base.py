@@ -557,9 +557,19 @@ class PTY:
         return self
 
     def __exit__(self, *a):
-        self.__del__()
+        # [LAW:no-silent-failure] teardown here runs inside the test, so the test fails
+        # and the result pipe carries the name; worker stderr is /dev/null in parallel runs
+        if isinstance(end := self._teardown(), ReapedElsewhere):
+            raise AssertionError(f'PTY child {self.child_pid} {end}')
 
     def __del__(self):
+        # GC runs outside any test, so stderr is the only place left to name it
+        if isinstance(end := self._teardown(), ReapedElsewhere):
+            print(f'PTY child {self.child_pid} {end}', file=sys.stderr)
+
+    def _teardown(self) -> ChildEnd | None:
+        # Says how the child ended, or None when there was no child left to reap.
+        # A shell still running at teardown is routine, so only ReapedElsewhere is news.
         if hasattr(self, 'master_fd'):
             os.close(self.master_fd)
             del self.master_fd
@@ -567,13 +577,12 @@ class PTY:
             os.close(self.slave_fd)
             del self.slave_fd
         # [LAW:no-ambient-temporal-coupling] a PTY in a with block is torn down twice, by
-        # __exit__ and then by GC; child_waited_for makes the second run reap nothing
-        if getattr(self, 'child_pid', 0) > 0 and not self.child_waited_for:
-            end = await_pid_exit(self.child_pid, patience=2)
-            self.child_waited_for = True
-            # a shell still running at teardown is routine, so only a reap this PTY did not do is news
-            if isinstance(end, ReapedElsewhere):
-                print(f'PTY child {self.child_pid} {end}', file=sys.stderr)
+        # __exit__ and then by GC; the flag is set before reaping, so the second run, or one
+        # after an interrupted reap, reaps nothing
+        if getattr(self, 'child_pid', 0) <= 0 or self.child_waited_for:
+            return None
+        self.child_waited_for = True
+        return await_pid_exit(self.child_pid, patience=2)
 
     def write_to_child(self, data, flush=False):
         if isinstance(data, str):

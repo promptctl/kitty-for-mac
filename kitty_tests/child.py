@@ -12,7 +12,7 @@ from unittest.mock import patch
 from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
 from kitty.constants import is_macos, kitty_exe
 
-from .base import PTY, BaseTest, Exited, KilledAtDeadline, ReapedElsewhere, await_exit
+from .base import PTY, BaseTest, Exited, KilledAtDeadline, ReapedElsewhere, await_exit, await_pid_exit
 
 
 def spawn_and_wait_for_ready(code: str, what: str) -> subprocess.Popen:
@@ -310,20 +310,25 @@ class AwaitExitTest(BaseTest):
 
 
 class PTYTeardownTest(BaseTest):
-    def _torn_down(self, pty: PTY, *, times: int) -> str:
-        err = StringIO()
-        with redirect_stderr(err):
-            for _ in range(times):
-                pty.__del__()
-        return err.getvalue()
+    def _reaped_here(self, pty: PTY) -> None:
+        self.ae(await_pid_exit(pty.child_pid, patience=10), Exited(0))
 
-    def test_a_child_reaped_elsewhere_is_named_not_raised(self):
+    def test_a_with_block_whose_child_was_reaped_elsewhere_fails_naming_it(self):
+        with self.assertRaises(AssertionError) as cm, PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
+            self._reaped_here(pty)
+        self.ae(str(cm.exception), f'PTY child {pty.child_pid} {ReapedElsewhere()}')
+
+    def test_a_collected_pty_whose_child_was_reaped_elsewhere_names_it_on_stderr(self):
         pty = PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)'])
-        os.waitpid(pty.child_pid, 0)
-        self.ae(self._torn_down(pty, times=1), f'PTY child {pty.child_pid} {ReapedElsewhere()}\n')
+        self._reaped_here(pty)
+        with redirect_stderr(err := StringIO()):
+            pty.__del__()
+        self.ae(err.getvalue(), f'PTY child {pty.child_pid} {ReapedElsewhere()}\n')
 
     def test_a_pty_torn_down_twice_reaps_once_and_reports_nothing(self):
-        with PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
-            pass
-        self.ae(self._torn_down(pty, times=1), '')
+        with redirect_stderr(err := StringIO()):
+            with PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
+                pass
+            pty.__del__()
+        self.ae(err.getvalue(), '')
         self.assertRaises(ChildProcessError, os.waitpid, pty.child_pid, os.WNOHANG)
