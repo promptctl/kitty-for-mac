@@ -278,7 +278,7 @@ class PrivateTmux:
     def drawn(self, script: 'Script', pane: str | None = None) -> None:
         deadline = time.monotonic() + 10
         while script.last not in self.tmux('capture-pane', '-p', '-S', '-', '-t', pane or self.pane):
-            if time.monotonic() > deadline:  # the launcher runs python -O, which drops assert statements
+            if time.monotonic() > deadline:
                 raise AssertionError(f'the pane never printed {script.last!r}')
             time.sleep(0.02)
 

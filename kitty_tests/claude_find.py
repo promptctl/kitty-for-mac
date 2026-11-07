@@ -271,7 +271,7 @@ def fake_claude(*initial: str, mode: str = '', then: str = 'sleep 600') -> Any:
             # the fake draws a whole view after it puts the tty in raw mode, and tmux can be read part way through one
             deadline = time.monotonic() + 10
             while (view := session.view()) != FIRST_VIEW[mode]:
-                if time.monotonic() > deadline:  # the launcher runs python -O, which drops assert statements
+                if time.monotonic() > deadline:
                     raise AssertionError(f'the fake never drew {FIRST_VIEW[mode]}: the pane shows {view}')
                 time.sleep(0.02)
             yield session

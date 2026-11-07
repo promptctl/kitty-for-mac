@@ -26,7 +26,7 @@ line-length = 160
 [tool.ruff.lint]
 select = ['E', 'F', 'I', 'RUF100']
 # Select the flake8-annotations ruleset for marking untyped function
-extend-select = ["ANN"]
+extend-select = ["ANN", "S101"]
 ignore = ["ANN401"]  # allow typing.Any
 
 [tool.ruff.lint.flake8-annotations]
@@ -40,6 +40,8 @@ mypy-init-return = true
 "kitty_tests/*.py" = ["ANN"]
 "bypy/*" = ["ANN"]
 "3rdparty/*" = ["ANN"]
+# The test launcher runs at -OO, which strips assert statements: a guard in the find tests must raise
+"!kitty_tests/{tmux,claude}_find.py" = ["S101"]
 
 [tool.ruff.lint.isort]
 detect-same-package = true
