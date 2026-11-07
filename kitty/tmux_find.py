@@ -440,12 +440,13 @@ class TmuxFind:
     def program_selection_text(self) -> str | None:
         try:
             pane, _ = self.resolved()  # pipe-no-clear is in every server find can work with
-            return self.read_selection(pane.id) if pane.in_mode else None
+            return parse_selection(self.read_selection(pane.id)) if pane.in_mode else None
         except TmuxError as e:
             log_error(f'Find in tmux: could not read the selection: {e}')
             return None
 
-    def read_selection(self, pane: str) -> str | None:
+    def read_selection(self, pane: str) -> str:
+        "The selection's text as tmux pipes it, which is what it would copy"
         with tempfile.TemporaryDirectory(prefix='kitty-find-') as d:
             out = os.path.join(d, 'selection')
             channel = f'kitty-find-{uuid.uuid4().hex}'
@@ -453,6 +454,6 @@ class TmuxFind:
             self.tmux(self.client, *selection_batch(pane, f'cat > {shlex.quote(out)}; {signal}', channel))
             try:
                 with open(out, encoding='utf-8', errors='replace') as f:
-                    return parse_selection(f.read())
+                    return f.read()
             except OSError as e:
                 raise TmuxError(f'the selection tmux piped cannot be read: {e}') from e

@@ -478,8 +478,9 @@ class TmuxFindIntegrationTest(BaseTest):
             for _ in range(30):
                 time.sleep(0.05)
                 self.ae(t.finder(state).program_selection_text(), expected)
-            # from 3.6 scrolling leaves the selection where it is; in 3.5 it drags the cursor and stretches the
-            # selection over more rows, which is no single-line query. Either way what is read is what tmux copies.
+            # from 3.6 scrolling leaves the selection where it is; in 3.5 it can drag the cursor and stretch the
+            # selection over more rows, which is no single-line query. Either way what is read is what tmux copies,
+            # compared before parsing so that two selections no query is made from are still told apart.
             stays = find_version(t.tmux('display', '-p', '#{version}').strip()) >= COPY_MODE_OPTIONS
             for _ in range(5):
                 t.tmux('send', '-t', t.pane, '-X', 'scroll-up')
@@ -488,9 +489,7 @@ class TmuxFindIntegrationTest(BaseTest):
                 t.tmux('delete-buffer')
                 if stays:
                     self.ae(copied, expected)
-                else:
-                    self.assertIn('\n', copied, 'the one way tmux 3.5 may leave no single-line selection')
-                self.ae(t.finder(state).program_selection_text(), parse_selection(copied + '\n'))
+                self.ae(t.finder(state).read_selection(t.pane), copied)
 
     def test_a_pipe_that_cannot_run_ends_in_the_deadline_with_a_typed_error(self):
         with private_tmux(NEEDLES) as t:
