@@ -221,7 +221,10 @@ typedef struct _GLFWlibraryNS {
     id nibObjects;
 
     char keyName[64];
-    char text[512];
+    // The text the key press being handled carries, gathered from every
+    // insertText the press causes; it grows to fit an input method's result.
+    char *text;
+    size_t text_capacity;
     CGPoint cascadePoint;
     // Where to place the cursor when re-enabled
     double restoreCursorPosX, restoreCursorPosY;

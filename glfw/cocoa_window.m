@@ -1301,7 +1301,7 @@ is_ascii_control_char(char x) {
 }
 
 - (void)terminalKeyDown:(NSEvent *)event {
-#define CLEAR_PRE_EDIT_TEXT                            \
+#define CLEAR_PRE_EDIT_TEXT                             \
     glfw_keyevent.text = NULL;                          \
     glfw_keyevent.ime_state = GLFW_IME_PREEDIT_CHANGED; \
     _glfwInputKeyboard(window, &glfw_keyevent);
@@ -1363,7 +1363,7 @@ is_ascii_control_char(char x) {
                 sizeof(text) / sizeof(text[0]),
                 &char_count,
                 text) != noErr) {
-            debug_input("UCKeyTranslate failed for keycode: 0x%x (%s) %s\n", keycode, safe_name_for_keycode(keycode), format_mods(mods));
+            debug_input("UCKeyTranslate failed\n");
             window->ns.deadKeyState = 0;
             return;
         }
@@ -2373,9 +2373,8 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
             _glfw.ns.text[0] = 0;
         }
     }
-    // Outside key handling there is no key event to accumulate text for. This
-    // path already commits immediately, so do not constrain a full IME result
-    // to the fixed-size buffer used by the key handlers.
+    // Outside key handling there is no key press to carry the text, so it is
+    // sent on its own.
     if (!in_key_handler || committing_marked_text) {
         if (!is_ascii_control_char(utf8[0])) {
             debug_input("Sending text to kitty from insertText called from event loop: %s\n", utf8);
@@ -2387,24 +2386,25 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
         return;
     }
     // insertText can be called multiple times for a single key event
-    size_t existing_length = strnlen(_glfw.ns.text, sizeof(_glfw.ns.text));
-    size_t required_length = strlen(utf8) + 1;
-    size_t available_length = sizeof(_glfw.ns.text) - existing_length;
-    if (available_length >= required_length) {
-        memcpy(_glfw.ns.text + existing_length, utf8, required_length); // copies the null terminator from utf8 as well
-        _glfw.ns.text[sizeof(_glfw.ns.text) - 1] = 0;
-        if (in_key_handler == 2 && _glfw.ns.text[0]) {
-            if (!is_ascii_control_char(_glfw.ns.text[0])) {
-                debug_input("Sending text to kitty from insertText called from flagsChanged: %s\n", _glfw.ns.text);
-                GLFWkeyevent glfw_keyevent = {.text = _glfw.ns.text, .ime_state = GLFW_IME_COMMIT_TEXT};
-                _glfwInputKeyboard(window, &glfw_keyevent);
-            }
-            _glfw.ns.text[0] = 0;
+    const size_t existing_length = strlen(_glfw.ns.text);
+    const size_t required_capacity = existing_length + strlen(utf8) + 1;
+    if (required_capacity > _glfw.ns.text_capacity) {
+        char *grown = realloc(_glfw.ns.text, required_capacity);
+        if (!grown) {
+            _glfwInputError(GLFW_OUT_OF_MEMORY, "Cocoa: Out of memory gathering a key press's text, dropped %zu bytes of it", strlen(utf8));
+            return;
         }
-    } else {
-        _glfwInputError(
-            GLFW_PLATFORM_ERROR, "Cocoa: Dropped %zu bytes of key text from insertText, as only %zu bytes of the key's text buffer are left",
-            required_length - 1, available_length);
+        _glfw.ns.text = grown;
+        _glfw.ns.text_capacity = required_capacity;
+    }
+    memcpy(_glfw.ns.text + existing_length, utf8, required_capacity - existing_length); // copies the null terminator from utf8 as well
+    if (in_key_handler == 2 && _glfw.ns.text[0]) {
+        if (!is_ascii_control_char(_glfw.ns.text[0])) {
+            debug_input("Sending text to kitty from insertText called from flagsChanged: %s\n", _glfw.ns.text);
+            GLFWkeyevent glfw_keyevent = {.text = _glfw.ns.text, .ime_state = GLFW_IME_COMMIT_TEXT};
+            _glfwInputKeyboard(window, &glfw_keyevent);
+        }
+        _glfw.ns.text[0] = 0;
     }
 }
 
