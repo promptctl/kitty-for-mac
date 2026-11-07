@@ -481,9 +481,11 @@ class TestKeys(BaseTest):
         # text far longer than one key's escape, as an input method commits it
         for text in ('あ' * 200, 'a\xe9あ\U0001F600\U0010FFFF~' * 40):
             ae(eq(0, text=text), csi(num=0, text=text))
-        # escapes whose length steps across the inline buffer's 128 bytes, one byte at a time
-        for n in range(30, 50):
-            ae(eq(0, text='a' * n), csi(num=0, text='a' * n))
+        # escapes whose length steps across the inline buffer's 128 bytes, one byte at a time:
+        # each 'a' adds 3 bytes, and the tails add 0, 4 and 5
+        for n in range(30, 45):
+            for tail in ('', '\xe9', '\u03e8'):
+                ae(eq(0, text='a' * n + tail), csi(num=0, text='a' * n + tail))
         # every text byte encodes to the widest field, ":127", beside every other field at its widest
         all_mods = shift | alt | ctrl | super | hyper | meta
         text = ''.join(map(chr, range(100, 128))) * 40

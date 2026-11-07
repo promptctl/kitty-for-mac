@@ -2880,8 +2880,8 @@ screen_fake_move_cursor_to_position(Screen *self, index_type start_x, index_type
         x = 0;
     }
     if (count) {
-        char output[KEY_BUFFER_SIZE + 1] = {0};
         if (self->prompt_settings.uses_special_keys_for_cursor_movement) {
+            char output[KEY_BUFFER_SIZE + 1] = {0};
             const char *k = key == GLFW_FKEY_RIGHT ? "1" : "1;1";
             int num = snprintf(output, KEY_BUFFER_SIZE, "\x1b[%su", k);
             for (unsigned i = 0; i < count; i++) write_to_child(self, output, num);
