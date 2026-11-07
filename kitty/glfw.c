@@ -278,7 +278,7 @@ is_window_ready_for_callbacks(void) {
     return true;
 }
 
-#define WINDOW_CALLBACK(name, fmt, ...) call_boss(name, "K" fmt, global_state.callback_os_window->id, __VA_ARGS__)
+#define WINDOW_CALLBACK(name, fmt, ...) call_boss_outside_tick(name, "K" fmt, global_state.callback_os_window->id, __VA_ARGS__)
 
 static void
 show_mouse_cursor(GLFWwindow *w) {
@@ -1148,7 +1148,6 @@ read_drop_data(GLFWwindow *window, GLFWDropEvent *ev) {
                 Py_False,
                 global_state.callback_os_window->last_drag_event.x,
                 global_state.callback_os_window->last_drag_event.y);
-            request_tick_callback();
             finish(true);
         }
     } else if (ret > 0) {
@@ -1165,7 +1164,6 @@ read_drop_data(GLFWwindow *window, GLFWDropEvent *ev) {
         int posix_errno = -ret;
         WINDOW_CALLBACK(
             on_drop, "iOii", posix_errno, Py_False, global_state.callback_os_window->last_drag_event.x, global_state.callback_os_window->last_drag_event.y);
-        request_tick_callback();
         finish(false);
     }
 #undef finish
@@ -1223,7 +1221,7 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
                 ev->num_mimes = drop_update_mimes(w, ev->mimes, ev->num_mimes);
                 ev->operation.allowed = w->drop.accepted_operation;
                 ev->operation.preferred = w->drop.accepted_operation;
-                return;
+                break;
             }
             call_boss_outside_tick(
                 on_drop_move, "KiiOO", os_window->id, os_window->last_drag_event.x, os_window->last_drag_event.y, ev->from_self ? Py_True : Py_False, Py_False);
@@ -1278,7 +1276,6 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
                             Py_True,
                             global_state.callback_os_window->last_drag_event.x,
                             global_state.callback_os_window->last_drag_event.y);
-                        request_tick_callback();
                     } else log_error("Got a drop from self but drag_source.drag_data is NULL");
                     Py_CLEAR(global_state.drop_dest.self_drag_data);
                     ev->finish_drop(window, GLFW_DRAG_OPERATION_COPY);
@@ -1306,6 +1303,7 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
             }
             break;
     }
+    global_state.callback_os_window = NULL;
 }
 
 void
