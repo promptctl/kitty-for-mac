@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
+import errno
 import fcntl
 import io
 import os
@@ -478,7 +479,7 @@ class PTY:
             argv = shlex.split(argv)
         self.write_buf = b''
         self.child_pid = 0
-        self.child_waited_for = False
+        self.child_end: ChildEnd | None = None  # set by whichever reap ran, so no pid is reaped twice
         self.cell_width = cell_width
         self.cell_height = cell_height
         if argv is None:
@@ -587,13 +588,12 @@ class PTY:
             os.close(self.slave_fd)
             del self.slave_fd
         # [LAW:no-ambient-temporal-coupling] a PTY in a with block is torn down twice, by
-        # __exit__ and then by GC; the flag is set once the reap returns, so the second run
+        # __exit__ and then by GC; child_end is set once the reap returns, so the second run
         # reaps nothing, while one after an interrupted reap still kills the child
-        if getattr(self, 'child_pid', 0) <= 0 or self.child_waited_for:
+        if getattr(self, 'child_pid', 0) <= 0 or self.child_end is not None:
             return None
-        end = await_pid_exit(self.child_pid, patience=2)
-        self.child_waited_for = True
-        return end
+        self.child_end = await_pid_exit(self.child_pid, patience=2)
+        return self.child_end
 
     def write_to_child(self, data, flush=False):
         if isinstance(data, str):
@@ -646,8 +646,8 @@ class PTY:
             raise TimeoutError(f'Timed out after {timeout} seconds: {msg}{self.screen_contents_for_error()}')
 
     def wait_till_child_exits(self, timeout=30 if BaseTest.is_ci else 10, require_exit_code=None) -> int:
-        end = await_pid_exit(self.child_pid, timeout, wait_a_moment=self._read_once)
-        self.child_waited_for = True  # whatever the end, it is named here, so teardown has nothing left to report
+        # a second wait reports the first one's end: the pid may since belong to another process
+        end = self.child_end = self.child_end or await_pid_exit(self.child_pid, timeout, wait_a_moment=self._read_once)
         self._drain()
         match end:
             case Exited(status) if status >= 0 and require_exit_code in (None, status):
@@ -662,18 +662,24 @@ class PTY:
         # one read per poll, so a child that never stops writing still meets the deadline;
         # a poll that reads nothing lasts its full period, as a hung-up slave returns at once
         period_end = time.monotonic() + 0.02
-        with suppress(OSError):
-            if self.process_input_from_child(timeout=0.02):
-                return
-        time.sleep(max(0, period_end - time.monotonic()))
+        if not self._read_until_hangup(timeout=0.02):
+            time.sleep(max(0, period_end - time.monotonic()))
 
     def _drain(self) -> None:
-        # reads what the child left in the PTY; EIO once the slave is closed ends it, and the
-        # budget ends it when a grandchild still holds the slave and keeps writing
+        # reads what the child left in the PTY until the slave hangs up, within a budget that
+        # ends it when a grandchild still holds the slave
         budget_end = time.monotonic() + 1
-        with suppress(OSError):
-            while self.process_input_from_child(timeout=0) and time.monotonic() < budget_end:
-                pass
+        while self._read_until_hangup(timeout=budget_end - time.monotonic()):
+            pass
+
+    def _read_until_hangup(self, timeout: float) -> int:
+        # bytes read, 0 once the slave has hung up: Linux reports that as EIO, macOS as EOF
+        try:
+            return self.process_input_from_child(timeout=timeout)
+        except OSError as e:
+            if e.errno != errno.EIO:
+                raise
+            return 0
 
     def set_window_size(self, rows=25, columns=80, send_signal=True):
         if hasattr(self, 'screen'):

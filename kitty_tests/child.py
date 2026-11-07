@@ -13,7 +13,7 @@ from unittest.mock import patch
 from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
 from kitty.constants import is_macos, kitty_exe
 
-from .base import PTY, BaseTest, Exited, KilledAtDeadline, ReapedElsewhere, await_exit, await_pid_exit
+from .base import PTY, BaseTest, ChildEnd, Exited, KilledAtDeadline, ReapedElsewhere, await_exit, await_pid_exit
 
 
 def spawn_and_wait_for_ready(code: str, what: str) -> subprocess.Popen:
@@ -310,10 +310,12 @@ class AwaitExitTest(BaseTest):
         self.ae(str(Exited(-signal.SIGSEGV)), 'was killed by signal SIGSEGV')
 
 
-class PTYTeardownTest(BaseTest):
+class ReapsHere(BaseTest):
     def _reaped_here(self, pty: PTY) -> None:
         self.ae(await_pid_exit(pty.child_pid, patience=30 if self.is_ci else 10), Exited(0))
 
+
+class PTYTeardownTest(ReapsHere):
     def test_a_with_block_whose_child_was_reaped_elsewhere_fails_naming_it(self):
         pty = PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)'])
         self._reaped_here(pty)
@@ -355,8 +357,8 @@ class PTYTeardownTest(BaseTest):
         self.assertRaises(ChildProcessError, os.waitpid, pty.child_pid, os.WNOHANG)
 
 
-class WaitTillChildExitsTest(BaseTest):
-    def _fails_naming(self, pty: PTY, *names: object, **kw: float) -> str:
+class WaitTillChildExitsTest(ReapsHere):
+    def _fails_naming(self, pty: PTY, end: ChildEnd, *details: str, **kw: float) -> str:
         # the failure is named once, by the wait: neither the with block nor GC names it again
         with redirect_stderr(err := StringIO()):
             with pty, self.assertRaises(AssertionError) as cm:
@@ -364,8 +366,9 @@ class WaitTillChildExitsTest(BaseTest):
             pty.__del__()
         self.ae(err.getvalue(), '')
         head = str(cm.exception).partition('. ')[0]  # the screen contents follow
-        for name in (f'PTY child {pty.child_pid}', *names):
-            self.assertIn(str(name), head)
+        self.assertTrue(head.startswith(f'PTY child {pty.child_pid} {end}'), head)
+        for detail in details:
+            self.assertIn(detail, head)
         return head
 
     def test_a_child_that_exits_with_the_required_status_returns_it(self) -> None:
@@ -386,7 +389,7 @@ class WaitTillChildExitsTest(BaseTest):
 
     def test_a_child_reaped_elsewhere_fails_naming_it_once(self) -> None:
         pty = PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)'])
-        self.ae(await_pid_exit(pty.child_pid, patience=30 if self.is_ci else 10), Exited(0))
+        self._reaped_here(pty)
         # no status was seen, so none is said to be wrong
         self.assertNotIn('required', self._fails_naming(pty, ReapedElsewhere(), require_exit_code=0))
 
@@ -394,8 +397,15 @@ class WaitTillChildExitsTest(BaseTest):
         self._fails_naming(PTY([kitty_exe(), '+runpy', 'import time; time.sleep(300)']), KilledAtDeadline(0.2, -signal.SIGKILL), timeout=0.2)
 
     def test_a_child_that_never_stops_writing_is_killed_at_the_timeout(self) -> None:
-        argv = [kitty_exe(), '+runpy', 'import sys\nwhile True: sys.stdout.write("x" * 65536)']
-        self._fails_naming(PTY(argv), KilledAtDeadline(0.5, -signal.SIGKILL), timeout=0.5)
+        pty = PTY([kitty_exe(), '+runpy', 'import sys\nwhile True: sys.stdout.write("x" * 65536)'])
+        pty.wait_till(lambda: 'x' in pty.screen_contents())  # the timeout runs against a writer, not a startup
+        self._fails_naming(pty, KilledAtDeadline(0.5, -signal.SIGKILL), timeout=0.5)
 
     def test_a_pid_that_names_a_process_group_is_refused(self) -> None:
-        self.assertRaises(ValueError, await_pid_exit, 0, 1)
+        for group in (0, -1):
+            self.assertRaises(ValueError, await_pid_exit, group, 1)
+
+    def test_a_second_wait_reports_the_first_ones_end(self) -> None:
+        with PTY([kitty_exe(), '+runpy', 'raise SystemExit(3)']) as pty:
+            self.ae(pty.wait_till_child_exits(), 3)
+            self.ae(pty.wait_till_child_exits(), 3)
