@@ -204,7 +204,9 @@ class PrivateTmux:
 
     def drawn(self, script: 'Script', pane: str | None = None) -> None:
         deadline = time.monotonic() + 10
-        while script.last not in self.tmux('capture-pane', '-p', '-S', '-', '-t', pane or self.pane) and time.monotonic() < deadline:
+        while script.last not in self.tmux('capture-pane', '-p', '-S', '-', '-t', pane or self.pane):
+            if time.monotonic() > deadline:  # the launcher runs python -O, which drops assert statements
+                raise AssertionError(f'the pane never printed {script.last!r}')
             time.sleep(0.02)
 
     def fmt(self, f: str, pane: str | None = None) -> str:
@@ -233,7 +235,7 @@ class PrivateTmux:
 class Script(NamedTuple):
     "What the pane runs, and the last line it prints before it waits: a search before that line is drawn searches part of it"
     command: str
-    last: str = ''
+    last: str
 
 
 @contextmanager
@@ -431,8 +433,7 @@ class TmuxFindIntegrationTest(BaseTest):
             'i=1; while [ $i -le 400 ]; do echo "row $i needle-$i"; i=$((i+1)); done; sleep 1;'
             ' j=0; while [ $j -lt 2000 ]; do echo "stream $j"; j=$((j+1)); sleep 0.01; done; sleep 600'
         )
-        with private_tmux(Script(script), history_limit=60) as t:
-            time.sleep(0.5)
+        with private_tmux(Script(script, 'row 400 needle-400'), history_limit=60) as t:
             state = TmuxFindState()
             t.tmux('copy-mode', '-t', t.pane)
             t.tmux('send', '-t', t.pane, '-X', 'search-backward-text', 'row ')

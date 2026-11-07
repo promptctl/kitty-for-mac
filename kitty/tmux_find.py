@@ -238,8 +238,8 @@ def run_tmux(argv: Sequence[str], env: Mapping[str, str], timeout: float) -> str
 class TmuxOperation:
     """One find operation's budget of time, and the one place it is enforced: every tmux command and every
     wait for a pane to redraw is made through it, so the lookup of the pane, the clears of other searches
-    and the search itself together cannot spend more than its deadline, FIND_DEADLINE unless a test driving a
-    real tmux widens it. The runner, the clock and the sleep are what a test stands in for."""
+    and the search itself together cannot spend more than its deadline, FIND_DEADLINE by default. The runner,
+    the clock and the sleep are what a test stands in for."""
 
     def __init__(
         self,

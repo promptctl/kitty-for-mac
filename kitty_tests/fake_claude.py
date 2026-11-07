@@ -21,6 +21,8 @@ import termios
 import tty
 
 COLS, ROWS = 100, 23
+# the permission dialog: its last row is the footer the tests see it start by
+DIALOG = ('Do you want to proceed?', '❯ 1. Yes', '  2. No, and tell Claude what to do differently')
 
 
 def main() -> None:
@@ -42,7 +44,7 @@ def main() -> None:
         conv = lines()
         rule = '─' * COLS
         if dialog:
-            rows = ['Do you want to proceed?', '❯ 1. Yes', '  2. No, and tell Claude what to do differently']
+            rows = list(DIALOG)
         elif state == 'P':
             rows = conv[-(ROWS - 6):] + [rule, '❯ ', rule, '  🍫 polled  ~/code (main)', '  ⏵⏵ auto mode on (shift+tab to cycle)']
         else:

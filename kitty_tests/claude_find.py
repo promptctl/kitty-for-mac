@@ -38,6 +38,7 @@ from kitty.find_backends import FindCount, FindMode, FindQuery, FindStatus
 from kitty.tmux_find import FIND_DEADLINE, PaneRef, TmuxError, TmuxOperation, run_tmux
 
 from .base import BaseTest
+from .fake_claude import DIALOG as FAKE_DIALOG
 from .tmux_find import PATIENT_DEADLINE, PrivateTmux, Script, patient, private_tmux
 
 RULE = '─' * 100
@@ -250,7 +251,7 @@ class FakeClaudeSession:
 
 
 # the view each mode of the fake draws when it starts
-FIRST_VIEW = {'': Prompt(), 'sticky': Prompt(), 'dialog': Unrecognised('  2. No, and tell Claude what to do differently')}
+FIRST_VIEW = {'': Prompt(), 'sticky': Prompt(), 'dialog': Unrecognised(FAKE_DIALOG[-1])}
 
 
 @contextmanager
@@ -260,14 +261,16 @@ def fake_claude(*initial: str, mode: str = '', then: str = 'sleep 600') -> Any:
         conversation, keylog = os.path.join(d, 'conversation.txt'), os.path.join(d, 'keys.log')
         with open(conversation, 'w') as f:
             f.write('\n'.join(initial) + '\n')
-        with private_tmux(Script(f'{PYTHON} {FAKE} {conversation} {keylog} {mode}; {then}')) as t:
+        with private_tmux(Script(f'{PYTHON} {FAKE} {conversation} {keylog} {mode}; {then}', '')) as t:
             session = FakeClaudeSession(t, d)
             os.makedirs(os.path.dirname(session.transcript))
             with open(session.transcript, 'w') as f:  # Claude Code has written the conversation so far
                 f.write('\n'.join(initial) + '\n')
             # the fake draws a whole view after it puts the tty in raw mode, and tmux can be read part way through one
             deadline = time.monotonic() + 10
-            while session.view() != FIRST_VIEW[mode] and time.monotonic() < deadline:
+            while (view := session.view()) != FIRST_VIEW[mode]:
+                if time.monotonic() > deadline:  # the launcher runs python -O, which drops assert statements
+                    raise AssertionError(f'the fake never drew {FIRST_VIEW[mode]}: the pane shows {view}')
                 time.sleep(0.02)
             yield session
 
@@ -628,7 +631,7 @@ class SelectionTest(BaseTest):
     def test_what_tmux_holds_is_the_selection_only_when_made_by_the_release(self):
         if not shutil.which('tmux'):
             self.skipTest('needs tmux')
-        with private_tmux(Script('sleep 600')) as t:
+        with private_tmux(Script('sleep 600', '')) as t:
             state = ClaudeFindState()
 
             def newest_copy_made_at() -> float:
