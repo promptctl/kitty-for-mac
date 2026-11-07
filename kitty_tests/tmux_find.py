@@ -53,6 +53,14 @@ from kitty.window import Window
 from .base import BaseTest
 
 TMUX = shutil.which('tmux')
+# A test driving a real tmux asks what the keys did, not how fast: a loaded machine (the full suite, a build)
+# can spend FIND_DEADLINE on a few tmux spawns, and the find then stops the pane part way. Only a wedged test
+# reaches this; a test of the deadline itself builds its operation with FIND_DEADLINE.
+PATIENT_DEADLINE = 30.0
+
+
+def patient(run: Any = None) -> TmuxOperation:
+    return TmuxOperation(run, deadline=PATIENT_DEADLINE)
 
 
 def default_query(text: str) -> FindQuery:
@@ -64,8 +72,8 @@ def proc(pid: int, *cmdline: str) -> ProcessDesc:
     return {'pid': pid, 'cwd': None, 'cmdline': list(cmdline)}
 
 
-def holding(state: TmuxFindState) -> TmuxFind:
-    f = TmuxFind.holding(state, TmuxOperation())
+def holding(state: TmuxFindState, op: TmuxOperation | None = None) -> TmuxFind:
+    f = TmuxFind.holding(state, op or patient())
     assert f is not None, 'the window holds no tmux search'
     return f
 
@@ -214,7 +222,7 @@ class PrivateTmux:
         return TmuxClient(self.client_proc.pid, self.exe, ('-S', self.socket), None, os.environ.get('PATH'))
 
     def finder(self, state: TmuxFindState, op: TmuxOperation | None = None) -> TmuxFind:
-        return TmuxFind(self.client(), state, op or TmuxOperation())
+        return TmuxFind(self.client(), state, op or patient())
 
 
 @contextmanager
@@ -454,12 +462,12 @@ class TmuxFindIntegrationTest(BaseTest):
             os.kill(server, signal.SIGSTOP)
             try:
                 start = time.monotonic()
-                t.finder(state).step(default_query('needle-5'), False)
+                t.finder(state, TmuxOperation()).step(default_query('needle-5'), False)
                 took = time.monotonic() - start
                 self.assertLess(took, FIND_DEADLINE + 1)
                 self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
                 self.assertIsNotNone(state.held, 'the pane is on record')
-                holding(state).clear()
+                holding(state, TmuxOperation()).clear()
                 self.assertIsNotNone(state.held, 'a clear that timed out is tried again')
             finally:
                 os.kill(server, signal.SIGCONT)
@@ -473,7 +481,7 @@ class TmuxFindIntegrationTest(BaseTest):
             state = TmuxFindState()
             client = t.client()
             dead = TmuxClient(2**22 + 5, client.exe, client.server_args, None, client.path)
-            TmuxFind(dead, state, TmuxOperation()).find(default_query('needle'))
+            TmuxFind(dead, state, patient()).find(default_query('needle'))
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
             self.assertIsNone(state.held, 'no pane was reached')
 
