@@ -9,6 +9,7 @@ import shlex
 import shutil
 import signal
 import struct
+import subprocess
 import sys
 import termios
 import time
@@ -285,6 +286,29 @@ def retry_on_failure(max_attempts=max_attempts, sleep_duration=sleep_duration):
         return wrapper
 
     return decorator
+
+
+def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 10) -> str:
+    # Awaits the exit of a child whose output has ended and says how it ended.
+    # Popen.wait() and poll() report a child that another waiter in this process
+    # reaped as exit 0, so this reads waitpid() itself and puts the status it
+    # reaps on p, where a later p.wait() finds it.
+    # [LAW:one-source-of-truth] p.returncode holds the one status reaped here
+    deadline = time.monotonic() + patience
+    while True:
+        try:
+            pid, status = os.waitpid(p.pid, os.WNOHANG)
+        except ChildProcessError:
+            return 'already reaped by another waiter in this process'
+        if pid:
+            p.returncode = os.waitstatus_to_exitcode(status)
+            return f'exited with status {p.returncode}'
+        # [LAW:no-ambient-temporal-coupling] only a wedged child reaches the deadline
+        if time.monotonic() > deadline:
+            p.kill()
+            p.wait()
+            return f'still running {patience}s after its output ended, killed'
+        time.sleep(0.01)
 
 
 class BaseTest(TestCase):

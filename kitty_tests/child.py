@@ -8,7 +8,7 @@ import tempfile
 from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
 from kitty.constants import is_macos, kitty_exe
 
-from .base import BaseTest
+from .base import BaseTest, await_exit
 
 
 def spawn_and_wait_for_ready(code: str, what: str) -> subprocess.Popen:
@@ -19,10 +19,12 @@ def spawn_and_wait_for_ready(code: str, what: str) -> subprocess.Popen:
     line = p.stdout.readline().strip()
     p.stdout.close()
     if line != b'ready':
-        p.kill()
+        if line:  # it is alive and printing something else
+            p.kill()
+        how = await_exit(p)
         err = p.stderr.read().decode('utf-8', 'replace')
         p.stderr.close()
-        raise AssertionError(f'Unexpected output from {what}: {line!r} exit code: {p.wait()} stderr:\n{err}')
+        raise AssertionError(f'Unexpected output from {what}: {line!r}, it {how}, stderr:\n{err}')
     p.stderr.close()
     return p
 
@@ -251,3 +253,27 @@ time.sleep(300)
             self.ae(c.root_pid, p.pid)
         finally:
             self._terminate_tree(p)
+
+
+class AwaitExitTest(BaseTest):
+    def _spawn(self, code: str) -> subprocess.Popen:
+        p = subprocess.Popen([kitty_exe(), '+runpy', code], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.ae(p.stdout.read(), b'')
+        p.stdout.close()
+        return p
+
+    def test_a_child_that_exits_without_printing_reports_its_status(self):
+        p = self._spawn('raise SystemExit(0)')
+        self.ae(await_exit(p), 'exited with status 0')
+        self.ae(p.wait(), 0)
+
+    def test_a_child_reaped_elsewhere_is_not_reported_as_exit_0(self):
+        p = self._spawn('raise SystemExit(3)')
+        status = os.waitpid(p.pid, 0)[1]
+        self.ae(await_exit(p), 'already reaped by another waiter in this process')
+        p.returncode = os.waitstatus_to_exitcode(status)  # the waiter that reaped it owns the status
+
+    def test_a_child_that_lives_on_after_its_output_ends_is_killed_at_the_deadline(self):
+        p = self._spawn('import os, time; os.close(1); time.sleep(300)')
+        self.ae(await_exit(p, patience=0.2), 'still running 0.2s after its output ended, killed')
+        self.ae(p.returncode, -9)
