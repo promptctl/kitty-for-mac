@@ -90,6 +90,14 @@ toggleWatch(EventLoopData *eld, id_type watch_id, int enabled) {
 
 static id_type timer_counter = 0;
 
+static Timer *
+find_timer(EventLoopData *eld, id_type timer_id) {
+    for (nfds_t i = 0; i < eld->timers_count; i++) {
+        if (eld->timers[i].id == timer_id) return eld->timers + i;
+    }
+    return NULL;
+}
+
 static int
 compare_timers(const void *a_, const void *b_) {
     const Timer *a = (const Timer *)a_, *b = (const Timer *)b_;
@@ -120,7 +128,7 @@ add_timer(EventLoopData *eld, const char *name, monotonic_t interval, int enable
     return timer_counter;
 }
 
-id_type
+GLFWAPI id_type
 addTimer(
     EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, timer_callback_func cb, void *cb_data, GLFWuserdatafreefun free) {
     return add_timer(eld, name, interval, enabled, repeats, (TimerFire){.kind = INTERNAL_TIMER, .internal = cb}, cb_data, free);
@@ -132,12 +140,12 @@ addClientTimer(
     return add_timer(eld, name, interval, enabled, repeats, (TimerFire){.kind = CLIENT_TIMER, .client = cb}, cb_data, free);
 }
 
-void
+GLFWAPI void
 removeTimer(EventLoopData *eld, id_type timer_id) {
     removeX(timers, timer_id, update_timers);
 }
 
-void
+GLFWAPI void
 removeAllTimers(EventLoopData *eld) {
     for (nfds_t i = 0; i < eld->timers_count; i++) {
         if (eld->timers[i].free && eld->timers[i].callback_data) eld->timers[i].free(eld->timers[i].id, eld->timers[i].callback_data);
@@ -147,26 +155,19 @@ removeAllTimers(EventLoopData *eld) {
 
 void
 toggleTimer(EventLoopData *eld, id_type timer_id, int enabled) {
-    for (nfds_t i = 0; i < eld->timers_count; i++) {
-        if (eld->timers[i].id == timer_id) {
-            monotonic_t trigger_at = enabled ? (monotonic() + eld->timers[i].interval) : MONOTONIC_T_MAX;
-            if (trigger_at != eld->timers[i].trigger_at) {
-                eld->timers[i].trigger_at = trigger_at;
-                update_timers(eld);
-            }
-            break;
-        }
+    Timer *t = find_timer(eld, timer_id);
+    if (!t) return;
+    monotonic_t trigger_at = enabled ? (monotonic() + t->interval) : MONOTONIC_T_MAX;
+    if (trigger_at != t->trigger_at) {
+        t->trigger_at = trigger_at;
+        update_timers(eld);
     }
 }
 
 void
 changeTimerInterval(EventLoopData *eld, id_type timer_id, monotonic_t interval) {
-    for (nfds_t i = 0; i < eld->timers_count; i++) {
-        if (eld->timers[i].id == timer_id) {
-            eld->timers[i].interval = interval;
-            break;
-        }
-    }
+    Timer *t = find_timer(eld, timer_id);
+    if (t) t->interval = interval;
 }
 
 
@@ -205,32 +206,29 @@ dispatchEvents(EventLoopData *eld) {
     }
 }
 
-unsigned
+GLFWAPI unsigned
 dispatchTimers(EventLoopData *eld) {
     if (!eld->timers_count || eld->timers[0].trigger_at == MONOTONIC_T_MAX) return 0;
-    static struct {
-        TimerFire fire;
-        id_type id;
-        void *data;
-        bool repeats;
-    } dispatches[sizeof(eld->timers) / sizeof(eld->timers[0])];
-    unsigned num_dispatches = 0;
+    // Callbacks may add, remove and reorder timers, so the round is fixed by id up front.
+    // [LAW:one-source-of-truth] Each id is looked up in the table before it is called: a timer an
+    // earlier callback removed is gone (and its data freed), so it is not called.
+    static id_type due[sizeof(eld->timers) / sizeof(eld->timers[0])];
+    unsigned num_due = 0, num_fired = 0;
     monotonic_t now = monotonic();
     for (nfds_t i = 0; i < eld->timers_count && eld->timers[i].trigger_at <= now; i++) {
         eld->timers[i].trigger_at = now + eld->timers[i].interval;
-        dispatches[num_dispatches].fire = eld->timers[i].fire;
-        dispatches[num_dispatches].id = eld->timers[i].id;
-        dispatches[num_dispatches].data = eld->timers[i].callback_data;
-        dispatches[num_dispatches].repeats = eld->timers[i].repeats;
-        num_dispatches++;
+        due[num_due++] = eld->timers[i].id;
     }
-    // we dispatch separately so that the callbacks can modify timers
-    for (unsigned i = 0; i < num_dispatches; i++) {
-        fire_timer(dispatches[i].fire, dispatches[i].id, dispatches[i].data);
-        if (!dispatches[i].repeats) { removeTimer(eld, dispatches[i].id); }
+    for (unsigned i = 0; i < num_due; i++) {
+        Timer *t = find_timer(eld, due[i]);
+        if (!t) continue;
+        bool repeats = t->repeats;
+        fire_timer(t->fire, t->id, t->callback_data);
+        num_fired++;
+        if (!repeats) { removeTimer(eld, due[i]); }
     }
-    if (num_dispatches) update_timers(eld);
-    return num_dispatches;
+    if (num_due) update_timers(eld);
+    return num_fired;
 }
 
 static void
