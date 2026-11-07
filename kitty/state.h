@@ -843,6 +843,10 @@ void send_prerendered_sprites_for_window(OSWindow *w);
 #include "cocoa_window.h"
 #endif
 void request_frame_render(OSWindow *w);
+// [LAW:single-enforcer] A frame is drawn, and pending work such as a find search is advanced,
+// only on a tick. Code that changes state outside the tick (GLFW input callbacks, AppKit events,
+// notification events, Python timers) requests one after it runs, unconditionally: a tick is
+// cheap. Code inside the tick must not, or the loop never sleeps.
 void request_tick_callback(void);
 typedef void (*timer_callback_fun)(id_type, void *);
 typedef void (*tick_callback_fun)(void *);

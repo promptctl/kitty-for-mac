@@ -1427,6 +1427,9 @@ python_timer_callback(id_type timer_id, void *data) {
     PyObject *ret = PyObject_CallFunction(callback, "K", id);
     if (ret == NULL) PyErr_Print();
     else Py_DECREF(ret);
+    // A timer fires outside the tick: see request_tick_callback. Every Python timer requests
+    // one here rather than each callback remembering to.
+    request_tick_callback();
 }
 
 static void
