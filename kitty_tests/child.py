@@ -5,12 +5,15 @@ import os
 import signal
 import subprocess
 import tempfile
+from contextlib import redirect_stderr
+from io import StringIO
+from unittest import TestResult
 from unittest.mock import patch
 
 from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
 from kitty.constants import is_macos, kitty_exe
 
-from .base import BaseTest, Exited, KilledAtDeadline, ReapedElsewhere, await_exit
+from .base import PTY, BaseTest, Exited, KilledAtDeadline, ReapedElsewhere, await_exit, await_pid_exit
 
 
 def spawn_and_wait_for_ready(code: str, what: str) -> subprocess.Popen:
@@ -305,3 +308,48 @@ class AwaitExitTest(BaseTest):
 
     def test_a_signal_death_names_the_signal(self):
         self.ae(str(Exited(-signal.SIGSEGV)), 'was killed by signal SIGSEGV')
+
+
+class PTYTeardownTest(BaseTest):
+    def _reaped_here(self, pty: PTY) -> None:
+        self.ae(await_pid_exit(pty.child_pid, patience=30 if self.is_ci else 10), Exited(0))
+
+    def test_a_with_block_whose_child_was_reaped_elsewhere_fails_naming_it(self):
+        pty = PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)'])
+        self._reaped_here(pty)
+        with self.assertRaises(AssertionError) as cm, pty:
+            pass
+        self.ae(str(cm.exception), f'PTY child {pty.child_pid} {ReapedElsewhere()}')
+
+    def test_a_created_pty_whose_child_was_reaped_elsewhere_fails_its_test_naming_it(self):
+        pids = []
+
+        class ReapsItsPTYChild(BaseTest):
+            def runTest(inner) -> None:
+                pty = inner.create_pty([kitty_exe(), '+runpy', 'raise SystemExit(0)'])
+                pids.append(pty.child_pid)
+                self._reaped_here(pty)
+
+        ReapsItsPTYChild().run(result := TestResult())
+        self.ae([msg.splitlines()[-1] for _, msg in result.failures + result.errors], [f'AssertionError: PTY child {pids[0]} {ReapedElsewhere()}'])
+
+    def test_a_failing_with_block_keeps_its_failure_and_notes_the_reap(self):
+        with self.assertRaises(ValueError) as cm, PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
+            self._reaped_here(pty)
+            raise ValueError('the test failed')
+        self.ae(cm.exception.__notes__, [f'PTY child {pty.child_pid} {ReapedElsewhere()}'])
+
+    def test_a_collected_pty_whose_child_was_reaped_elsewhere_names_it_on_stderr(self):
+        pty = PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)'])
+        self._reaped_here(pty)
+        with redirect_stderr(err := StringIO()):
+            pty.__del__()
+        self.ae(err.getvalue(), f'PTY child {pty.child_pid} {ReapedElsewhere()}\n')
+
+    def test_a_pty_torn_down_twice_reaps_once_and_reports_nothing(self):
+        with redirect_stderr(err := StringIO()):
+            with PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
+                pass
+            pty.__del__()
+        self.ae(err.getvalue(), '')
+        self.assertRaises(ChildProcessError, os.waitpid, pty.child_pid, os.WNOHANG)

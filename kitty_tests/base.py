@@ -325,32 +325,39 @@ class KilledAtDeadline:
 ChildEnd = Exited | ReapedElsewhere | KilledAtDeadline
 
 
-def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 30 if is_ci else 10) -> ChildEnd:
-    # Awaits the exit of a child the test has stopped reading and says how it
-    # ended. Popen's poll(), wait() and kill() report a child that another
-    # waiter in this process reaped as exit 0, so nothing may touch p through
-    # Popen before this runs. A status this reaps goes on p, where a later
-    # p.wait() finds it.
+def await_pid_exit(child_pid: int, patience: float) -> ChildEnd:
+    # Reaps a child the test has stopped reading and says how it ended,
+    # killing it once patience runs out.
     deadline = time.monotonic() + patience
     while True:
         try:
-            pid, status = os.waitpid(p.pid, os.WNOHANG)
+            pid, status = os.waitpid(child_pid, os.WNOHANG)
         except ChildProcessError:
             return ReapedElsewhere()
         if pid:
-            p.returncode = os.waitstatus_to_exitcode(status)
-            return Exited(p.returncode)
+            return Exited(os.waitstatus_to_exitcode(status))
         # [LAW:no-ambient-temporal-coupling] only a wedged child reaches the deadline
         if time.monotonic() >= deadline:
             try:
-                os.kill(p.pid, signal.SIGKILL)  # a zombie ignores it, so the status reaped next is still the true one
-                status = os.waitpid(p.pid, 0)[1]
+                os.kill(child_pid, signal.SIGKILL)  # a zombie ignores it, so the status reaped next is still the true one
+                status = os.waitstatus_to_exitcode(os.waitpid(child_pid, 0)[1])
             except (ProcessLookupError, ChildProcessError):
                 return ReapedElsewhere()
-            p.returncode = os.waitstatus_to_exitcode(status)
             # a child that exited between the poll and the kill was not killed by it
-            return KilledAtDeadline(patience, p.returncode) if p.returncode == -signal.SIGKILL else Exited(p.returncode)
+            return KilledAtDeadline(patience, status) if status == -signal.SIGKILL else Exited(status)
         time.sleep(0.01)
+
+
+def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 30 if is_ci else 10) -> ChildEnd:
+    # Popen's poll(), wait() and kill() report a child that another waiter in
+    # this process reaped as exit 0, so nothing may touch p through Popen
+    # before this runs. A status this reaps goes on p, where a later p.wait()
+    # finds it.
+    end = await_pid_exit(p.pid, patience)
+    match end:
+        case Exited(status) | KilledAtDeadline(_, status):
+            p.returncode = status
+    return end
 
 
 class BaseTest(TestCase):
@@ -404,7 +411,9 @@ class BaseTest(TestCase):
         needs_da1=False,
     ):
         self.set_options(options)
-        return PTY(
+        # [LAW:single-enforcer] teardown runs as a test cleanup, inside the test, where a
+        # failure reaches the result pipe; GC would run it after the test, out of reach
+        return self.enterContext(PTY(
             argv,
             lines,
             cols,
@@ -415,7 +424,7 @@ class BaseTest(TestCase):
             env,
             stdin_fd=stdin_fd,
             needs_da1=needs_da1,
-        )
+        ))
 
     def assertEqualAttributes(self, c1, c2):
         x1, y1, c1.x, c1.y = c1.x, c1.y, 0, 0
@@ -549,28 +558,38 @@ class PTY:
     def __enter__(self):
         return self
 
-    def __exit__(self, *a):
-        self.__del__()
+    def __exit__(self, exc_type, exc, tb):
+        # [LAW:no-silent-failure] teardown here runs inside the test, so the test fails
+        # and the result pipe carries the name; worker stderr is /dev/null in parallel runs.
+        # A failure already in flight stays the reported one and carries the name as a note.
+        if isinstance(end := self._teardown(), ReapedElsewhere):
+            msg = f'PTY child {self.child_pid} {end}'
+            if exc is None:
+                raise AssertionError(msg)
+            exc.add_note(msg)
 
     def __del__(self):
+        # GC runs outside any test, so stderr is the only place left to name it
+        if isinstance(end := self._teardown(), ReapedElsewhere):
+            print(f'PTY child {self.child_pid} {end}', file=sys.stderr)
+
+    def _teardown(self) -> ChildEnd | None:
+        # Says how the child ended, or None when there was no child left to reap.
+        # A shell still running at teardown is routine, so only ReapedElsewhere is news.
         if hasattr(self, 'master_fd'):
             os.close(self.master_fd)
             del self.master_fd
         if hasattr(self, 'slave_fd'):
             os.close(self.slave_fd)
             del self.slave_fd
-        if getattr(self, 'child_pid', 0) > 0 and not self.child_waited_for:
-            st = time.monotonic()
-            while time.monotonic() - st < 2:
-                pid, ec = os.waitpid(self.child_pid, os.WNOHANG)
-                if pid == self.child_pid:
-                    self.child_waited_for = True
-                    break
-                time.sleep(0.1)
-            if not self.child_waited_for:
-                os.kill(self.child_pid, signal.SIGKILL)
-                os.waitpid(self.child_pid, 0)
-                self.child_waited_for = True
+        # [LAW:no-ambient-temporal-coupling] a PTY in a with block is torn down twice, by
+        # __exit__ and then by GC; the flag is set once the reap returns, so the second run
+        # reaps nothing, while one after an interrupted reap still kills the child
+        if getattr(self, 'child_pid', 0) <= 0 or self.child_waited_for:
+            return None
+        end = await_pid_exit(self.child_pid, patience=2)
+        self.child_waited_for = True
+        return end
 
     def write_to_child(self, data, flush=False):
         if isinstance(data, str):
