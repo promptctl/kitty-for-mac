@@ -297,3 +297,4 @@ GLFWAPI bool glfwCocoaNativeViewHasFocus(void);
 bool _glfwCocoaOfferKeyToShortcuts(id event);
 void _glfwCocoaShortcutTookNativeViewKey(id event, id window);
 void _glfwCocoaReleaseNativeViewShortcutKey(id event, uintptr_t window_number);
+_GLFWwindow *_glfwCocoaWindowForWindowNumber(uintptr_t window_number);

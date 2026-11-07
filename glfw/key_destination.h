@@ -65,10 +65,11 @@ key_destination_for_key_down(KeyDestinationTable *t, unsigned short vk, bool is_
     return t->held[vk].kind == KEY_DEST_SHORTCUT ? (KeyDestination){KEY_DEST_APPKIT, 0} : t->held[vk];
 }
 
-// A shortcut that took a press makes the key's hold by, CONSUMED or SHORTCUT,
-// replacing whatever the press recorded: a press AppKit was given reaches a
-// native view's shortcuts only after the monitor recorded it. A repeat that a
-// shortcut took leaves the hold to the release.
+// A shortcut that took a press makes `by` the key's hold: CONSUMED for a menu
+// or macOS shortcut, SHORTCUT for a native view's. It replaces whatever the
+// monitor recorded, since a press AppKit was given reaches a native view's
+// shortcuts only after that record was made. A repeat that a shortcut took
+// leaves the hold to the release.
 static inline void
 key_destination_consume(KeyDestinationTable *t, unsigned short vk, bool is_repeat, KeyDestination by) {
     if (!is_repeat && key_destination_in_table(vk)) t->held[vk] = by;

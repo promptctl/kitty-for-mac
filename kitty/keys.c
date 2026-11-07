@@ -519,8 +519,8 @@ pyis_modifier_key(PyObject *self UNUSED, PyObject *a) {
 
 // Replays (event, vk, extra, current_kind, current_id) steps through a fresh
 // table and returns the (kind, id) each one is delivered to. event is 'down',
-// 'up', 'flags' or 'consume' (a shortcut took the keyDown, and the hold
-// becomes the step's current destination); extra is is_repeat for 'down' and
+// 'up', 'flags' or 'consume' (a shortcut took the keyDown with the step's
+// current destination, and the step returns the key's hold after it); extra is is_repeat for 'down' and
 // 'consume' and the event's modifierFlags for 'flags'.
 static PyObject *
 test_key_destination(PyObject *self UNUSED, PyObject *steps) {
@@ -538,7 +538,7 @@ test_key_destination(PyObject *self UNUSED, PyObject *steps) {
         if (strcmp(event, "down") == 0) dest = key_destination_for_key_down(&t, vk, extra != 0, current);
         else if (strcmp(event, "up") == 0) dest = key_destination_for_key_up(&t, vk, current);
         else if (strcmp(event, "flags") == 0) dest = key_destination_for_flags_changed(&t, vk, extra, current);
-        else if (strcmp(event, "consume") == 0) { key_destination_consume(&t, vk, extra != 0, current); dest = current; }
+        else if (strcmp(event, "consume") == 0) { key_destination_consume(&t, vk, extra != 0, current); dest = key_destination_in_table(vk) ? t.held[vk] : current; }
         else { PyErr_Format(PyExc_ValueError, "unknown key event: %s", event); Py_DECREF(step); return NULL; }
         Py_DECREF(step);
         RAII_PyObject(r, Py_BuildValue("iK", (int)dest.kind, (unsigned long long)dest.id));

@@ -1033,11 +1033,12 @@ class TestKeys(BaseTest):
         # a shortcut took the press: its repeats and release are dropped, whatever focus does
         t([('consume', a, 0, gone), ('down', a, 1, field), ('flags', cmd, 0, field), ('up', a, 0, term)], [gone, gone, field, gone])
         # a shortcut took only a repeat: the release still goes where the press went
-        t([('down', a, 0, term), ('consume', a, 1, gone), ('up', a, 0, field)], [term, gone, term])
-        # a native view's shortcut took a press AppKit was given: its repeats go to AppKit wherever focus
-        # is, its release once to the shortcut of the window that took it, and the next release follows focus
+        t([('down', a, 0, term), ('consume', a, 1, gone), ('up', a, 0, field)], [term, term, term])
+        # a native view's shortcut took a press AppKit was given: the table gives its repeats to AppKit
+        # whatever focus is (the monitor drops them while a terminal has focus), its release once to the
+        # shortcut of the window that took it, and the next release follows focus
         t([('down', a, 0, field), ('consume', a, 0, taken), ('down', a, 1, term), ('down', a, 1, field), ('up', a, 0, term),
            ('up', a, 0, field)], [field, taken, field, field, taken, field])
         # a shortcut taking a repeat leaves the hold, and a new press replaces it
-        t([('consume', a, 0, taken), ('consume', a, 1, taken_other), ('up', a, 0, field)], [taken, taken_other, taken])
+        t([('consume', a, 0, taken), ('consume', a, 1, taken_other), ('up', a, 0, field)], [taken, taken, taken])
         t([('consume', a, 0, taken), ('down', a, 0, term), ('up', a, 0, field)], [taken, term, term])

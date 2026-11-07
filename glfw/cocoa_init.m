@@ -898,8 +898,8 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
         // The terminal a window number names, or nil for a window that is not a
         // terminal (an alert, the About panel) or is gone.
         id<GLFWTerminalKeyInput> (^terminal_for_window_number)(NSInteger) = ^id<GLFWTerminalKeyInput>(NSInteger number) {
-            for (_GLFWwindow *window = _glfw.windowListHead; window; window = window->next) if ([window->ns.object windowNumber] == number) return window->ns.view;
-            return nil;
+            _GLFWwindow *window = _glfwCocoaWindowForWindowNumber((uintptr_t)number);
+            return window ? window->ns.view : nil;
         };
         KeyDestination (^current_key_destination)(void) = ^KeyDestination(void) {
             NSWindow *kw = [NSApp keyWindow];

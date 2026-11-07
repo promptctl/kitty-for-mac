@@ -1260,14 +1260,21 @@ _glfwCocoaOfferKeyToShortcuts(id event_) {
     return consumed;
 }
 
+// The window whose NSWindow has window_number, or NULL if it is gone.
+_GLFWwindow *
+_glfwCocoaWindowForWindowNumber(uintptr_t window_number) {
+    _GLFWwindow *window = _glfw.windowListHead;
+    while (window && (uintptr_t)[window->ns.object windowNumber] != window_number) window = window->next;
+    return window;
+}
+
 // The release of a press a shortcut took from a native view in the window
 // window_number names: it ends the shortcut, as a shortcut key's release does in
 // the terminal, and the view never sees it.
 void
 _glfwCocoaReleaseNativeViewShortcutKey(id event_, uintptr_t window_number) {
     NSEvent *event = event_;
-    _GLFWwindow *window = _glfw.windowListHead;
-    while (window && (uintptr_t)[window->ns.object windowNumber] != window_number) window = window->next;
+    _GLFWwindow *window = _glfwCocoaWindowForWindowNumber(window_number);
     if (!window) {
         debug_input("Shortcut key release ignored as the window its press went to is gone\n");
         return;
