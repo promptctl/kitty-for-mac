@@ -131,7 +131,8 @@ find_walk_main_buffer(Screen *self, FindRefeedRange lines, FindLineSink sink, vo
         }
         if (!append_physical_line(&b, line, i - first)) return FIND_WALK_OUT_OF_MEMORY;
         if (!continues(self, hb->abs_oldest_line + i)) {
-            const FindLogicalLine l = {.abs_first_line = hb->abs_oldest_line + first, .rows = i - first + 1, .text = b.text, .text_len = b.len, .cells = b.cells};
+            const FindLineStart line_start = first == 0 && hb->oldest_line_continues_evicted ? FIND_LINE_CONTINUES_EVICTED : FIND_LINE_STARTS_LINE;
+            const FindLogicalLine l = {.abs_first_line = hb->abs_oldest_line + first, .start = line_start, .rows = i - first + 1, .text = b.text, .text_len = b.len, .cells = b.cells};
             if (!sink(ctx, &l)) return FIND_WALK_SINK_STOPPED;
             b.len = 0;
             first = i + 1;
@@ -148,7 +149,7 @@ find_record_capture(Screen *self) {
     const index_type rows = buffer_limit(self) - first_line;
     FindFedRecord *r = malloc(sizeof(FindFedRecord));
     if (!r) return NULL;
-    *r = (FindFedRecord){.first_line = first_line, .abs_oldest_line = hb->abs_oldest_line, .rows = rows, .columns = columns};
+    *r = (FindFedRecord){.first_line = first_line, .abs_oldest_line = hb->abs_oldest_line, .oldest_line_continues_evicted = hb->oldest_line_continues_evicted, .rows = rows, .columns = columns};
     r->cells = malloc((size_t)rows * columns * sizeof(CPUCell));
     if (!r->cells) { free(r); return NULL; }
     for (index_type y = 0; y < rows; y++) memcpy(r->cells + (size_t)y * columns, cells_at(self, first_line + y), columns * sizeof(CPUCell));

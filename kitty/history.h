@@ -41,9 +41,13 @@ typedef struct {
     // lines below what changed. A number names a position, not content: a reset or a redraw
     // writes new text at the same number.
     uint64_t abs_oldest_line;
+    // Whether the line before abs_oldest_line, one that left the top of the ring, wraps onto
+    // it: the oldest line then starts mid-line. Eviction sets it from the line it drops; a clear,
+    // and a delete of the oldest line, leave the oldest line starting a line.
+    bool oldest_line_continues_evicted;
     // The lowest absolute line this ring's own operations have renumbered or rewritten since
     // find last read it (pop, delete_newest_lines, rewrap), UINT64_MAX for none. Pushes,
-    // eviction and clear move only abs_oldest_line. Find resets it each time it records the
+    // eviction and clear move only abs_oldest_line and oldest_line_continues_evicted. Find resets it each time it records the
     // buffer it fed (kitty/screen.c, record_fed_buffer).
     uint64_t abs_lowest_rewritten_line;
 } HistoryBuf;

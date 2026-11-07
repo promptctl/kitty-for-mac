@@ -2293,10 +2293,10 @@ class TestScreen(BaseTest):
         # the oracle: the live matches, after whatever happened since the query was set with
         # no read in between, are the matches a fresh search of the buffer finds now
         # the same query again changes nothing, so the fresh search starts from no query
-        def live_is_fresh(s, query):
+        def live_is_fresh(s, query, mode=MATCH_CASE):
             live = s.find_matches()
             s.find_clear()
-            s.find_set_query(query, *MATCH_CASE)
+            s.find_set_query(query, *mode)
             self.ae(live, s.find_matches())
             return live
 
@@ -2374,6 +2374,60 @@ class TestScreen(BaseTest):
         self.ae(s.find_count(), 1)
         s.clear_scrollback()
         self.ae(live_is_fresh(s, 'aa'), ((2, 0, 2, 1),))
+
+        # the rest of a wrapped line whose head was evicted starts mid-line, so ^ does not match
+        # there, live or afresh, and still matches at every line that starts a line
+        def head_evicted():
+            s = self.create_screen(cols=5, lines=2, scrollback=2)
+            s.draw('abcdefgh'), s.carriage_return(), s.linefeed()
+            return s
+        s = head_evicted()
+        s.find_set_query('^[a-f]', *REGEX)
+        self.ae(s.find_count(), 1)
+        lines_of(s, 'c', 'd')
+        self.assertTrue(s.historybuf.is_continued(0), 'the oldest line continues the evicted one')
+        self.ae(live_is_fresh(s, '^[a-f]', REGEX), ((2, 0, 2, 0), (3, 0, 3, 0)))
+        # a clear or a reset leaves the oldest line starting a line
+        s = head_evicted()
+        lines_of(s, 'c', 'd')
+        s.find_set_query('^[a-f]', *REGEX)
+        s.clear_scrollback()
+        self.ae(live_is_fresh(s, '^[a-f]', REGEX), ((3, 0, 3, 0),))
+        s = head_evicted()
+        lines_of(s, 'c', 'd')
+        s.find_set_query('^a', *REGEX)
+        s.reset()
+        s.draw('ab')
+        self.ae(live_is_fresh(s, '^a', REGEX), ((3, 0, 3, 0),))
+        # with every history line back on the screen, a clear changes how the oldest line starts
+        # without moving it
+        s = head_evicted()
+        lines_of(s, 'c', 'd')
+        s.reverse_scroll(2, True)
+        s.find_set_query('^[a-f]', *REGEX)
+        self.ae(s.find_matches(), ((2, 0, 2, 0),))
+        s.clear_scrollback()
+        self.ae(live_is_fresh(s, '^[a-f]', REGEX), ((1, 0, 1, 0), (2, 0, 2, 0)))
+        # erasing a command that holds every history line leaves the live prompt the oldest line,
+        # starting a line
+        s = self.create_screen(cols=5, lines=3, scrollback=3)
+        s.draw('abcde$'), s.carriage_return(), mark_prompt(s), s.draw('$ p1\r\n')
+        lines_of(s, 'x0', 'x1', 'x2', 'x3')
+        mark_prompt(s), s.draw('$ ')
+        self.assertTrue(s.historybuf.is_continued(0), 'the command continues the evicted line')
+        s.find_set_query('^\\$', *REGEX)
+        self.assertTrue(s.erase_last_command())
+        self.ae(s.historybuf.count, 0)
+        self.ae(live_is_fresh(s, '^\\$', REGEX), ((1, 0, 1, 0),))
+        # a rewrap keeps the oldest line continuing the evicted one, and a narrower one that
+        # evicts a wrapped row leaves the rest of its line continuing it
+        for cols, matches in ((6, ((2, 0, 2, 0), (3, 0, 3, 0))), (2, ((3, 0, 3, 0), (4, 0, 4, 0)))):
+            s = head_evicted()
+            lines_of(s, 'c', 'd')
+            s.find_set_query('^[a-h]', *REGEX)
+            s.resize(2, cols)
+            self.assertTrue(s.historybuf.is_continued(0), cols)
+            self.ae(live_is_fresh(s, '^[a-h]', REGEX), matches)
 
         # the buffer gets shorter, with a match on what is dropped and nothing output after
         s = self.create_screen(cols=5, lines=3, scrollback=10)

@@ -14,12 +14,17 @@ typedef struct {
     uint32_t row, x, x_last;
 } FindCellSpan;
 
+// Whether a logical line's first row starts a line or continues one that left the top of
+// scrollback, as only the oldest line can. Rust's FindLineStart.
+typedef enum { FIND_LINE_STARTS_LINE, FIND_LINE_CONTINUES_EVICTED } FindLineStart;
+
 // One logical line (physical lines joined through the wrapped-line flag) as UTF-8 text with
 // one FindCellSpan per byte, so a regex match on bytes [s, e) covers cells[s] .. cells[e - 1].
 // It is rows physical lines from abs_first_line, its rows past the last text included.
 // text and cells belong to the walker and are valid only for the duration of the sink call.
 typedef struct {
     uint64_t abs_first_line;
+    FindLineStart start;
     uint32_t rows;
     const char *text;
     size_t text_len;
@@ -63,9 +68,11 @@ FindWalkResult find_walk_main_buffer(Screen *self, FindRefeedRange lines, FindLi
 
 // What the engine was last fed, so the next read can tell which lines' text may have changed:
 // the main buffer's CPU cells (which hold all of a cell's text) from FIND_MULTICELL_REACH
-// history rows above screen row 0 through the last screen row, and the oldest line then.
+// history rows above screen row 0 through the last screen row, and the oldest line then and
+// whether it continued an evicted one.
 typedef struct FindFedRecord {
     uint64_t first_line, abs_oldest_line;
+    bool oldest_line_continues_evicted;
     index_type rows, columns;
     CPUCell *cells;
 } FindFedRecord;
