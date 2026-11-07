@@ -19,6 +19,7 @@ from kitty.claude_find import (
     ClaudeFindState,
     ClaudeHost,
     ClaudePane,
+    Hold,
     Key,
     NotClaude,
     NotYetWritten,
@@ -251,6 +252,12 @@ class FakeClaudeSession:
         return f
 
 
+def held(state: ClaudeFindState) -> Hold:
+    if state.held is None:
+        raise AssertionError('the window holds no Claude search')
+    return state.held
+
+
 # the view each mode of the fake draws when it starts
 FIRST_VIEW = {'': Prompt(), 'sticky': Prompt(), 'dialog': Unrecognised(FAKE_DIALOG[-1])}
 
@@ -334,10 +341,10 @@ class ClaudeFindIntegrationTest(BaseTest):
             self.person_opens_transcript(c)
             state = ClaudeFindState()
             c.finder(state).find(default_query('zebra'))  # leaves the pane in Claude's accepted search
-            self.assertIs(state.held.return_to, Transcript)
+            self.assertIs(held(state).return_to, Transcript)
             c.finder(state).find(default_query('filler'))  # the pane shows our search now, which reads as the transcript either way
             c.finder(state).step(default_query('filler'), False)
-            self.assertIs(state.held.return_to, Transcript)
+            self.assertIs(held(state).return_to, Transcript)
             c.holding(state).clear()
             self.ae(c.view(), Transcript())
 
@@ -346,11 +353,11 @@ class ClaudeFindIntegrationTest(BaseTest):
             state = ClaudeFindState()
             c.finder(state).find(default_query('zebra'))
             c.finder(state).find(default_query('filler'))
-            self.assertIs(state.held.return_to, Prompt)
+            self.assertIs(held(state).return_to, Prompt)
             c.holding(state).clear()
             self.ae(c.view(), Prompt())
             c.finder(state).find(default_query('zebra'))  # a new hold reads the view again
-            self.assertIs(state.held.return_to, Prompt)
+            self.assertIs(held(state).return_to, Prompt)
 
     def test_a_pane_that_began_in_the_persons_own_search_ends_in_the_transcript(self):
         with fake_claude(*CONVERSATION) as c:
@@ -572,7 +579,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             f = ClaudeFind(c.t.client(), state, patient(), c.host(), ClaudePane(other, 'sid-2', 1, c.dir))
             f.guarded(lambda pane: f.hold(pane.pane_id))
             self.ae(c.view(), Prompt(), 'the first pane was brought back')
-            self.ae(state.held.at.pane, other)  # type: ignore[union-attr]
+            self.ae(held(state).at.pane, other)
 
     def test_every_cause_is_logged_once_and_sets_unavailable(self):
         with fake_claude(*CONVERSATION) as c:

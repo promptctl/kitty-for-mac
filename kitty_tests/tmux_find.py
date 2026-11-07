@@ -919,7 +919,7 @@ class TmuxFindWindowTest(BaseTest):
         fake.pane = '%2'
         backend.find(default_query('x'))
         self.ae(len([c for c in fake.calls if 'list-clients' in c]), 1)
-        self.ae(w.tmux_find_state.held.pane, '%1')
+        self.ae(held_pane(w.tmux_find_state), '%1')
         self.assertTrue(all('%2' not in arg for call in fake.calls for arg in call), 'nothing was sent to the pane tmux switched to')
 
     def test_a_lookup_that_failed_is_what_the_search_reports(self):
