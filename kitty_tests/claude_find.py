@@ -39,7 +39,7 @@ from kitty.tmux_find import FIND_DEADLINE, PaneRef, TmuxError, TmuxOperation, ru
 
 from .base import BaseTest
 from .fake_claude import DIALOG as FAKE_DIALOG
-from .tmux_find import PATIENT_DEADLINE, PrivateTmux, Script, patient, private_tmux
+from .tmux_find import PATIENT_DEADLINE, PrivateTmux, Script, Sent, patient, private_tmux
 
 RULE = '─' * 100
 PYTHON = shutil.which('python3')
@@ -673,23 +673,22 @@ class SelectionTest(BaseTest):
 class OperationTest(BaseTest):
     def test_one_budget_across_commands_and_waits(self):
         clock = [0.0]
-        calls: list[Any] = []
 
         def run(argv, env, timeout):
-            calls.append(timeout)
             clock[0] += 0.4
             return ''
 
-        op = TmuxOperation(run, now=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        sent = Sent(run, clock=lambda: clock[0])
+        op = TmuxOperation(sent, now=sent.now, sleep=lambda s: clock.__setitem__(0, clock[0] + s))
         client = mock.Mock(exe='sh', server_args=(), tmpdir=None, path=os.environ.get('PATH'))
         op.tmux(client, 'a')
         op.tmux(client, 'b')
-        self.assertLess(calls[1], calls[0], 'each command gets what is left')
         with self.assertRaises(TmuxError) as cm:
             op.tmux(client, 'c')
             op.tmux(client, 'd')
         self.assertTrue(cm.exception.timed_out)
-        self.ae(len(calls), 3, 'no command is run once the budget is spent')
+        self.ae(len(sent.commands), 3, 'no command is run once the budget is spent')
+        self.ae(sent.overspent(op), [], 'each command gets exactly what is left')
 
     def test_a_value_that_stays_is_returned_after_the_patience(self):
         clock = [0.0]

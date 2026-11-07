@@ -3,7 +3,6 @@
 
 import fcntl
 import json
-import math
 import os
 import pty
 import re
@@ -74,34 +73,39 @@ def patient() -> TmuxOperation:
     return TmuxOperation(deadline=PATIENT_DEADLINE)
 
 
+class Command(NamedTuple):
+    "One command a deadline test's operation sent: the clock reading its timeout was worked out from, the timeout, and whether it was cut off at it"
+    at: float
+    timeout: float
+    cut_off: bool
+
+
 class Sent:
-    """The runner and the clock a deadline test gives its operation: it keeps, for each command, the clock reading
-    its timeout was worked out from, the timeout, and whether the command was cut off at it"""
+    "The runner and the clock a deadline test gives its operation: it keeps each Command it was asked to send"
 
     def __init__(self, run: Runner, clock: Callable[[], float] = time.monotonic) -> None:
         self.run, self.clock = run, clock
         self.read_at = clock()
-        self.given: list[tuple[float, float]] = []
-        self.cut_off: list[bool] = []
+        self.commands: list[Command] = []
 
     def now(self) -> float:
         self.read_at = self.clock()
         return self.read_at
 
-    def overspent(self, op: TmuxOperation) -> list[tuple[float, float]]:
-        "The commands that started at or past op's deadline, or were given more or less than the time left to it"
-        return [(at, timeout) for at, timeout in self.given if at >= op.expires_at or not math.isclose(at + timeout, op.expires_at)]
+    def overspent(self, op: TmuxOperation) -> list[Command]:
+        "The commands that started at or past op's deadline, or were given other than exactly the time left to it"
+        return [c for c in self.commands if c.at >= op.expires_at or c.timeout != op.expires_at - c.at]
 
     def __call__(self, argv: Sequence[str], env: Mapping[str, str], timeout: float) -> str:
         # the operation reads its clock, then sends with what is left: the last reading is this command's
-        self.given.append((self.read_at, timeout))
+        at, cut_off = self.read_at, False
         try:
-            out = self.run(argv, env, timeout)
+            return self.run(argv, env, timeout)
         except TmuxError as e:
-            self.cut_off.append(e.timed_out)
+            cut_off = e.timed_out
             raise
-        self.cut_off.append(False)
-        return out
+        finally:
+            self.commands.append(Command(at, timeout, cut_off))
 
 
 def default_query(text: str) -> FindQuery:
@@ -532,7 +536,7 @@ class TmuxFindIntegrationTest(BaseTest):
         operation returned at its deadline, give or take killing the command it cut off"""
         returned_at = op.now()
         self.ae(sent.overspent(op), [])
-        self.assertTrue(sent.cut_off and sent.cut_off[-1], f'the last command was not cut off at the deadline: {sent.cut_off}')
+        self.assertTrue(sent.commands and sent.commands[-1].cut_off, f'the last command was not cut off at the deadline: {sent.commands}')
         self.assertLessEqual(returned_at, op.expires_at + CUT_OFF_ALLOWANCE)
 
     def test_a_pipe_that_cannot_run_ends_in_the_deadline_with_a_typed_error(self):
@@ -940,6 +944,6 @@ class TmuxFindWindowTest(BaseTest):
         op = TmuxOperation(sent, now=sent.now, sleep=lambda s: None)
         backend = w.find_backend_to_search(op)
         backend.find(default_query('x'))
-        self.assertGreater(len(sent.given), 1)
+        self.assertGreater(len(sent.commands), 1)
         self.ae(sent.overspent(op), [], 'each command is given the time left, and none starts after it is spent')
-        self.assertLessEqual(len(sent.given), 4, 'the budget ended the operation; it did not start a second one')
+        self.assertLessEqual(len(sent.commands), 4, 'the budget ended the operation; it did not start a second one')
