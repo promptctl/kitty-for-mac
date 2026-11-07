@@ -1,0 +1,43 @@
+name: Fork lint
+# The lint steps of upstream's linux-package job (ci.yml), without its build and package steps,
+# so every push and PR to the fork gets a lint verdict.
+on: [push, pull_request]
+
+permissions:
+    contents: read
+
+jobs:
+    lint:
+        name: Lint and code formatting
+        runs-on: ubuntu-latest
+        steps:
+          - name: Checkout source code
+            uses: actions/checkout@v7.0.1
+            with:
+              persist-credentials: false
+
+          - name: Test for trailing whitespace
+            run: if grep -Inr '\s$' kitty kitty_tests kittens docs *.py *.asciidoc *.rst *.go .gitattributes .gitignore; then echo Trailing whitespace found, aborting.; exit 1; fi
+
+          - name: Test for bad code block formatting
+            run: if grep -Inr ':code:`\s' kitty kitty_tests kittens docs *.py *.asciidoc *.rst *.go .gitattributes .gitignore; then echo Space at code block start found, aborting.; exit 1; fi
+
+          - name: Set up Python
+            uses: actions/setup-python@v7.1.0
+            with:
+              python-version: "3.14"
+
+          - name: Install Go
+            uses: actions/setup-go@v7.0.0
+            with:
+              go-version-file: go.mod
+              cache: false
+
+          - name: Install lint tools
+            run: python -m pip install ruff clang-format
+
+          - name: Run ruff
+            run: ruff check .
+
+          - name: Check code formatting
+            run: python .github/workflows/ci.py check_code_formatting
