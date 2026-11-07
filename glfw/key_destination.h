@@ -65,14 +65,25 @@ key_destination_for_key_down(KeyDestinationTable *t, unsigned short vk, bool is_
     return t->held[vk].kind == KEY_DEST_SHORTCUT ? (KeyDestination){KEY_DEST_APPKIT, 0} : t->held[vk];
 }
 
-// A shortcut that took a press makes `by` the key's hold: CONSUMED for a menu
-// or macOS shortcut, SHORTCUT for a native view's. It replaces whatever the
-// monitor recorded, since a press AppKit was given reaches a native view's
-// shortcuts only after that record was made. A repeat that a shortcut took
-// leaves the hold to the release.
+// A shortcut that took a press replaces the key's hold; a repeat that a
+// shortcut took leaves the hold to the release.
 static inline void
-key_destination_consume(KeyDestinationTable *t, unsigned short vk, bool is_repeat, KeyDestination by) {
+key_destination_take_press(KeyDestinationTable *t, unsigned short vk, bool is_repeat, KeyDestination by) {
     if (!is_repeat && key_destination_in_table(vk)) t->held[vk] = by;
+}
+
+// A menu or macOS shortcut took the press: its repeats and release are dropped.
+static inline void
+key_destination_consume(KeyDestinationTable *t, unsigned short vk, bool is_repeat) {
+    key_destination_take_press(t, vk, is_repeat, (KeyDestination){KEY_DEST_CONSUMED, 0});
+}
+
+// A kitty shortcut of the terminal window window_number took a press bound for
+// its native view. It replaces the APPKIT hold the monitor recorded, since such
+// a press reaches the shortcuts only after AppKit was given it.
+static inline void
+key_destination_take_for_shortcut(KeyDestinationTable *t, unsigned short vk, bool is_repeat, uintptr_t window_number) {
+    key_destination_take_press(t, vk, is_repeat, (KeyDestination){KEY_DEST_SHORTCUT, window_number});
 }
 
 // A release goes where its press went and ends the hold; an unseen press's

@@ -1256,7 +1256,7 @@ _glfwCocoaOfferKeyToShortcuts(id event_) {
     [offered release];
     offered = [event retain];
     const bool consumed = send_native_view_shortcut_key(window, event, [event isARepeat] ? GLFW_REPEAT : GLFW_PRESS);
-    if (consumed) _glfwCocoaShortcutTookNativeViewKey(event, window->ns.object);
+    if (consumed) _glfwCocoaShortcutTookNativeViewKey(event, (uintptr_t)[window->ns.object windowNumber]);
     return consumed;
 }
 

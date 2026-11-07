@@ -827,8 +827,8 @@ _Static_assert(NX_DEVICELSHIFTKEYMASK == 0x2 && NX_DEVICERSHIFTKEYMASK == 0x4 &&
 static KeyDestinationTable key_destinations;
 
 void
-_glfwCocoaShortcutTookNativeViewKey(id event, id window) {
-    key_destination_consume(&key_destinations, [(NSEvent *)event keyCode], [(NSEvent *)event isARepeat], (KeyDestination){KEY_DEST_SHORTCUT, (uintptr_t)[(NSWindow *)window windowNumber]});
+_glfwCocoaShortcutTookNativeViewKey(id event, uintptr_t window_number) {
+    key_destination_take_for_shortcut(&key_destinations, [(NSEvent *)event keyCode], [(NSEvent *)event isARepeat], window_number);
 }
 
 GLFWAPI GLFWcocoanativeviewshortcutfun
@@ -892,7 +892,7 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
         // the modifiers of a pending switch to the next input source
         static NSEventModifierFlags input_source_switch_modifiers = 0;
         void (^record_shortcut_keydown)(NSEvent *, NSEventModifierFlags) = ^(NSEvent *event, NSEventModifierFlags switch_modifiers) {
-            key_destination_consume(&key_destinations, [event keyCode], [event isARepeat], (KeyDestination){KEY_DEST_CONSUMED, 0});
+            key_destination_consume(&key_destinations, [event keyCode], [event isARepeat]);
             input_source_switch_modifiers = switch_modifiers;
         };
         // The terminal a window number names, or nil for a window that is not a

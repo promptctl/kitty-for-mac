@@ -519,12 +519,15 @@ pyis_modifier_key(PyObject *self UNUSED, PyObject *a) {
 
 // Replays (event, vk, extra, current_kind, current_id) steps through a fresh
 // table and returns the (kind, id) each one is delivered to. event is 'down',
-// 'up', 'flags' or 'consume' (a shortcut took the keyDown with the step's
-// current destination, and the step returns the key's hold after it); extra is is_repeat for 'down' and
-// 'consume' and the event's modifierFlags for 'flags'.
+// 'up', 'flags', 'consume' (a menu or macOS shortcut took the keyDown) or
+// 'shortcut' (the shortcut of the terminal window current_id names took it);
+// those two return the key's hold after them, a key outside the table being
+// never held. extra is is_repeat for 'down', 'consume' and 'shortcut' and the
+// event's modifierFlags for 'flags'.
 static PyObject *
 test_key_destination(PyObject *self UNUSED, PyObject *steps) {
     KeyDestinationTable t = {0};
+#define held(vk) (key_destination_in_table(vk) ? t.held[vk] : KEY_DEST_NOT_HELD)
     RAII_PyObject(ans, PyList_New(0));
     RAII_PyObject(it, PyObject_GetIter(steps));
     if (!ans || !it) return NULL;
@@ -538,12 +541,14 @@ test_key_destination(PyObject *self UNUSED, PyObject *steps) {
         if (strcmp(event, "down") == 0) dest = key_destination_for_key_down(&t, vk, extra != 0, current);
         else if (strcmp(event, "up") == 0) dest = key_destination_for_key_up(&t, vk, current);
         else if (strcmp(event, "flags") == 0) dest = key_destination_for_flags_changed(&t, vk, extra, current);
-        else if (strcmp(event, "consume") == 0) { key_destination_consume(&t, vk, extra != 0, current); dest = key_destination_in_table(vk) ? t.held[vk] : current; }
+        else if (strcmp(event, "consume") == 0) { key_destination_consume(&t, vk, extra != 0); dest = held(vk); }
+        else if (strcmp(event, "shortcut") == 0) { key_destination_take_for_shortcut(&t, vk, extra != 0, current.id); dest = held(vk); }
         else { PyErr_Format(PyExc_ValueError, "unknown key event: %s", event); Py_DECREF(step); return NULL; }
         Py_DECREF(step);
         RAII_PyObject(r, Py_BuildValue("iK", (int)dest.kind, (unsigned long long)dest.id));
         if (!r || PyList_Append(ans, r) != 0) return NULL;
     }
+#undef held
     if (PyErr_Occurred()) return NULL;
     return Py_NewRef(ans);
 }
