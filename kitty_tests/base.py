@@ -16,6 +16,7 @@ import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from functools import wraps
+from typing import Callable
 from unittest import TestCase
 
 from kitty.config import finalize_keys, finalize_mouse_mappings
@@ -319,15 +320,16 @@ class KilledAtDeadline:
     status: int
 
     def __str__(self) -> str:
-        return f'was still running {self.patience}s after the test stopped reading it, so the test sent SIGKILL and it {describe_exit(self.status)}'
+        return f'was still running {self.patience}s after the test began waiting for it to exit, so the test sent SIGKILL and it {describe_exit(self.status)}'
 
 
 ChildEnd = Exited | ReapedElsewhere | KilledAtDeadline
 
 
-def await_pid_exit(child_pid: int, patience: float) -> ChildEnd:
-    # Reaps a child the test has stopped reading and says how it ended,
-    # killing it once patience runs out.
+def await_pid_exit(child_pid: int, patience: float, wait_a_moment: Callable[[], object] = lambda: time.sleep(0.01)) -> ChildEnd:
+    # The one reaper: waits for a child to end and says how, killing it once
+    # patience runs out. wait_a_moment runs between polls; a PTY drains its
+    # child there, since a child blocked writing to a full PTY never exits.
     deadline = time.monotonic() + patience
     while True:
         try:
@@ -345,7 +347,7 @@ def await_pid_exit(child_pid: int, patience: float) -> ChildEnd:
                 return ReapedElsewhere()
             # a child that exited between the poll and the kill was not killed by it
             return KilledAtDeadline(patience, status) if status == -signal.SIGKILL else Exited(status)
-        time.sleep(0.01)
+        wait_a_moment()
 
 
 def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 30 if is_ci else 10) -> ChildEnd:
@@ -641,32 +643,21 @@ class PTY:
                 msg += '. '
             raise TimeoutError(f'Timed out after {timeout} seconds: {msg}{self.screen_contents_for_error()}')
 
-    def wait_till_child_exits(self, timeout=30 if BaseTest.is_ci else 10, require_exit_code=None):
-        end_time = time.monotonic() + timeout
-        while time.monotonic() <= end_time:
-            si_pid, status = os.waitpid(self.child_pid, os.WNOHANG)
-            if si_pid == self.child_pid:
-                # The child has been reaped, calling waitpid() on it again
-                # would fail with ECHILD, so handle every kind of termination
-                # here, not just a normal exit.
-                self.child_waited_for = True
-                with suppress(OSError):
-                    while self.process_input_from_child(timeout=0):
-                        pass
-                if os.WIFSIGNALED(status):
-                    sig = os.WTERMSIG(status)
-                    try:
-                        signame = signal.Signals(sig).name
-                    except ValueError:
-                        signame = str(sig)
-                    raise AssertionError(f'Child was killed by signal: {signame}. {self.screen_contents_for_error()}')
-                ec = os.waitstatus_to_exitcode(status)
-                if require_exit_code is not None and ec != require_exit_code:
-                    raise AssertionError(f'Child exited with exit status: {status} code: {ec} != {require_exit_code}. {self.screen_contents_for_error()}')
+    def wait_till_child_exits(self, timeout=30 if BaseTest.is_ci else 10, require_exit_code=None) -> int:
+        end = await_pid_exit(self.child_pid, timeout, wait_a_moment=lambda: self._drain(timeout=0.02))
+        self.child_waited_for = True  # whatever the end, it is named here, so teardown has nothing left to report
+        self._drain(timeout=0)
+        match end:
+            case Exited(status) if status >= 0 and require_exit_code in (None, status):
                 return status
-            with suppress(OSError):
-                self.process_input_from_child(timeout=0.02)
-        raise AssertionError(f'Child did not exit in {timeout} seconds. {self.screen_contents_for_error()}')
+        required = '' if require_exit_code is None else f', but exit status {require_exit_code} was required'
+        raise AssertionError(f'PTY child {self.child_pid} {end}{required}. {self.screen_contents_for_error()}')
+
+    def _drain(self, timeout: float) -> None:
+        # reads until the child has nothing more to say within timeout; EIO once the child is gone ends it
+        with suppress(OSError):
+            while self.process_input_from_child(timeout=timeout):
+                timeout = 0
 
     def set_window_size(self, rows=25, columns=80, send_signal=True):
         if hasattr(self, 'screen'):
