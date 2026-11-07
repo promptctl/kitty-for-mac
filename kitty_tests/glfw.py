@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
+import fnmatch
 import os
 import re
 import sys
@@ -189,10 +190,17 @@ def _storage_statements(src: str):
         start = m.end()
 
 
+def is_wayland_scanner_output(name: str) -> bool:
+    # a Linux build generates these into glfw/ (the shape .gitignore matches, so a stale one from a
+    # dropped protocol counts too): their listener structs are libwayland's callbacks into GLFW, not
+    # GLFW's into its client
+    return fnmatch.fnmatchcase(name, 'wayland-*-client-protocol.[ch]')
+
+
 def unclassified_glfw_callbacks(glfw_dir: str = GLFW_DIR) -> list[str]:
     with_macros, sources = {}, {}
     for name in sorted(os.listdir(glfw_dir)):
-        if name.endswith(('.c', '.h', '.m')):
+        if name.endswith(('.c', '.h', '.m')) and not is_wayland_scanner_output(name):
             with open(os.path.join(glfw_dir, name)) as f:
                 with_macros[name] = _strip_c_comments(f.read())
                 sources[name] = _strip_c_directives(with_macros[name])
@@ -248,3 +256,13 @@ class TestGLFWCallbackKinds(BaseTest):
         # [LAW:single-enforcer] glfw/internal.h: an event delivered through _glfwDeliver requests the
         # tick; a callback that is not declared one or the other would skip that silently.
         self.assertEqual([], unclassified_glfw_callbacks())
+
+    def test_wayland_scanner_output_is_not_scanned(self):
+        import tempfile
+        unclassified = 'typedef void (* GLFWfixturefun)(int);\nstatic GLFWfixturefun held;\n'
+        with tempfile.TemporaryDirectory() as d:
+            for name in ('wayland-dropped-v1-client-protocol.h', 'wayland-xdg-shell-client-protocol.c', 'hand_written.h',
+                         'wayland-xdg-shell-server-protocol.h'):
+                with open(os.path.join(d, name), 'w') as f:
+                    f.write(unclassified)
+            self.assertEqual(['hand_written.h', 'wayland-xdg-shell-server-protocol.h'], [p.partition(':')[0] for p in unclassified_glfw_callbacks(d)])
