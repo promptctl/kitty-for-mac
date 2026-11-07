@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
+import json
 import os
 import re
 import sys
@@ -189,10 +190,20 @@ def _storage_statements(src: str):
         start = m.end()
 
 
+def wayland_scanner_outputs(glfw_dir: str = GLFW_DIR) -> frozenset[str]:
+    # [LAW:one-source-of-truth] the files a Linux build generates into glfw/, named by the build's own
+    # rule: their listener structs are libwayland's callbacks into GLFW, not GLFW's into its client
+    from setup import wayland_protocol_file_name
+    with open(os.path.join(glfw_dir, 'source-info.json')) as f:
+        protocols = json.load(f)['wayland']['protocols']
+    return frozenset(wayland_protocol_file_name(p, ext) for p in protocols for ext in 'ch')
+
+
 def unclassified_glfw_callbacks(glfw_dir: str = GLFW_DIR) -> list[str]:
     with_macros, sources = {}, {}
+    generated = wayland_scanner_outputs(glfw_dir)
     for name in sorted(os.listdir(glfw_dir)):
-        if name.endswith(('.c', '.h', '.m')):
+        if name.endswith(('.c', '.h', '.m')) and name not in generated:
             with open(os.path.join(glfw_dir, name)) as f:
                 with_macros[name] = _strip_c_comments(f.read())
                 sources[name] = _strip_c_directives(with_macros[name])
