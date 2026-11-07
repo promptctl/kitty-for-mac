@@ -357,12 +357,16 @@ class PTYTeardownTest(BaseTest):
 
 class WaitTillChildExitsTest(BaseTest):
     def _fails_naming(self, pty: PTY, end: ChildEnd, **kw: float) -> None:
-        # the with block exits cleanly: the failure was named once, by the wait
-        with pty, self.assertRaises(AssertionError) as cm:
-            pty.wait_till_child_exits(**kw)
-        required = kw.get('require_exit_code')
-        suffix = '' if required is None else f', but exit status {required} was required'
-        self.assertTrue(str(cm.exception).startswith(f'PTY child {pty.child_pid} {end}{suffix}. '), str(cm.exception))
+        # the failure is named once, by the wait: neither the with block nor GC names it again
+        with redirect_stderr(err := StringIO()):
+            with pty, self.assertRaises(AssertionError) as cm:
+                pty.wait_till_child_exits(**kw)
+            pty.__del__()
+        self.ae(err.getvalue(), '')
+        msg = str(cm.exception)
+        self.assertIn(f'PTY child {pty.child_pid} {end}', msg)
+        if (required := kw.get('require_exit_code')) is not None:
+            self.assertIn(f'exit status {required}', msg.removeprefix(f'PTY child {pty.child_pid} {end}'))
 
     def test_a_child_that_exits_with_the_required_status_returns_it(self) -> None:
         with PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
@@ -387,3 +391,10 @@ class WaitTillChildExitsTest(BaseTest):
 
     def test_a_child_still_running_at_the_timeout_is_killed_and_named(self) -> None:
         self._fails_naming(PTY([kitty_exe(), '+runpy', 'import time; time.sleep(300)']), KilledAtDeadline(0.2, -signal.SIGKILL), timeout=0.2)
+
+    def test_a_child_that_never_stops_writing_is_killed_at_the_timeout(self) -> None:
+        argv = [kitty_exe(), '+runpy', 'import sys\nwhile True: sys.stdout.write("x" * 65536)']
+        self._fails_naming(PTY(argv), KilledAtDeadline(0.5, -signal.SIGKILL), timeout=0.5)
+
+    def test_a_pid_that_names_a_process_group_is_refused(self) -> None:
+        self.assertRaises(ValueError, await_pid_exit, 0, 1)

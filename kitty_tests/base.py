@@ -13,10 +13,10 @@ import subprocess
 import sys
 import termios
 import time
+from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from functools import wraps
-from typing import Callable
 from unittest import TestCase
 
 from kitty.config import finalize_keys, finalize_mouse_mappings
@@ -330,6 +330,8 @@ def await_pid_exit(child_pid: int, patience: float, wait_a_moment: Callable[[], 
     # The one reaper: waits for a child to end and says how, killing it once
     # patience runs out. wait_a_moment runs between polls; a PTY drains its
     # child there, since a child blocked writing to a full PTY never exits.
+    if child_pid <= 0:  # waitpid and kill read 0 and below as a process group, the test runner's own included
+        raise ValueError(f'await_pid_exit needs the pid of one child, not {child_pid}')
     deadline = time.monotonic() + patience
     while True:
         try:
@@ -644,7 +646,7 @@ class PTY:
             raise TimeoutError(f'Timed out after {timeout} seconds: {msg}{self.screen_contents_for_error()}')
 
     def wait_till_child_exits(self, timeout=30 if BaseTest.is_ci else 10, require_exit_code=None) -> int:
-        end = await_pid_exit(self.child_pid, timeout, wait_a_moment=lambda: self._drain(timeout=0.02))
+        end = await_pid_exit(self.child_pid, timeout, wait_a_moment=self._read_once)
         self.child_waited_for = True  # whatever the end, it is named here, so teardown has nothing left to report
         self._drain(timeout=0)
         match end:
@@ -652,6 +654,14 @@ class PTY:
                 return status
         required = '' if require_exit_code is None else f', but exit status {require_exit_code} was required'
         raise AssertionError(f'PTY child {self.child_pid} {end}{required}. {self.screen_contents_for_error()}')
+
+    def _read_once(self) -> None:
+        # one read per poll, so a child that never stops writing still meets the deadline;
+        # a slave that hung up reads as nothing at once, so nothing read means wait instead
+        with suppress(OSError):
+            if self.process_input_from_child(timeout=0.02):
+                return
+        time.sleep(0.01)
 
     def _drain(self, timeout: float) -> None:
         # reads until the child has nothing more to say within timeout; EIO once the child is gone ends it
