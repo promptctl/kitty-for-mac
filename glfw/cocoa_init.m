@@ -1040,6 +1040,13 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
 
         if (!initializeTIS()) return false;
 
+        _glfw.ns.text_capacity = 512;
+        _glfw.ns.text = calloc(_glfw.ns.text_capacity, 1);
+        if (!_glfw.ns.text) {
+            _glfwInputError(GLFW_OUT_OF_MEMORY, NULL);
+            return false;
+        }
+
         _glfwPollMonitorsNS();
         return true;
 
@@ -1093,6 +1100,9 @@ _glfwPlatformTerminate(void) {
             _glfw.ns.inputSource = NULL;
             _glfw.ns.unicodeData = nil;
         }
+        free(_glfw.ns.text);
+        _glfw.ns.text = NULL;
+        _glfw.ns.text_capacity = 0;
 
         if (_glfw.ns.eventSource) {
             CFRelease(_glfw.ns.eventSource);
