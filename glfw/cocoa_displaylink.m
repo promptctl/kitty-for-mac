@@ -248,7 +248,7 @@ _glfwDispatchRenderFrame(void *passed_in_data) {
     while (w) {
         if (w->ns.renderFrameRequested && displayID == displayIDForWindow(w)) {
             w->ns.renderFrameRequested = false;
-            w->ns.renderFrameCallback((GLFWwindow *)w);
+            _glfwDeliver(w->ns.renderFrameCallback, (GLFWwindow *)w);
         }
         w = w->next;
     }

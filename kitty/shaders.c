@@ -1019,7 +1019,7 @@ fire_custom_shader_user_event(const char *name, id_type os_window_id) {
         osw->shader_anim_event_registry |= bit;
         queued = true;
     }
-    if (queued) wakeup_main_loop();
+    if (queued) request_tick_callback();
     return true;
 }
 

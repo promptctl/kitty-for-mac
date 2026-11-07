@@ -101,9 +101,8 @@ update_timers(EventLoopData *eld) {
     if (eld->timers_count > 1) qsort(eld->timers, eld->timers_count, sizeof(eld->timers[0]), compare_timers);
 }
 
-id_type
-addTimer(
-    EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, timer_callback_func cb, void *cb_data, GLFWuserdatafreefun free) {
+static id_type
+add_timer(EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, TimerFire fire, void *cb_data, GLFWuserdatafreefun free) {
     if (eld->timers_count >= sizeof(eld->timers) / sizeof(eld->timers[0])) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Too many timers added");
         return 0;
@@ -113,12 +112,24 @@ addTimer(
     t->name = name;
     t->trigger_at = enabled ? monotonic() + interval : MONOTONIC_T_MAX;
     t->repeats = repeats;
-    t->callback = cb;
+    t->fire = fire;
     t->callback_data = cb_data;
     t->free = free;
     t->id = ++timer_counter;
     update_timers(eld);
     return timer_counter;
+}
+
+id_type
+addTimer(
+    EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, timer_callback_func cb, void *cb_data, GLFWuserdatafreefun free) {
+    return add_timer(eld, name, interval, enabled, repeats, (TimerFire){.kind = INTERNAL_TIMER, .internal = cb}, cb_data, free);
+}
+
+id_type
+addClientTimer(
+    EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, ClientTimerFire cb, void *cb_data, GLFWuserdatafreefun free) {
+    return add_timer(eld, name, interval, enabled, repeats, (TimerFire){.kind = CLIENT_TIMER, .client = cb}, cb_data, free);
 }
 
 void
@@ -198,7 +209,7 @@ unsigned
 dispatchTimers(EventLoopData *eld) {
     if (!eld->timers_count || eld->timers[0].trigger_at == MONOTONIC_T_MAX) return 0;
     static struct {
-        timer_callback_func func;
+        TimerFire fire;
         id_type id;
         void *data;
         bool repeats;
@@ -207,7 +218,7 @@ dispatchTimers(EventLoopData *eld) {
     monotonic_t now = monotonic();
     for (nfds_t i = 0; i < eld->timers_count && eld->timers[i].trigger_at <= now; i++) {
         eld->timers[i].trigger_at = now + eld->timers[i].interval;
-        dispatches[num_dispatches].func = eld->timers[i].callback;
+        dispatches[num_dispatches].fire = eld->timers[i].fire;
         dispatches[num_dispatches].id = eld->timers[i].id;
         dispatches[num_dispatches].data = eld->timers[i].callback_data;
         dispatches[num_dispatches].repeats = eld->timers[i].repeats;
@@ -215,7 +226,7 @@ dispatchTimers(EventLoopData *eld) {
     }
     // we dispatch separately so that the callbacks can modify timers
     for (unsigned i = 0; i < num_dispatches; i++) {
-        dispatches[i].func(dispatches[i].id, dispatches[i].data);
+        fire_timer(dispatches[i].fire, dispatches[i].id, dispatches[i].data);
         if (!dispatches[i].repeats) { removeTimer(eld, dispatches[i].id); }
     }
     if (num_dispatches) update_timers(eld);

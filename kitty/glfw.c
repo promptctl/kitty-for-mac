@@ -64,12 +64,12 @@ static void
 on_system_color_scheme_change(GLFWColorScheme appearance, bool is_initial_value) {
     const char *which = appearance_name(appearance);
     debug("system color-scheme changed to: %s is_initial_value: %d\n", which, is_initial_value);
-    call_boss_outside_tick(on_system_color_scheme_change, "sO", which, is_initial_value ? Py_True : Py_False);
+    call_boss(on_system_color_scheme_change, "sO", which, is_initial_value ? Py_True : Py_False);
 }
 
 static void
 on_clipboard_lost(GLFWClipboardType which) {
-    call_boss_outside_tick(on_clipboard_lost, "s", which == GLFW_CLIPBOARD ? "clipboard" : "primary");
+    call_boss(on_clipboard_lost, "s", which == GLFW_CLIPBOARD ? "clipboard" : "primary");
 }
 
 static bool
@@ -278,7 +278,7 @@ is_window_ready_for_callbacks(void) {
     return true;
 }
 
-#define WINDOW_CALLBACK(name, fmt, ...) call_boss_outside_tick(name, "K" fmt, global_state.callback_os_window->id, __VA_ARGS__)
+#define WINDOW_CALLBACK(name, fmt, ...) call_boss(name, "K" fmt, global_state.callback_os_window->id, __VA_ARGS__)
 
 static void
 show_mouse_cursor(GLFWwindow *w) {
@@ -327,7 +327,6 @@ window_close_callback(GLFWwindow *window) {
     if (!set_callback_window(window)) return;
     global_state.callback_os_window->close_request = CONFIRMABLE_CLOSE_REQUESTED;
     global_state.has_pending_closes = true;
-    request_tick_callback();
     glfwSetWindowShouldClose(window, false);
     global_state.callback_os_window = NULL;
 }
@@ -338,7 +337,6 @@ window_occlusion_callback(GLFWwindow *window, bool occluded) {
     debug("OSWindow %llu occlusion state changed, occluded: %d\n", global_state.callback_os_window->id, occluded);
     if (!occluded) global_state.check_for_active_animated_images = true;
     update_os_window_visibility_reports(global_state.callback_os_window);
-    request_tick_callback();
     global_state.callback_os_window = NULL;
 }
 
@@ -347,7 +345,6 @@ window_iconify_callback(GLFWwindow *window, int iconified) {
     if (!set_callback_window(window)) return;
     if (!iconified) global_state.check_for_active_animated_images = true;
     update_os_window_visibility_reports(global_state.callback_os_window);
-    request_tick_callback();
     global_state.callback_os_window = NULL;
 }
 
@@ -364,7 +361,6 @@ cocoa_out_of_sequence_render(OSWindow *window) {
         debug_rendering("Cocoa OpenGL framebuffer broken, re-creating\n");
         if (!glfwCocoaRecreateGLDrawable(window->handle) || !current_framebuffer_is_ok()) {
             debug_rendering("Cocoa OpenGL framebuffer re-creation failed\n");
-            request_tick_callback();
             return;
         }
         // Recreation creates a new context, which does not inherit per-context
@@ -421,7 +417,6 @@ live_resize_callback(GLFWwindow *w, bool started) {
     global_state.has_pending_resizes = true;
     if (!started) {
         global_state.callback_os_window->live_resize.os_says_resize_complete = true;
-        request_tick_callback();
     }
     global_state.callback_os_window = NULL;
 }
@@ -442,7 +437,6 @@ framebuffer_size_callback(GLFWwindow *w, int width, int height) {
         window->live_resize.num_of_resize_events++;
         make_os_window_context_current(window);
         set_gpu_viewport(width, height);
-        request_tick_callback();
     } else log_error("Ignoring resize request for tiny size: %dx%d", width, height);
     global_state.callback_os_window = NULL;
 }
@@ -458,7 +452,6 @@ dpi_change_callback(GLFWwindow *w, float x_scale UNUSED, float y_scale UNUSED) {
     global_state.has_pending_resizes = true;
     window->live_resize.last_resize_event_at = monotonic();
     global_state.callback_os_window = NULL;
-    request_tick_callback();
 }
 
 static void
@@ -466,7 +459,6 @@ refresh_callback(GLFWwindow *w) {
     if (!set_callback_window(w)) return;
     if (!global_state.callback_os_window->redraw_count) global_state.callback_os_window->redraw_count++;
     global_state.callback_os_window = NULL;
-    request_tick_callback();
 }
 
 static int
@@ -611,7 +603,6 @@ key_callback(GLFWwindow *w, GLFWkeyevent *ev) {
         if (!ev->fake_event_on_focus_change) on_key_input(ev);
     }
     global_state.callback_os_window = NULL;
-    request_tick_callback();
 }
 
 #ifdef __APPLE__
@@ -620,7 +611,6 @@ native_view_shortcut_callback(GLFWwindow *w, GLFWkeyevent *ev) {
     if (!set_callback_window(w)) return false;
     const bool consumed = is_window_ready_for_callbacks() && on_native_view_key(ev);
     global_state.callback_os_window = NULL;
-    request_tick_callback();
     return consumed;
 }
 #endif
@@ -657,7 +647,6 @@ cursor_enter_callback(GLFWwindow *w, int entered) {
         debug_input("Mouse cursor left window: %llu\n", global_state.callback_os_window->id);
         if (is_window_ready_for_callbacks()) leave_event(global_state.mods_at_last_key_or_button_event);
     }
-    request_tick_callback();
     global_state.callback_os_window = NULL;
 }
 
@@ -713,7 +702,6 @@ mouse_button_callback(GLFWwindow *w, int button, int action, int mods) {
         }
         dispatch_mouse_button(window, button, action, mods);
     }
-    request_tick_callback();
     global_state.callback_os_window = NULL;
 }
 
@@ -728,7 +716,6 @@ on_mouse_position_update(double x, double y) {
     set_os_window_mouse_position(global_state.callback_os_window, x, y);
     global_state.callback_os_window->has_received_cursor_pos_event = true;
     if (is_window_ready_for_callbacks()) mouse_event(-1, global_state.mods_at_last_key_or_button_event, -1);
-    request_tick_callback();
 }
 
 static void
@@ -746,7 +733,6 @@ scroll_callback(GLFWwindow *w, const GLFWScrollEvent *ev) {
     if (OPT(mouse_hide.scroll_unhide)) cursor_active_callback(now);
     global_state.callback_os_window->last_mouse_activity_at = now;
     if (is_window_ready_for_callbacks()) scroll_event(ev);
-    request_tick_callback();
     global_state.callback_os_window = NULL;
 }
 
@@ -914,7 +900,6 @@ touch_callback(GLFWwindow *w, const GLFWTouchEvent *ev) {
     }
     if (ev->type == GLFW_TOUCH_CANCEL) {
         touch_gesture_cancel(osw, mods);
-        request_tick_callback();
         global_state.callback_os_window = NULL;
         return;
     }
@@ -947,7 +932,6 @@ touch_callback(GLFWwindow *w, const GLFWTouchEvent *ev) {
     }
     // The sequence is over once every finger has lifted
     if (ev->type == GLFW_TOUCH_END) touch_gesture_reset();
-    request_tick_callback();
     global_state.callback_os_window = NULL;
 }
 // }}}
@@ -1016,7 +1000,6 @@ window_focus_callback(GLFWwindow *w, int focused) {
             }
         }
     }
-    request_tick_callback();
     if (osw && osw->handle && !focused && focus_changed && osw->hide_on_focus_loss && glfwGetWindowAttrib(osw->handle, GLFW_VISIBLE)) {
         add_main_loop_timer(0, false, update_os_window_visibility_based_on_focus, (void *)(uintptr_t)osw->id, NULL);
     }
@@ -1040,7 +1023,6 @@ native_view_focus_callback(GLFWwindow *w, bool native_view_has_focus) {
             if (osw->is_focused && is_window_ready_for_callbacks()) {
                 WINDOW_CALLBACK(on_focus, "O", terminal_has_focus(osw) ? Py_True : Py_False);
             }
-            request_tick_callback();
         }
     }
     global_state.callback_os_window = outer_id ? os_window_for_id(outer_id) : NULL;
@@ -1138,7 +1120,7 @@ read_drop_data(GLFWwindow *window, GLFWDropEvent *ev) {
             // in the window, keep them alive for a while, see Boss.dropped_file_promises_dir()
             if (glfwCocoaPreserveDroppedFilePromises) {
                 const char *promises_dir = glfwCocoaPreserveDroppedFilePromises(window);
-                if (promises_dir && promises_dir[0]) call_boss_outside_tick(dropped_file_promises_dir, "s", promises_dir);
+                if (promises_dir && promises_dir[0]) call_boss(dropped_file_promises_dir, "s", promises_dir);
             }
 #endif
             WINDOW_CALLBACK(
@@ -1223,7 +1205,7 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
                 ev->operation.preferred = w->drop.accepted_operation;
                 break;
             }
-            call_boss_outside_tick(
+            call_boss(
                 on_drop_move, "KiiOO", os_window->id, os_window->last_drag_event.x, os_window->last_drag_event.y, ev->from_self ? Py_True : Py_False, Py_False);
             /* fallthrough */
         case GLFW_DROP_STATUS_UPDATE:
@@ -1252,11 +1234,11 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
                     if (w->drop.hovered) drop_left_child(w);
                 }
             }
-            call_boss_outside_tick(
+            call_boss(
                 on_drop_move, "KiiOO", os_window->id, os_window->last_drag_event.x, os_window->last_drag_event.y, ev->from_self ? Py_True : Py_False, Py_True);
             break;
         case GLFW_DROP_DROP:
-            if (w && OPT(focus_follows_mouse).on_drop) { call_boss_outside_tick(set_active_window, "KO", w->id, Py_True); }
+            if (w && OPT(focus_follows_mouse).on_drop) { call_boss(set_active_window, "KO", w->id, Py_True); }
             Py_CLEAR(global_state.drop_dest.data);
             global_state.drop_dest.drop_has_happened = true;
             global_state.drop_dest.client_window_data_request = 0;
@@ -1322,12 +1304,10 @@ application_close_requested_callback(int flags) {
     if (flags & GLFW_APPLICATION_CLOSE_FATAL_ERROR) {
         global_state.quit_request = IMPERATIVE_CLOSE_REQUESTED;
         global_state.has_pending_closes = true;
-        request_tick_callback();
     } else {
         if (global_state.quit_request == NO_CLOSE_REQUESTED) {
             global_state.has_pending_closes = true;
             global_state.quit_request = CONFIRMABLE_CLOSE_REQUESTED;
-            request_tick_callback();
         }
     }
 }
@@ -1354,7 +1334,7 @@ static void
 drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
 #define finish                                                                           \
     {                                                                                    \
-        call_boss_outside_tick(                                                          \
+        call_boss(                                                                       \
             on_drag_source_finished,                                                     \
             "OOsiOOO",                                                                   \
             ds.was_dropped && !global_state.drop_dest.os_window_id ? Py_True : Py_False, \
@@ -2772,7 +2752,6 @@ dbus_set_notification_callback(PyObject *self UNUSED, PyObject *callback) {
                 's', _Generic((a), unsigned long: 'k', unsigned long long: 'K'), _Generic((b), unsigned long: 'k', const char *: 's'), '\0'}; \
             RAII_PyObject(ret, PyObject_CallFunction(dbus_notification_callback, call_args_fmt, event_type, a, b));                           \
             if (!ret) PyErr_Print();                                                                                                          \
-            request_tick_callback();                                                                                                          \
         }                                                                                                                                     \
     }
 
@@ -2796,7 +2775,6 @@ dbus_session_state_changed(uint32_t state) {
     if (dbus_session_state_callback) {
         RAII_PyObject(ret, PyObject_CallFunction(dbus_session_state_callback, "k", (unsigned long)state));
         if (!ret) PyErr_Print();
-        request_tick_callback();
     }
 }
 
@@ -3205,7 +3183,6 @@ activation_token_callback(GLFWwindow *window UNUSED, const char *token, void *da
     if (ret == NULL) PyErr_Print();
     else Py_DECREF(ret);
     Py_CLEAR(data);
-    request_tick_callback();
 }
 
 void
@@ -3446,11 +3423,6 @@ swap_window_buffers(OSWindow *os_window) {
         glfwSwapBuffers(os_window->handle);
         os_window->keep_rendering_till_swap = 0;
     }
-}
-
-void
-wakeup_main_loop(void) {
-    glfwPostEmptyEvent();
 }
 
 bool
@@ -3730,7 +3702,6 @@ cocoa_frame_request_callback(GLFWwindow *window) {
         if (global_state.os_windows[i].handle == window) {
             global_state.os_windows[i].render_state = RENDER_FRAME_READY;
             global_state.os_windows[i].last_render_frame_received_at = monotonic();
-            request_tick_callback();
             break;
         }
     }
@@ -3761,7 +3732,6 @@ wayland_frame_request_callback(id_type os_window_id) {
         if (global_state.os_windows[i].id == os_window_id) {
             global_state.os_windows[i].render_state = RENDER_FRAME_READY;
             global_state.os_windows[i].last_render_frame_received_at = monotonic();
-            request_tick_callback();
             break;
         }
     }

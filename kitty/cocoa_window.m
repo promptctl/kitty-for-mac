@@ -25,6 +25,36 @@
 #include <objc/runtime.h>
 #include "KittySwift-Swift.h"
 
+// [LAW:single-enforcer] This file is kitty's AppKit boundary: AppKit calls it directly, not through a
+// GLFW delivery, so a call into Python from here is one of two kinds, as GLFW's callbacks are. An
+// event changes state and requests the tick itself (see request_tick_callback); a query answers
+// AppKit from Boss on AppKit's schedule and requests nothing. Every other way into Python is
+// poisoned below, so a new bridge cannot compile without picking one.
+#define call_boss_from_appkit(name, ...)                                                              \
+    do {                                                                                              \
+        if (global_state.boss) {                                                                      \
+            RAII_PyObject(_appkit_ret, PyObject_CallMethod(global_state.boss, #name, __VA_ARGS__));   \
+            if (!_appkit_ret) PyErr_Print();                                                          \
+        }                                                                                             \
+        request_tick_callback();                                                                      \
+    } while (0)
+#define call_python_from_appkit(callable, fmt, ...)                                  \
+    do {                                                                             \
+        RAII_PyObject(_appkit_ret, PyObject_CallFunction(callable, fmt, __VA_ARGS__)); \
+        if (!_appkit_ret) PyErr_Print();                                             \
+        request_tick_callback();                                                     \
+    } while (0)
+
+static bool
+boss_answers(const char *method, id_type os_window_id) {
+    if (!global_state.boss) return false;
+    RAII_PyObject(ret, PyObject_CallMethod(global_state.boss, method, "K", (unsigned long long)os_window_id));
+    if (!ret) { PyErr_Print(); return false; }
+    return ret == Py_True;
+}
+#undef call_boss
+#pragma GCC poison PyObject_Call PyObject_CallObject PyObject_CallNoArgs PyObject_CallOneArg PyObject_CallFunction PyObject_CallFunctionObjArgs PyObject_CallMethod PyObject_CallMethodNoArgs PyObject_CallMethodOneArg PyObject_CallMethodObjArgs PyObject_Vectorcall PyObject_VectorcallDict PyObject_VectorcallMethod PyVectorcall_Call
+
 static inline void
 cleanup_cfrelease(void *__p) {
     CFTypeRef *tp = (CFTypeRef *)__p;
@@ -277,10 +307,8 @@ key_window_screen(void) {
 static bool
 boss_find_answer(const char *method) {
     OSWindow *osw = current_os_window();
-    if (!osw || ![NSApp keyWindow] || !global_state.boss) return false;
-    RAII_PyObject(ret, PyObject_CallMethod(global_state.boss, method, "K", (unsigned long long)osw->id));
-    if (!ret) { PyErr_Print(); return false; }
-    return ret == Py_True;
+    if (!osw || ![NSApp keyWindow]) return false;
+    return boss_answers(method, osw->id);
 }
 
 // The find bar's events, run on the main thread as plain calls into Boss: they must not
@@ -290,22 +318,19 @@ boss_find_answer(const char *method) {
 
 @implementation FindBarBridge
 - (void)findBar:(NSWindow *)window queryChanged:(NSString *)text {
-    call_boss_outside_tick(find_bar_query_changed, "Ks", cocoa_os_window_id_for_window(window), [text UTF8String]);
+    call_boss_from_appkit(find_bar_query_changed, "Ks", cocoa_os_window_id_for_window(window), [text UTF8String]);
 }
 - (void)findBar:(NSWindow *)window step:(BOOL)forward {
-    call_boss_outside_tick(find_bar_step, "KO", cocoa_os_window_id_for_window(window), forward ? Py_True : Py_False);
+    call_boss_from_appkit(find_bar_step, "KO", cocoa_os_window_id_for_window(window), forward ? Py_True : Py_False);
 }
 - (void)findBarClosed:(NSWindow *)window {
-    call_boss_outside_tick(find_bar_closed, "K", cocoa_os_window_id_for_window(window));
+    call_boss_from_appkit(find_bar_closed, "K", cocoa_os_window_id_for_window(window));
 }
 - (void)findBarModeChangedWithCaseRule:(KittyFindCaseRule)caseRule syntax:(KittyFindSyntax)syntax {
-    call_boss_outside_tick(find_mode_changed, "ll", (long)caseRule, (long)syntax);
+    call_boss_from_appkit(find_mode_changed, "ll", (long)caseRule, (long)syntax);
 }
 - (BOOL)findBarHonorsMode:(NSWindow *)window {
-    if (!global_state.boss) return NO;
-    RAII_PyObject(ret, PyObject_CallMethod(global_state.boss, "find_honors_mode", "K", (unsigned long long)cocoa_os_window_id_for_window(window)));
-    if (!ret) { PyErr_Print(); return NO; }
-    return ret == Py_True;
+    return boss_answers("find_honors_mode", cocoa_os_window_id_for_window(window));
 }
 @end
 
@@ -496,12 +521,7 @@ set_notification_activated_callback(PyObject *self UNUSED, PyObject *callback) {
 static void
 do_notification_callback(const char *identifier, const char *event, const char *action_identifer) {
     if (notification_activated_callback) {
-        PyObject *ret =
-            PyObject_CallFunction(notification_activated_callback, "sss", event, identifier ? identifier : "", action_identifer ? action_identifer : "");
-        if (ret) Py_DECREF(ret);
-        else PyErr_Print();
-        // Notification events arrive on the main queue, outside the tick: see request_tick_callback
-        request_tick_callback();
+        call_python_from_appkit(notification_activated_callback, "sss", event, identifier ? identifier : "", action_identifer ? action_identifer : "");
     }
 }
 
@@ -857,7 +877,7 @@ cocoa_send_notification(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
 - (void)quickAccessTerminal:(NSPasteboard *)pboard userData:(NSString *)userData error:(NSString **)error {
     // we ignore event during application launch as it will cause the window to be shown and hidden
     static bool is_first_event = true;
-    if (!is_first_event || monotonic() >= s_double_to_monotonic_t(2.0)) { call_boss_outside_tick(quick_access_terminal_invoked, NULL); }
+    if (!is_first_event || monotonic() >= s_double_to_monotonic_t(2.0)) { call_boss_from_appkit(quick_access_terminal_invoked, NULL); }
     is_first_event = false;
 }
 @end
@@ -1632,15 +1652,17 @@ static NSView *dock_content_view = nil;
 static NSImageView *dock_image_view = nil;
 static RoundedRectangleView *dock_pbar = nil;
 
-static void animate_dock_progress_bar(id_type timer_id UNUSED, void *data UNUSED);
+static void animate_dock_progress_bar(void);
 
+// The dock tile's animation is AppKit drawing that changes no kitty state, so it runs on the main
+// queue rather than as a main-loop timer, whose every firing is a tick (see request_tick_callback).
 static void
 tick_dock_pbar(void) {
-    add_main_loop_timer(ms_to_monotonic_t(20), false, animate_dock_progress_bar, NULL, NULL);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ animate_dock_progress_bar(); });
 }
 
 static void
-animate_dock_progress_bar(id_type timer_id UNUSED, void *data UNUSED) {
+animate_dock_progress_bar(void) {
     if (dock_pbar != nil && [dock_pbar isIndeterminate]) {
         [dock_pbar animate];
         NSDockTile *dockTile = [NSApp dockTile];

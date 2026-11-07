@@ -219,9 +219,9 @@ get_ibus_preedit_cursor_from_message(DBusMessage *msg, uint32_t *cursor_pos) {
 static void
 send_text_with_cursor(const char *text, GLFWIMEState ime_state, bool has_ime_cursor, uint32_t ime_cursor) {
     _GLFWwindow *w = _glfwFocusedWindow();
-    if (w && w->callbacks.keyboard) {
+    if (w) {
         GLFWkeyevent fake_ev = {.action = GLFW_PRESS, .text = text, .ime_state = ime_state, .has_ime_cursor = has_ime_cursor, .ime_cursor = ime_cursor};
-        w->callbacks.keyboard((GLFWwindow *)w, &fake_ev);
+        _glfwDeliver(w->callbacks.keyboard, (GLFWwindow *)w, &fake_ev);
     }
 }
 

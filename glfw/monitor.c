@@ -121,7 +121,7 @@ _glfwInputMonitor(_GLFWmonitor *monitor, int action, int placement) {
         }
     }
 
-    if (_glfw.callbacks.monitor) _glfw.callbacks.monitor((GLFWmonitor *)monitor, action);
+    _glfwDeliver(_glfw.callbacks.monitor, (GLFWmonitor *)monitor, action);
 
     if (action == GLFW_DISCONNECTED) _glfwFreeMonitor(monitor);
 }
@@ -375,7 +375,7 @@ glfwGetMonitorUserPointer(GLFWmonitor *handle) {
 GLFWAPI GLFWmonitorfun
 glfwSetMonitorCallback(GLFWmonitorfun cbfun) {
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(_glfw.callbacks.monitor, cbfun);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.monitor.fn, cbfun);
     return cbfun;
 }
 

@@ -29,7 +29,7 @@
 // Object paths include the unique name of the connection, so a fixed token is unique, as there is only one monitor per connection
 #define HANDLE_TOKEN "glfw_session_monitor"
 
-static GLFWDBussessionstatefun session_state_callback = NULL;
+static _GLFW_EVENT(GLFWDBussessionstatefun) session_state_callback;
 static uint32_t current_session_state = GLFW_SESSION_STATE_RUNNING;
 static bool monitoring = false;
 // Whether the portal reported that the monitor was created
@@ -110,7 +110,7 @@ on_state_changed(DBusConnection *conn, DBusMessage *msg) {
     // The signal is also sent when only the screensaver state changes
     const bool changed = state != current_session_state;
     current_session_state = state;
-    if (changed && session_state_callback) session_state_callback(state);
+    if (changed) _glfwDeliver(session_state_callback, state);
     if (state == GLFW_SESSION_STATE_QUERY_END) {
         if (!glfw_dbus_call_method_no_reply(
                 conn, PORTAL_SERVICE, PORTAL_PATH, INHIBIT_INTERFACE, "QueryEndResponse", DBUS_TYPE_OBJECT_PATH, &session_handle, DBUS_TYPE_INVALID))
@@ -282,7 +282,7 @@ start_monitoring(DBusConnection *session_bus) {
 
 bool
 glfw_dbus_monitor_session_state(GLFWDBussessionstatefun callback) {
-    session_state_callback = callback;
+    session_state_callback.fn = callback;
     if (monitoring) return true;
     DBusConnection *session_bus = glfw_dbus_session_bus();
     if (!session_bus) return false;

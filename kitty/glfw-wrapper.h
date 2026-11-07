@@ -14,6 +14,11 @@
 #endif
 
 
+// A callback GLFW calls directly, without requesting a tick of the client's main loop: it reads
+// client state on the platform's schedule, or frees client data. Events are the other kind
+// (_GLFW_EVENT in glfw/callback_kinds.h). Each use states why it is not an event.
+#define _GLFW_NO_TICK(fun_type) fun_type
+
 /*! @name GLFW version macros
  *  @{ */
 /*! @brief The major version number of the GLFW library.
@@ -1130,6 +1135,17 @@ typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT,
 
 typedef enum { GLFW_FOCUS_NOT_ALLOWED, GLFW_FOCUS_EXCLUSIVE, GLFW_FOCUS_ON_DEMAND } GLFWFocusPolicy;
 
+typedef void (*GLFWlayershellsizefun)(
+    GLFWwindow *window,
+    float xscale,
+    float yscale,
+    unsigned *cell_width,
+    unsigned *cell_height,
+    double *left_edge_spacing,
+    double *top_edge_spacing,
+    double *right_edge_spacing,
+    double *bottom_edge_spacing);
+
 typedef struct GLFWLayerShellConfig {
     GLFWLayerShellType type;
     GLFWEdge edge;
@@ -1145,16 +1161,8 @@ typedef struct GLFWLayerShellConfig {
     int requested_top_margin, requested_left_margin, requested_bottom_margin, requested_right_margin;
     int requested_exclusive_zone, hide_on_focus_loss;
     unsigned override_exclusive_zone;
-    void (*size_callback)(
-        GLFWwindow *window,
-        float xscale,
-        float yscale,
-        unsigned *cell_width,
-        unsigned *cell_height,
-        double *left_edge_spacing,
-        double *top_edge_spacing,
-        double *right_edge_spacing,
-        double *bottom_edge_spacing);
+    // Asked for the window's size while the platform lays it out
+    _GLFW_NO_TICK(GLFWlayershellsizefun) size_callback;
     struct {
         float xscale, yscale;
     } expected;
@@ -1199,6 +1207,11 @@ typedef enum {
 } GLFWDragOperationType;
 
 
+struct GLFWDropEvent;
+// Functions GLFW hands the client with a drop event, for the client to call
+typedef ssize_t (*GLFWdropreaddatafun)(GLFWwindow *w, struct GLFWDropEvent *ev, char *buffer, size_t sz);
+typedef void (*GLFWdropfinishfun)(GLFWwindow *w, GLFWDragOperationType op);
+
 typedef struct GLFWDropEvent {
     GLFWDropEventType type;
     const char **mimes;
@@ -1211,8 +1224,8 @@ typedef struct GLFWDropEvent {
         int allowed, source_actions;
     } operation;
     bool from_self;                                                                         // Only valid upto GLFW_DROP_DROP
-    ssize_t (*read_data)(GLFWwindow *w, struct GLFWDropEvent *ev, char *buffer, size_t sz); // Only valid for GLFW_DROP_DATA_AVAILABLE
-    void (*finish_drop)(GLFWwindow *w, GLFWDragOperationType op);                           // Only valid for GLFW_DROP_DROP and GLFW_DROP_DATA_AVAILABLE
+    GLFWdropreaddatafun read_data;                                                          // Only valid for GLFW_DROP_DATA_AVAILABLE
+    GLFWdropfinishfun finish_drop;                                                          // Only valid for GLFW_DROP_DROP and GLFW_DROP_DATA_AVAILABLE
 } GLFWDropEvent;
 typedef void (*GLFWdropeventfun)(GLFWwindow *, GLFWDropEvent *event);
 
@@ -1782,7 +1795,8 @@ typedef void (*GLFWclipboarddatafreefun)(void *data);
 typedef struct GLFWDataChunk {
     const char *data;
     size_t sz;
-    GLFWclipboarddatafreefun free;
+    // Frees the chunk's client data
+    _GLFW_NO_TICK(GLFWclipboarddatafreefun) free;
     void *iter, *free_data;
 } GLFWDataChunk;
 typedef enum { GLFW_CLIPBOARD, GLFW_PRIMARY_SELECTION } GLFWClipboardType;

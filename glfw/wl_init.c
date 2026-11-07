@@ -1077,7 +1077,7 @@ _glfwPlatformTerminate(void) {
     if (_glfw.wl.activation_requests.array) {
         for (size_t i = 0; i < _glfw.wl.activation_requests.sz; i++) {
             glfw_wl_xdg_activation_request *r = _glfw.wl.activation_requests.array + i;
-            if (r->callback) r->callback(NULL, NULL, r->callback_data);
+            _glfwDeliver(r->callback, NULL, NULL, r->callback_data);
             xdg_activation_token_v1_destroy(r->token);
         }
         free(_glfw.wl.activation_requests.array);

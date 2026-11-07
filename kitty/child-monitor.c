@@ -1427,9 +1427,6 @@ python_timer_callback(id_type timer_id, void *data) {
     PyObject *ret = PyObject_CallFunction(callback, "K", id);
     if (ret == NULL) PyErr_Print();
     else Py_DECREF(ret);
-    // A timer fires outside the tick: see request_tick_callback. Every Python timer requests
-    // one here rather than each callback remembering to.
-    request_tick_callback();
 }
 
 static void
@@ -1614,7 +1611,7 @@ set_cocoa_pending_action(CocoaPendingAction action, const char *data) {
     has_cocoa_pending_actions = true;
     // The main loop may be blocking on the event queue, if e.g. unfocused.
     // Unjam it so the pending action is processed right now.
-    wakeup_main_loop();
+    request_tick_callback();
 }
 
 static void
@@ -1680,9 +1677,10 @@ process_cocoa_pending_actions(void) {
 static void process_global_state(void *data);
 
 static void
-do_state_check(id_type timer_id UNUSED, void *data) {
+do_state_check(id_type timer_id UNUSED, void *data UNUSED) {
+    // A timer firing is an event GLFW delivers, and its delivery is the tick that runs the check:
+    // see request_tick_callback
     EVDBG("State check timer fired");
-    process_global_state(data);
 }
 
 static id_type state_check_timer = 0;
@@ -1725,7 +1723,7 @@ process_global_state(void *data) {
 static PyObject *
 main_loop(ChildMonitor *self, PyObject *a UNUSED) {
 #define main_loop_doc "The main thread loop"
-    state_check_timer = add_main_loop_timer(1000, true, do_state_check, self, NULL);
+    state_check_timer = add_main_loop_timer(1000, true, do_state_check, NULL, NULL);
     run_main_loop(process_global_state, self);
 #ifdef __APPLE__
     cocoa_free_actions_data();
@@ -2028,7 +2026,7 @@ io_loop(void *data) {
         if (self->benchmark_wakeup_fd >= 0) {                                                \
             static const char _wakeup_byte = 1;                                              \
             ssize_t _wakeup_ret UNUSED = write(self->benchmark_wakeup_fd, &_wakeup_byte, 1); \
-        } else wakeup_main_loop();                                                           \
+        } else request_tick_callback();                                                       \
         last_main_loop_wakeup_at = now;                                                      \
         last_wakeup_was_early = false;                                                       \
         wake_latched = false;                                                                \
@@ -2323,7 +2321,7 @@ queue_peer_message(ChildMonitor *self, Peer *peer) {
     m->is_remote_control_peer = peer->is_remote_control_peer;
     peer->num_of_unresponded_messages_sent_to_main_thread++;
     talk_mutex(unlock);
-    wakeup_main_loop();
+    request_tick_callback();
 }
 
 static void
@@ -2522,7 +2520,7 @@ talk_loop(void *data) {
             }
         }
         talk_mutex(unlock);
-        if (need_to_wakup_main_loop) wakeup_main_loop();
+        if (need_to_wakup_main_loop) request_tick_callback();
         for (size_t i = 0; i < num_listen_fds; i++) fds[i].revents = 0;
         int ret = poll(fds, num_listen_fds + num_peer_fds, -1);
         if (ret > 0) {

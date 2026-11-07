@@ -179,10 +179,10 @@ typedef struct _GLFWwindowNS {
     // This is kept to counteract Cocoa doing the same internally
     double cursorWarpDeltaX, cursorWarpDeltaY;
 
-    // The text input filter callback
-    GLFWcocoatextinputfilterfun textInputFilterCallback;
+    // Asked, during key handling, whether a key may go to text input: a query
+    _GLFW_NO_TICK(GLFWcocoatextinputfilterfun) textInputFilterCallback;
     // The toggle fullscreen intercept callback
-    GLFWcocoatogglefullscreenfun toggleFullscreenCallback;
+    _GLFW_EVENT(GLFWcocoatogglefullscreenfun) toggleFullscreenCallback;
     // Dead key state
     UInt32 deadKeyState;
 
@@ -194,10 +194,10 @@ typedef struct _GLFWwindowNS {
 
     // Whether a render frame has been requested for this window
     bool renderFrameRequested;
-    GLFWcocoarenderframefun renderFrameCallback;
+    _GLFW_EVENT(GLFWcocoarenderframefun) renderFrameCallback;
     // update cursor after switching desktops with Mission Control
     bool delayed_cursor_update_requested;
-    GLFWcocoarenderframefun resizeCallback;
+    _GLFW_EVENT(GLFWcocoarenderframefun) resizeCallback;
 
     // Cached MIME types from drag enter (for move events)
     _GLFWDropData drop_data;
@@ -238,11 +238,11 @@ typedef struct _GLFWlibraryNS {
     } tis;
 
     // the callback to handle url open events
-    GLFWhandleurlopen url_open_callback;
+    _GLFW_EVENT(GLFWhandleurlopen) url_open_callback;
     // offers a key a focused native view had no use for to the app's shortcuts
-    GLFWcocoanativeviewshortcutfun native_view_shortcut_callback;
+    _GLFW_EVENT(GLFWcocoanativeviewshortcutfun) native_view_shortcut_callback;
     // told whether a native view has focus just before the menu matches a key
-    GLFWcocoakeyequivalentfocusfun key_equivalent_focus_callback;
+    _GLFW_EVENT(GLFWcocoakeyequivalentfocusfun) key_equivalent_focus_callback;
 
     // Active drag session (NSDraggingSession*) and view (NSView*)
     id drag_session, drag_view, drag_image;

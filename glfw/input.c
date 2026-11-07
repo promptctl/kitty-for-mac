@@ -304,24 +304,22 @@ _glfwInputKeyboard(_GLFWwindow *window, GLFWkeyevent *ev) {
 
 
     // FIXME: will need to update ev->virtual_mods here too?
-    if (window->callbacks.keyboard) {
-        if (!window->lockKeyMods) ev->mods &= ~(GLFW_MOD_CAPS_LOCK | GLFW_MOD_NUM_LOCK);
-        window->callbacks.keyboard((GLFWwindow *)window, ev);
-    }
+    if (!window->lockKeyMods) ev->mods &= ~(GLFW_MOD_CAPS_LOCK | GLFW_MOD_NUM_LOCK);
+    _glfwDeliver(window->callbacks.keyboard, (GLFWwindow *)window, ev);
 }
 
 // Notifies shared code of a scroll event
 //
 void
 _glfwInputScroll(_GLFWwindow *window, const GLFWScrollEvent *ev) {
-    if (window->callbacks.scroll) window->callbacks.scroll((GLFWwindow *)window, ev);
+    _glfwDeliver(window->callbacks.scroll, (GLFWwindow *)window, ev);
 }
 
 // Notifies shared code of a touch event
 //
 void
 _glfwInputTouch(_GLFWwindow *window, const GLFWTouchEvent *ev) {
-    if (window->callbacks.touch) window->callbacks.touch((GLFWwindow *)window, ev);
+    _glfwDeliver(window->callbacks.touch, (GLFWwindow *)window, ev);
 }
 
 // Notifies shared code of a mouse button click event
@@ -335,7 +333,7 @@ _glfwInputMouseClick(_GLFWwindow *window, int button, int action, int mods) {
     if (action == GLFW_RELEASE && window->stickyMouseButtons) window->mouseButtons[button] = _GLFW_STICK;
     else window->mouseButtons[button] = (char)action;
 
-    if (window->callbacks.mouseButton) window->callbacks.mouseButton((GLFWwindow *)window, button, action, mods);
+    _glfwDeliver(window->callbacks.mouseButton, (GLFWwindow *)window, button, action, mods);
 }
 
 // Notifies shared code of a cursor motion event
@@ -348,14 +346,14 @@ _glfwInputCursorPos(_GLFWwindow *window, double xpos, double ypos) {
     window->virtualCursorPosX = xpos;
     window->virtualCursorPosY = ypos;
 
-    if (window->callbacks.cursorPos) window->callbacks.cursorPos((GLFWwindow *)window, xpos, ypos);
+    _glfwDeliver(window->callbacks.cursorPos, (GLFWwindow *)window, xpos, ypos);
 }
 
 // Notifies shared code of a cursor enter/leave event
 //
 void
 _glfwInputCursorEnter(_GLFWwindow *window, bool entered) {
-    if (window->callbacks.cursorEnter) window->callbacks.cursorEnter((GLFWwindow *)window, entered);
+    _glfwDeliver(window->callbacks.cursorEnter, (GLFWwindow *)window, entered);
 }
 
 // Notifies shared code of a drop event.
@@ -367,7 +365,7 @@ _glfwInputCursorEnter(_GLFWwindow *window, bool entered) {
 // mimes[0].
 size_t
 _glfwInputDropEvent(_GLFWwindow *window, GLFWDropEventType type, double xpos, double ypos, const char **mimes, size_t num_mimes, bool from_self) {
-    if (!window->callbacks.drop_event) return 0;
+    if (!window->callbacks.drop_event.fn) return 0;
     if (num_mimes > 1) {
         mime_dedup_set seen;
         mime_dedup_set_init(&seen);
@@ -407,7 +405,7 @@ _glfwInputDropEvent(_GLFWwindow *window, GLFWDropEventType type, double xpos, do
         .operation.preferred = window->drop_operation.preferred,
         .operation.source_actions = window->drop_operation.source_actions,
     };
-    window->callbacks.drop_event((GLFWwindow *)window, &ev);
+    _glfwDeliver(window->callbacks.drop_event, (GLFWwindow *)window, &ev);
     window->drop_operation.preferred = ev.operation.preferred;
     window->drop_operation.allowed = ev.operation.allowed;
     return ev.num_mimes;
@@ -417,7 +415,7 @@ _glfwInputDropEvent(_GLFWwindow *window, GLFWDropEventType type, double xpos, do
 //
 void
 _glfwInputDragSourceRequest(_GLFWwindow *window, GLFWDragEvent *ev) {
-    if (window->callbacks.drag_source) window->callbacks.drag_source((GLFWwindow *)window, ev);
+    _glfwDeliver(window->callbacks.drag_source, (GLFWwindow *)window, ev);
 }
 
 // Notifies shared code of a joystick connection or disconnection
@@ -426,7 +424,7 @@ void
 _glfwInputJoystick(_GLFWjoystick *js, int event) {
     const int jid = (int)(js - _glfw.joysticks);
 
-    if (_glfw.callbacks.joystick) _glfw.callbacks.joystick(jid, event);
+    _glfwDeliver(_glfw.callbacks.joystick, jid, event);
 }
 
 // Notifies shared code of the new value of a joystick axis
@@ -460,12 +458,12 @@ _glfwInputJoystickHat(_GLFWjoystick *js, int hat, char value) {
 void
 _glfwInputColorScheme(GLFWColorScheme value, bool is_initial_value) {
     _glfwPlatformInputColorScheme(value);
-    if (_glfw.callbacks.system_color_theme_change) _glfw.callbacks.system_color_theme_change(value, is_initial_value);
+    _glfwDeliver(_glfw.callbacks.system_color_theme_change, value, is_initial_value);
 }
 
 void
 _glfwInputClipboardLost(GLFWClipboardType which) {
-    if (_glfw.callbacks.clipboard_lost) _glfw.callbacks.clipboard_lost(which);
+    _glfwDeliver(_glfw.callbacks.clipboard_lost, which);
 }
 
 
@@ -1038,7 +1036,7 @@ glfwSetKeyboardCallback(GLFWwindow *handle, GLFWkeyboardfun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.keyboard, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.keyboard.fn, cbfun);
     return cbfun;
 }
 
@@ -1066,7 +1064,7 @@ glfwSetMouseButtonCallback(GLFWwindow *handle, GLFWmousebuttonfun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.mouseButton, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.mouseButton.fn, cbfun);
     return cbfun;
 }
 
@@ -1076,7 +1074,7 @@ glfwSetCursorPosCallback(GLFWwindow *handle, GLFWcursorposfun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.cursorPos, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.cursorPos.fn, cbfun);
     return cbfun;
 }
 
@@ -1086,7 +1084,7 @@ glfwSetCursorEnterCallback(GLFWwindow *handle, GLFWcursorenterfun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.cursorEnter, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.cursorEnter.fn, cbfun);
     return cbfun;
 }
 
@@ -1096,7 +1094,7 @@ glfwSetScrollCallback(GLFWwindow *handle, GLFWscrollfun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.scroll, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.scroll.fn, cbfun);
     return cbfun;
 }
 
@@ -1106,7 +1104,7 @@ glfwSetTouchCallback(GLFWwindow *handle, GLFWtouchfun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.touch, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.touch.fn, cbfun);
     return cbfun;
 }
 
@@ -1116,7 +1114,7 @@ glfwSetDropEventCallback(GLFWwindow *handle, GLFWdropeventfun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.drop_event, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.drop_event.fn, cbfun);
     return cbfun;
 }
 
@@ -1127,7 +1125,7 @@ glfwSetDragSourceCallback(GLFWwindow *handle, GLFWdragsourcefun cbfun) {
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    _GLFW_SWAP_POINTERS(window->callbacks.drag_source, cbfun);
+    _GLFW_SWAP_POINTERS(window->callbacks.drag_source.fn, cbfun);
     return cbfun;
 }
 
@@ -1395,7 +1393,7 @@ glfwSetJoystickCallback(GLFWjoystickfun cbfun) {
 
     if (!initJoysticks()) return NULL;
 
-    _GLFW_SWAP_POINTERS(_glfw.callbacks.joystick, cbfun);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.joystick.fn, cbfun);
     return cbfun;
 }
 

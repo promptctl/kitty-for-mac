@@ -58,7 +58,7 @@ text_input_leave(void *data UNUSED, struct zwp_text_input_v3 *txt_input, struct 
 static void
 send_text_with_cursor(const char *text, GLFWIMEState ime_state, int32_t cursor_byte_offset) {
     _GLFWwindow *w = _glfwFocusedWindow();
-    if (w && w->callbacks.keyboard) {
+    if (w) {
         GLFWkeyevent fake_ev = {.action = text ? GLFW_PRESS : GLFW_RELEASE, .text = text, .ime_state = ime_state};
         if (text && cursor_byte_offset >= 0) {
             // Convert the byte offset into an offset in unicode code points by
@@ -68,7 +68,7 @@ send_text_with_cursor(const char *text, GLFWIMEState ime_state, int32_t cursor_b
                 if ((text[i] & 0xc0) != 0x80) fake_ev.ime_cursor++;
             }
         }
-        w->callbacks.keyboard((GLFWwindow *)w, &fake_ev);
+        _glfwDeliver(w->callbacks.keyboard, (GLFWwindow *)w, &fake_ev);
     }
 }
 

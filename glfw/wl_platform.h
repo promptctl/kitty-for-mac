@@ -154,9 +154,11 @@ typedef enum WaylandWindowState {
     TOPLEVEL_STATE_CONSTRAINED_BOTTOM = 4096,
 } WaylandWindowState;
 
+typedef void (*GLFWwaylandframecallbackfunc)(unsigned long long id);
+
 typedef struct glfw_wl_xdg_activation_request {
     GLFWid window_id;
-    GLFWactivationcallback callback;
+    _GLFW_EVENT(GLFWactivationcallback) callback;
     void *callback_data;
     uintptr_t request_id;
     void *token;
@@ -287,7 +289,7 @@ typedef struct _GLFWwindowWayland {
 
     struct {
         unsigned long long id;
-        void (*callback)(unsigned long long id);
+        _GLFW_EVENT(GLFWwaylandframecallbackfunc) callback;
         struct wl_callback *current_wl_callback;
     } frameCallbackData;
 

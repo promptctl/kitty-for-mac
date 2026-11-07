@@ -283,7 +283,7 @@ is_quit_for_logout(void) {
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
     (void)sender;
-    if (_glfw.callbacks.application_close) _glfw.callbacks.application_close(is_quit_for_logout() ? GLFW_APPLICATION_CLOSE_LOGOUT : 0);
+    _glfwDeliver(_glfw.callbacks.application_close, is_quit_for_logout() ? GLFW_APPLICATION_CLOSE_LOGOUT : 0);
     return NSTerminateCancel;
 }
 
@@ -291,13 +291,11 @@ is_quit_for_logout(void) {
     return YES;
 }
 
-static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
+static _GLFW_EVENT(GLFWapplicationshouldhandlereopenfun) handle_reopen_callback;
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
     (void)sender;
-    if (!handle_reopen_callback) return YES;
-    if (handle_reopen_callback(flag)) return YES;
-    return NO;
+    return _glfwDeliverResult(handle_reopen_callback, true, flag) ? YES : NO;
 }
 
 - (void)applicationDidChangeScreenParameters:(NSNotification *)notification {
@@ -311,7 +309,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
     _glfwPollMonitorsNS();
 }
 
-static GLFWapplicationwillfinishlaunchingfun finish_launching_callback = NULL;
+static _GLFW_EVENT(GLFWapplicationwillfinishlaunchingfun) finish_launching_callback;
 
 - (void)applicationWillFinishLaunching:(NSNotification *)notification {
     (void)notification;
@@ -326,12 +324,12 @@ static GLFWapplicationwillfinishlaunchingfun finish_launching_callback = NULL;
             [[NSBundle mainBundle] loadNibNamed:@"MainMenu" owner:NSApp topLevelObjects:&_glfw.ns.nibObjects];
         } else createMenuBar();
     }
-    if (finish_launching_callback) finish_launching_callback(false);
+    _glfwDeliver(finish_launching_callback, false);
 }
 
 - (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
     (void)sender;
-    if (!filename || !_glfw.ns.url_open_callback) return NO;
+    if (!filename) return NO;
     const char *url = NULL;
     @try {
         url = [[[NSURL fileURLWithPath:filename] absoluteString] UTF8String];
@@ -340,33 +338,33 @@ static GLFWapplicationwillfinishlaunchingfun finish_launching_callback = NULL;
         return NO;
     }
     if (!url) return NO;
-    return _glfw.ns.url_open_callback(url);
+    return _glfwDeliverResult(_glfw.ns.url_open_callback, false, url);
 }
 
 - (void)application:(NSApplication *)sender openFiles:(NSArray *)filenames {
     (void)sender;
-    if (!_glfw.ns.url_open_callback || !filenames) return;
+    if (!filenames) return;
     for (id x in filenames) {
         NSString *filename = x;
         const char *url = NULL;
         @try {
             url = [[[NSURL fileURLWithPath:filename] absoluteString] UTF8String];
         } @catch (NSException *exc) { NSLog(@"Converting openFiles filename: %@ failed with error: %@", filename, exc.reason); }
-        if (url) _glfw.ns.url_open_callback(url);
+        if (url) _glfwDeliver(_glfw.ns.url_open_callback, url);
     }
 }
 
 // Remove openFile and openFiles when the minimum supported macOS version is 10.13
 - (void)application:(NSApplication *)sender openURLs:(NSArray<NSURL *> *)urls {
     (void)sender;
-    if (!_glfw.ns.url_open_callback || !urls) return;
+    if (!urls) return;
     for (id x in urls) {
         NSURL *ns_url = x;
         const char *url = NULL;
         @try {
             url = [[ns_url absoluteString] UTF8String];
         } @catch (NSException *exc) { NSLog(@"Converting openURLs url: %@ failed with error: %@", ns_url, exc.reason); }
-        if (url) _glfw.ns.url_open_callback(url);
+        if (url) _glfwDeliver(_glfw.ns.url_open_callback, url);
     }
 }
 
@@ -380,7 +378,7 @@ static NSDate *application_finished_launching_at = nil;
                                            options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial
                                            context:AppearanceObservationContext];
 
-    if (finish_launching_callback) finish_launching_callback(true);
+    _glfwDeliver(finish_launching_callback, true);
     [NSApp stop:nil];
 
     CGDisplayRegisterReconfigurationCallback(display_reconfigured, NULL);
@@ -825,29 +823,29 @@ _Static_assert(NX_DEVICELSHIFTKEYMASK == 0x2 && NX_DEVICERSHIFTKEYMASK == 0x4 &&
 
 GLFWAPI GLFWcocoanativeviewshortcutfun
 glfwSetCocoaNativeViewShortcutCallback(GLFWcocoanativeviewshortcutfun callback) {
-    GLFWcocoanativeviewshortcutfun previous = _glfw.ns.native_view_shortcut_callback;
-    _glfw.ns.native_view_shortcut_callback = callback;
+    GLFWcocoanativeviewshortcutfun previous = _glfw.ns.native_view_shortcut_callback.fn;
+    _glfw.ns.native_view_shortcut_callback.fn = callback;
     return previous;
 }
 
 GLFWAPI GLFWcocoakeyequivalentfocusfun
 glfwSetCocoaKeyEquivalentFocusCallback(GLFWcocoakeyequivalentfocusfun callback) {
-    GLFWcocoakeyequivalentfocusfun previous = _glfw.ns.key_equivalent_focus_callback;
-    _glfw.ns.key_equivalent_focus_callback = callback;
+    GLFWcocoakeyequivalentfocusfun previous = _glfw.ns.key_equivalent_focus_callback.fn;
+    _glfw.ns.key_equivalent_focus_callback.fn = callback;
     return previous;
 }
 
 GLFWAPI GLFWapplicationshouldhandlereopenfun
 glfwSetApplicationShouldHandleReopen(GLFWapplicationshouldhandlereopenfun callback) {
-    GLFWapplicationshouldhandlereopenfun previous = handle_reopen_callback;
-    handle_reopen_callback = callback;
+    GLFWapplicationshouldhandlereopenfun previous = handle_reopen_callback.fn;
+    handle_reopen_callback.fn = callback;
     return previous;
 }
 
 GLFWAPI GLFWapplicationwillfinishlaunchingfun
 glfwSetApplicationWillFinishLaunching(GLFWapplicationwillfinishlaunchingfun callback) {
-    GLFWapplicationwillfinishlaunchingfun previous = finish_launching_callback;
-    finish_launching_callback = callback;
+    GLFWapplicationwillfinishlaunchingfun previous = finish_launching_callback.fn;
+    finish_launching_callback.fn = callback;
     return previous;
 }
 
@@ -933,7 +931,7 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
           const bool native_focus = glfwCocoaNativeViewHasFocus();
           // the menu's edit shortcuts depend on focus, so settle them before any menu matches the
           // key: the check below, or AppKit's own pass over a key handed back to it
-          if (_glfw.ns.key_equivalent_focus_callback) _glfw.ns.key_equivalent_focus_callback(native_focus);
+          _glfwDeliver(_glfw.ns.key_equivalent_focus_callback, native_focus);
           if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed) {
               // first check if there is a global menu bar shortcut; a disabled item that matches
               // leaves the key to the rest, as though nothing had matched
@@ -1131,7 +1129,8 @@ _glfwPlatformGetVersionString(void) {
         ;
 }
 
-static GLFWtickcallback tick_callback = NULL;
+// The tick itself: the one callback every delivery requests
+static _GLFW_NO_TICK(GLFWtickcallback) tick_callback = NULL;
 static void *tick_callback_data = NULL;
 // Atomic rather than lock protected, as it can be set from other threads at
 // any time, including after the main loop has returned and before they are joined.
@@ -1178,9 +1177,9 @@ typedef struct {
     unsigned long long id;
     bool repeats;
     monotonic_t interval;
-    GLFWuserdatafun callback;
+    TimerFire fire;
     void *callback_data;
-    GLFWuserdatafun free_callback_data;
+    GLFWuserdatafreefun free_callback_data;
 } Timer;
 
 static Timer timers[128] = {{0}};
@@ -1209,7 +1208,7 @@ schedule_timer(Timer *t) {
                                                     for (size_t i = 0; i < num_timers; i++) {
                                                         if (timers[i].os_timer == os_timer) {
                                                             const Timer timer = timers[i];
-                                                            timer.callback(timer.id, timer.callback_data);
+                                                            fire_timer(timer.fire, timer.id, timer.callback_data);
                                                             if (!timer.repeats) _glfwPlatformRemoveTimer(timer.id);
                                                             break;
                                                         }
@@ -1217,8 +1216,8 @@ schedule_timer(Timer *t) {
                                                   }];
 }
 
-unsigned long long
-_glfwPlatformAddTimer(monotonic_t interval, bool repeats, GLFWuserdatafun callback, void *callback_data, GLFWuserdatafun free_callback) {
+static unsigned long long
+add_timer(monotonic_t interval, bool repeats, TimerFire fire, void *callback_data, GLFWuserdatafreefun free_callback) {
     static unsigned long long timer_counter = 0;
     if (num_timers >= sizeof(timers) / sizeof(timers[0]) - 1) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Too many timers added");
@@ -1228,11 +1227,21 @@ _glfwPlatformAddTimer(monotonic_t interval, bool repeats, GLFWuserdatafun callba
     t->id = ++timer_counter;
     t->repeats = repeats;
     t->interval = interval;
-    t->callback = callback;
+    t->fire = fire;
     t->callback_data = callback_data;
     t->free_callback_data = free_callback;
     schedule_timer(t);
     return timer_counter;
+}
+
+unsigned long long
+_glfwPlatformAddTimer(monotonic_t interval, bool repeats, GLFWuserdatafun callback, void *callback_data, GLFWuserdatafun free_callback) {
+    return add_timer(interval, repeats, (TimerFire){.kind = INTERNAL_TIMER, .internal = callback}, callback_data, free_callback);
+}
+
+unsigned long long
+_glfwPlatformAddClientTimer(monotonic_t interval, bool repeats, ClientTimerFire callback, void *callback_data, GLFWuserdatafun free_callback) {
+    return add_timer(interval, repeats, (TimerFire){.kind = CLIENT_TIMER, .client = callback}, callback_data, free_callback);
 }
 
 void

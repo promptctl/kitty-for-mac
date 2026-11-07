@@ -379,10 +379,10 @@ static void
 requestRenderFrame(_GLFWwindow *w, GLFWcocoarenderframefun callback) {
     if (!callback) {
         w->ns.renderFrameRequested = false;
-        w->ns.renderFrameCallback = NULL;
+        w->ns.renderFrameCallback.fn = NULL;
         return;
     }
-    w->ns.renderFrameCallback = callback;
+    w->ns.renderFrameCallback.fn = callback;
     w->ns.renderFrameRequested = true;
     _glfwRequestRenderFrame(w);
 }
@@ -391,7 +391,7 @@ void
 _glfwRestartDisplayLinks(void) {
     _GLFWwindow *window;
     for (window = _glfw.windowListHead; window; window = window->next) {
-        if (window->ns.renderFrameRequested && window->ns.renderFrameCallback) { requestRenderFrame(window, window->ns.renderFrameCallback); }
+        if (window->ns.renderFrameRequested && window->ns.renderFrameCallback.fn) { requestRenderFrame(window, window->ns.renderFrameCallback.fn); }
     }
 }
 
@@ -708,7 +708,7 @@ static void flush_focus_loss_text(_GLFWwindow *window);
     // Because of a bug in macOS Tahoe we cannot redraw the window in response
     // to a resize event that was caused by a screen change as the OpenGL
     // context is not ready yet. See: https://github.com/kovidgoyal/kitty/issues/8983
-    if (window->ns.resizeCallback && !is_screen_change && !is_fullscreen && window->ns.live_resize_in_progress) window->ns.resizeCallback((GLFWwindow *)window);
+    if (!is_screen_change && !is_fullscreen && window->ns.live_resize_in_progress) _glfwDeliver(window->ns.resizeCallback, (GLFWwindow *)window);
 }
 
 - (void)windowDidMove:(NSNotification *)notification {
@@ -778,10 +778,10 @@ static void flush_focus_loss_text(_GLFWwindow *window);
 
 - (void)windowDidChangeScreen:(NSNotification *)notification {
     (void)notification;
-    if (window->ns.renderFrameRequested && window->ns.renderFrameCallback) {
+    if (window->ns.renderFrameRequested && window->ns.renderFrameCallback.fn) {
         // Ensure that if the window changed its monitor, CVDisplayLink
         // is running for the new monitor
-        requestRenderFrame(window, window->ns.renderFrameCallback);
+        requestRenderFrame(window, window->ns.renderFrameCallback.fn);
     }
 }
 
@@ -1235,7 +1235,7 @@ _glfwCocoaOfferKeyToShortcuts(id event_) {
         debug_input("Key already offered to shortcuts, left to the focused native view\n");
         return false;
     }
-    if ([event type] != NSEventTypeKeyDown || !_glfw.ns.native_view_shortcut_callback || !glfwCocoaNativeViewHasFocus()) return false;
+    if ([event type] != NSEventTypeKeyDown || !_glfw.ns.native_view_shortcut_callback.fn || !glfwCocoaNativeViewHasFocus()) return false;
     _GLFWwindow *window = _glfw.windowListHead;
     while (window && window->ns.object != [event window]) window = window->next;
     if (!window) return false;
@@ -1248,7 +1248,7 @@ _glfwCocoaOfferKeyToShortcuts(id event_) {
         .action = [event isARepeat] ? GLFW_REPEAT : GLFW_PRESS, .mods = translateFlags(flags)};
     add_alternate_keys(&ev, event_with_remapped_flags(event, flags));
     debug_input("Offering key bound for the focused native view to shortcuts: 0x%x %s\n", keycode, format_mods(ev.mods));
-    return _glfw.ns.native_view_shortcut_callback((GLFWwindow *)window, &ev);
+    return _glfwDeliverResult(_glfw.ns.native_view_shortcut_callback, false, (GLFWwindow *)window, &ev);
 }
 
 static bool
@@ -2726,7 +2726,7 @@ update_titlebar_button_visibility_after_fullscreen_transition(_GLFWwindow *w, bo
         if (!glfw_window->ns.in_traditional_fullscreen && !([self styleMask] & NSWindowStyleMaskFullScreen)) {
             glfw_window->ns.pre_traditional_fullscreen_frame = [self frame];
         }
-        if (glfw_window->ns.toggleFullscreenCallback && glfw_window->ns.toggleFullscreenCallback((GLFWwindow *)glfw_window) == 1) return;
+        if (_glfwDeliverResult(glfw_window->ns.toggleFullscreenCallback, false, (GLFWwindow *)glfw_window)) return;
         glfw_window->ns.in_fullscreen_transition = true;
     }
     NSWindowStyleMask sm = [self styleMask];
@@ -4259,8 +4259,8 @@ glfwSetCocoaTextInputFilter(GLFWwindow *handle, GLFWcocoatextinputfilterfun call
 GLFWAPI GLFWhandleurlopen
 glfwSetCocoaURLOpenCallback(GLFWhandleurlopen callback) {
     _GLFW_REQUIRE_INIT_OR_RETURN(nil);
-    GLFWhandleurlopen prev = _glfw.ns.url_open_callback;
-    _glfw.ns.url_open_callback = callback;
+    GLFWhandleurlopen prev = _glfw.ns.url_open_callback.fn;
+    _glfw.ns.url_open_callback.fn = callback;
     return prev;
 }
 
@@ -4268,8 +4268,8 @@ GLFWAPI GLFWcocoatogglefullscreenfun
 glfwSetCocoaToggleFullscreenIntercept(GLFWwindow *handle, GLFWcocoatogglefullscreenfun callback) {
     _GLFWwindow *window = (_GLFWwindow *)handle;
     _GLFW_REQUIRE_INIT_OR_RETURN(nil);
-    GLFWcocoatogglefullscreenfun previous = window->ns.toggleFullscreenCallback;
-    window->ns.toggleFullscreenCallback = callback;
+    GLFWcocoatogglefullscreenfun previous = window->ns.toggleFullscreenCallback.fn;
+    window->ns.toggleFullscreenCallback.fn = callback;
     return previous;
 }
 
@@ -4281,8 +4281,8 @@ glfwCocoaRequestRenderFrame(GLFWwindow *w, GLFWcocoarenderframefun callback) {
 GLFWAPI GLFWcocoarenderframefun
 glfwCocoaSetWindowResizeCallback(GLFWwindow *w, GLFWcocoarenderframefun cb) {
     _GLFWwindow *window = (_GLFWwindow *)w;
-    GLFWcocoarenderframefun current = window->ns.resizeCallback;
-    window->ns.resizeCallback = cb;
+    GLFWcocoarenderframefun current = window->ns.resizeCallback.fn;
+    window->ns.resizeCallback.fn = cb;
     return current;
 }
 
