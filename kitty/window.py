@@ -3260,11 +3260,11 @@ class Window:
             self.set_find_query(query, op)
         self.push_find_bar()
 
-    @ac('sc', 'Make the next match of the find query, later in the buffer, the current match and the selection, scrolling it into view and wrapping at the end, on macOS')
+    @ac('sc', 'Make the next find match, later in the buffer, the current match and the selection, scrolled into view, wrapping at the end, on macOS')
     def find_next(self) -> bool | None:
         return self.find_step(False)
 
-    @ac('sc', 'Make the previous match of the find query, earlier in the buffer, the current match and the selection, scrolling it into view and wrapping at the start, on macOS')
+    @ac('sc', 'Make the previous find match, earlier in the buffer, the current match and the selection, scrolled into view, wrapping at the start, on macOS')
     def find_previous(self) -> bool | None:
         return self.find_step(True)
 

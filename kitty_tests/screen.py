@@ -6,8 +6,8 @@ import re
 import tempfile
 
 from kitty.fast_data_types import DECAWM, DECCOLM, DECOM, IRM, VT_PARSER_BUFFER_SIZE, Color, ColorProfile, Cursor
-from kitty.marks import marker_from_function, marker_from_regex, marker_from_text
 from kitty.find_backends import FindCaseRule, FindCount, FindMode, FindQueryChange, FindStatus, FindSyntax
+from kitty.marks import marker_from_function, marker_from_regex, marker_from_text
 from kitty.tmux_find import TmuxOperation
 from kitty.window import pagerhist
 

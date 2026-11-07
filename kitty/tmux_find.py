@@ -355,7 +355,7 @@ class TmuxFind:
         return self.op.tmux(client, *args)
 
     def listed(self) -> ClientPane | TmuxError:
-        "[LAW:one-source-of-truth] the one list-clients of an operation: whoever routes on the pane and whoever searches it read this answer, so a pane switch inside tmux is followed by the next operation and never splits one"
+        "[LAW:one-source-of-truth] one list-clients per operation, read by router and searcher: a pane switch is seen by the next operation, never mid-one"
         if self.client_pane is None:
             try:
                 self.client_pane = parse_pane(self.tmux(self.client, 'list-clients', '-F', CLIENT_FORMAT), self.client.pid)
