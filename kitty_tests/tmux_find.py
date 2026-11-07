@@ -16,7 +16,7 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NamedTuple
 from unittest import mock
 
 from kitty import tmux_find as tf
@@ -53,6 +53,14 @@ from kitty.window import Window
 from .base import BaseTest
 
 TMUX = shutil.which('tmux')
+# A test driving a real tmux asks what the keys did, not how fast: a loaded machine (the full suite, a build)
+# can spend FIND_DEADLINE on a few tmux spawns, and the find then stops the pane part way. Only a wedged test
+# reaches this; a test of the deadline itself builds its operation with FIND_DEADLINE.
+PATIENT_DEADLINE = 30.0
+
+
+def patient() -> TmuxOperation:
+    return TmuxOperation(deadline=PATIENT_DEADLINE)
 
 
 def default_query(text: str) -> FindQuery:
@@ -64,8 +72,8 @@ def proc(pid: int, *cmdline: str) -> ProcessDesc:
     return {'pid': pid, 'cwd': None, 'cmdline': list(cmdline)}
 
 
-def holding(state: TmuxFindState) -> TmuxFind:
-    f = TmuxFind.holding(state, TmuxOperation())
+def holding(state: TmuxFindState, op: TmuxOperation | None = None) -> TmuxFind:
+    f = TmuxFind.holding(state, op or patient())
     assert f is not None, 'the window holds no tmux search'
     return f
 
@@ -194,6 +202,13 @@ class PrivateTmux:
             time.sleep(0.02)
         self.pane = self.tmux('display', '-p', '-t', 'p', '#{pane_id}')
 
+    def drawn(self, script: 'Script', pane: str | None = None) -> None:
+        deadline = time.monotonic() + 10
+        while script.last not in self.tmux('capture-pane', '-p', '-S', '-', '-t', pane or self.pane):
+            if time.monotonic() > deadline:  # the launcher runs python -O, which drops assert statements
+                raise AssertionError(f'the pane never printed {script.last!r}')
+            time.sleep(0.02)
+
     def fmt(self, f: str, pane: str | None = None) -> str:
         return self.tmux('display', '-p', '-t', pane or self.pane, f)
 
@@ -214,24 +229,32 @@ class PrivateTmux:
         return TmuxClient(self.client_proc.pid, self.exe, ('-S', self.socket), None, os.environ.get('PATH'))
 
     def finder(self, state: TmuxFindState, op: TmuxOperation | None = None) -> TmuxFind:
-        return TmuxFind(self.client(), state, op or TmuxOperation())
+        return TmuxFind(self.client(), state, op or patient())
+
+
+class Script(NamedTuple):
+    "What the pane runs, and the last line it prints before it waits: a search before that line is drawn searches part of it"
+    command: str
+    last: str
 
 
 @contextmanager
-def private_tmux(script: str, **kw: Any) -> Generator[PrivateTmux, None, None]:
+def private_tmux(script: Script, **kw: Any) -> Generator[PrivateTmux, None, None]:
     with tempfile.TemporaryDirectory(prefix='kitty-find-test-') as d:
         t = PrivateTmux(d)
         try:
-            t.start(script, **kw)
+            t.start(script.command, **kw)
+            t.drawn(script)
             yield t
         finally:
             t.stop()
 
 
-NEEDLES = 'i=1; while [ $i -le 300 ]; do echo "line $i needle-$i"; i=$((i+1)); done; sleep 600'
-AWKWARD = (
+NEEDLES = Script('i=1; while [ $i -le 300 ]; do echo "line $i needle-$i"; i=$((i+1)); done; sleep 600', 'line 300 needle-300')
+AWKWARD = Script(
     'for i in 1 2 3; do echo "alpha foo; x$i"; done; for i in 1 2 3 4 5 6 7; do echo "alpha foo y$i"; done;'
-    ' for i in 1 2 3; do echo "beta -n z$i"; done; echo "back\\\\slash"; echo "日本語テキスト and é"; sleep 600'
+    ' for i in 1 2 3; do echo "beta -n z$i"; done; echo "back\\\\slash"; echo "日本語テキスト and é"; sleep 600',
+    '日本語テキスト and é',
 )
 
 
@@ -324,8 +347,9 @@ class TmuxFindIntegrationTest(BaseTest):
     def test_one_pane_at_a_time(self):
         with private_tmux(NEEDLES) as t:
             a = t.pane
-            t.tmux('split-window', '-d', '-t', a, 'sh -c ' + repr(NEEDLES))
+            t.tmux('split-window', '-d', '-t', a, 'sh -c ' + repr(NEEDLES.command))
             b = [p for p in t.tmux('list-panes', '-F', '#{pane_id}').split() if p != a][0]
+            t.drawn(NEEDLES, b)
             state = TmuxFindState()
             t.finder(state).find(default_query('needle-5'))
             self.assertTrue(self.in_mode(t, a))
@@ -409,8 +433,7 @@ class TmuxFindIntegrationTest(BaseTest):
             'i=1; while [ $i -le 400 ]; do echo "row $i needle-$i"; i=$((i+1)); done; sleep 1;'
             ' j=0; while [ $j -lt 2000 ]; do echo "stream $j"; j=$((j+1)); sleep 0.01; done; sleep 600'
         )
-        with private_tmux(script, history_limit=60) as t:
-            time.sleep(0.5)
+        with private_tmux(Script(script, 'row 400 needle-400'), history_limit=60) as t:
             state = TmuxFindState()
             t.tmux('copy-mode', '-t', t.pane)
             t.tmux('send', '-t', t.pane, '-X', 'search-backward-text', 'row ')
@@ -454,12 +477,12 @@ class TmuxFindIntegrationTest(BaseTest):
             os.kill(server, signal.SIGSTOP)
             try:
                 start = time.monotonic()
-                t.finder(state).step(default_query('needle-5'), False)
+                t.finder(state, TmuxOperation()).step(default_query('needle-5'), False)
                 took = time.monotonic() - start
                 self.assertLess(took, FIND_DEADLINE + 1)
                 self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
                 self.assertIsNotNone(state.held, 'the pane is on record')
-                holding(state).clear()
+                holding(state, TmuxOperation()).clear()
                 self.assertIsNotNone(state.held, 'a clear that timed out is tried again')
             finally:
                 os.kill(server, signal.SIGCONT)
@@ -473,7 +496,7 @@ class TmuxFindIntegrationTest(BaseTest):
             state = TmuxFindState()
             client = t.client()
             dead = TmuxClient(2**22 + 5, client.exe, client.server_args, None, client.path)
-            TmuxFind(dead, state, TmuxOperation()).find(default_query('needle'))
+            TmuxFind(dead, state, patient()).find(default_query('needle'))
             self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
             self.assertIsNone(state.held, 'no pane was reached')
 

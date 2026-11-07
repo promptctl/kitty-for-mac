@@ -35,10 +35,11 @@ from kitty.claude_find import (
     refusal,
 )
 from kitty.find_backends import FindCount, FindMode, FindQuery, FindStatus
-from kitty.tmux_find import FIND_DEADLINE, PaneRef, TmuxError, TmuxOperation
+from kitty.tmux_find import FIND_DEADLINE, PaneRef, TmuxError, TmuxOperation, run_tmux
 
 from .base import BaseTest
-from .tmux_find import PrivateTmux, private_tmux
+from .fake_claude import DIALOG as FAKE_DIALOG
+from .tmux_find import PATIENT_DEADLINE, PrivateTmux, Script, patient, private_tmux
 
 RULE = '─' * 100
 PYTHON = shutil.which('python3')
@@ -241,12 +242,16 @@ class FakeClaudeSession:
         return ClaudePane(self.t.pane, 'sid-1', int(self.t.fmt('#{pane_pid}')), self.dir)
 
     def finder(self, state: ClaudeFindState, op: TmuxOperation | None = None) -> ClaudeFind:
-        return ClaudeFind(self.t.client(), state, op or TmuxOperation(), self.host(), self.pane())
+        return ClaudeFind(self.t.client(), state, op or patient(), self.host(), self.pane())
 
     def holding(self, state: ClaudeFindState, op: TmuxOperation | None = None) -> ClaudeFind:
-        f = ClaudeFind.holding(state, op or TmuxOperation(), self.host())
+        f = ClaudeFind.holding(state, op or patient(), self.host())
         assert f is not None, 'the window holds no Claude search'
         return f
+
+
+# the view each mode of the fake draws when it starts
+FIRST_VIEW = {'': Prompt(), 'sticky': Prompt(), 'dialog': Unrecognised(FAKE_DIALOG[-1])}
 
 
 @contextmanager
@@ -256,15 +261,17 @@ def fake_claude(*initial: str, mode: str = '', then: str = 'sleep 600') -> Any:
         conversation, keylog = os.path.join(d, 'conversation.txt'), os.path.join(d, 'keys.log')
         with open(conversation, 'w') as f:
             f.write('\n'.join(initial) + '\n')
-        with private_tmux(f'{PYTHON} {FAKE} {conversation} {keylog} {mode}; {then}') as t:
+        with private_tmux(Script(f'{PYTHON} {FAKE} {conversation} {keylog} {mode}; {then}', '')) as t:
             session = FakeClaudeSession(t, d)
             os.makedirs(os.path.dirname(session.transcript))
             with open(session.transcript, 'w') as f:  # Claude Code has written the conversation so far
                 f.write('\n'.join(initial) + '\n')
+            # the fake draws a whole view after it puts the tty in raw mode, and tmux can be read part way through one
             deadline = time.monotonic() + 10
-            while not session.keys() and not isinstance(session.view(), (Prompt, Unrecognised)) and time.monotonic() < deadline:
+            while (view := session.view()) != FIRST_VIEW[mode]:
+                if time.monotonic() > deadline:  # the launcher runs python -O, which drops assert statements
+                    raise AssertionError(f'the fake never drew {FIRST_VIEW[mode]}: the pane shows {view}')
                 time.sleep(0.02)
-            time.sleep(0.2)
             yield session
 
 
@@ -446,7 +453,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             c.finder(state).find(default_query('zebra'))
             start = time.monotonic()
             c.finder(state).step(default_query('zebra'), False)
-            self.assertLess(time.monotonic() - start, FIND_DEADLINE)
+            self.assertLess(time.monotonic() - start, PATIENT_DEADLINE / 2, 'a moment, not the budget')
             self.ae(state.status, FindStatus(1, 3, FindCount.exact))
             self.ae(c.keys()[-1], "b'n'", 'the key was sent')
             c.holding(state).clear()
@@ -489,11 +496,9 @@ class ClaudeFindIntegrationTest(BaseTest):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
             clock = [0.0]
-            real = TmuxOperation()
-
             # Ctrl+o goes out, then the clock runs past the deadline while the pane is awaited
             def run(argv, env, timeout):
-                out = real.run(argv, env, timeout)
+                out = run_tmux(argv, env, timeout)
                 if 'send-keys' in argv:
                     clock[0] += FIND_DEADLINE * 2
                 return out
@@ -529,7 +534,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             while c.t.fmt('#{alternate_on}') != '0' and time.monotonic() < deadline:
                 time.sleep(0.02)
             keys = len(c.keys())
-            f = ClaudeFind.holding(state, TmuxOperation(), ClaudeHost(ps=lambda timeout: f'{pane_pid} 1 /bin/sh\n', environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': c.dir}))
+            f = ClaudeFind.holding(state, patient(), ClaudeHost(ps=lambda timeout: f'{pane_pid} 1 /bin/sh\n', environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': c.dir}))
             assert f is not None
             f.clear()
             self.assertIsNone(state.held)
@@ -563,7 +568,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             deadline = time.monotonic() + 5
             while not isinstance(parse_view(c.t.tmux('capture-pane', '-p', '-t', other)), Prompt) and time.monotonic() < deadline:
                 time.sleep(0.02)
-            f = ClaudeFind(c.t.client(), state, TmuxOperation(), c.host(), ClaudePane(other, 'sid-2', 1, c.dir))
+            f = ClaudeFind(c.t.client(), state, patient(), c.host(), ClaudePane(other, 'sid-2', 1, c.dir))
             f.guarded(lambda pane: f.hold(pane.pane_id))
             self.ae(c.view(), Prompt(), 'the first pane was brought back')
             self.ae(state.held.at.pane, other)  # type: ignore[union-attr]
@@ -621,12 +626,12 @@ class SelectionTest(BaseTest):
             self.ae(PasteBuffer('buffer1', created).copied_at_release(released), expected, why)
 
     def claude(self, t: PrivateTmux, state: ClaudeFindState) -> ClaudeFind:
-        return ClaudeFind(t.client(), state, TmuxOperation(), ClaudeHost(), ClaudePane(t.pane, 'sid-1', 1, '/x'))
+        return ClaudeFind(t.client(), state, patient(), ClaudeHost(), ClaudePane(t.pane, 'sid-1', 1, '/x'))
 
     def test_what_tmux_holds_is_the_selection_only_when_made_by_the_release(self):
         if not shutil.which('tmux'):
             self.skipTest('needs tmux')
-        with private_tmux('sleep 600') as t:
+        with private_tmux(Script('sleep 600', '')) as t:
             state = ClaudeFindState()
 
             def newest_copy_made_at() -> float:

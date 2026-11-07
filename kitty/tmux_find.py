@@ -238,20 +238,21 @@ def run_tmux(argv: Sequence[str], env: Mapping[str, str], timeout: float) -> str
 class TmuxOperation:
     """One find operation's budget of time, and the one place it is enforced: every tmux command and every
     wait for a pane to redraw is made through it, so the lookup of the pane, the clears of other searches
-    and the search itself together cannot spend more than FIND_DEADLINE. The runner, the clock and the
-    sleep are what a test stands in for."""
+    and the search itself together cannot spend more than its deadline, FIND_DEADLINE by default. The runner,
+    the clock and the sleep are what a test stands in for."""
 
     def __init__(
         self,
         run: Callable[[Sequence[str], Mapping[str, str], float], str] | None = None,
         now: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        deadline: float = FIND_DEADLINE,
     ) -> None:
         # looked up when the value is built, so a test can stand in for the one effect
         self.run = run_tmux if run is None else run
         self.now = now
         self.sleep = sleep
-        self.expires_at = now() + FIND_DEADLINE
+        self.expires_at = now() + deadline
 
     def remaining(self) -> float:
         return self.expires_at - self.now()
