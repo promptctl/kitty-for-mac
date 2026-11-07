@@ -92,6 +92,7 @@ def shortcut_matches(s: SingleKey, ev: KeyEvent) -> bool:
 # copy, the alternate screen showing), and the actions say so by passing the key on.
 actions_that_pass_keys_on = frozenset({'copy_or_noop', 'find_next', 'find_previous', 'use_selection_for_find'})
 
+
 class Mappings:
     "Manage all keyboard mappings"
 

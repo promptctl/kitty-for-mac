@@ -103,8 +103,7 @@ class TestGLFW(BaseTest):
         lib = ctypes.CDLL(glfw_path('x11'))
         timer_func = ctypes.CFUNCTYPE(None, ctypes.c_ulonglong, ctypes.c_void_p)
         lib.addTimer.restype = ctypes.c_ulonglong
-        lib.addTimer.argtypes = (
-            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int64, ctypes.c_int, ctypes.c_bool, timer_func, ctypes.c_void_p, timer_func)
+        lib.addTimer.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int64, ctypes.c_int, ctypes.c_bool, timer_func, ctypes.c_void_p, timer_func)
         lib.removeTimer.argtypes = (ctypes.c_void_p, ctypes.c_ulonglong)
         lib.toggleTimer.argtypes = (ctypes.c_void_p, ctypes.c_ulonglong, ctypes.c_int)
         lib.dispatchTimers.restype = ctypes.c_uint
@@ -154,10 +153,18 @@ GLFW_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 # Function-pointer types GLFW stores that are not callbacks into its client: its own event-loop
 # plumbing, and functions it hands the client to call. Dynamically loaded library tables
 # (PFN*) and GLFW's internal vtables (_GLFW*) are recognised by prefix.
-GLFW_INTERNAL_FUNCTION_TYPES = frozenset((
-    'watch_callback_func', 'timer_callback_func', 'dbus_pending_callback', 'GLFWuserdatafreefun',
-    'GLFWdropreaddatafun', 'GLFWdropfinishfun', 'GLFWglproc', 'GLFWvkproc',
-))
+GLFW_INTERNAL_FUNCTION_TYPES = frozenset(
+    (
+        'watch_callback_func',
+        'timer_callback_func',
+        'dbus_pending_callback',
+        'GLFWuserdatafreefun',
+        'GLFWdropreaddatafun',
+        'GLFWdropfinishfun',
+        'GLFWglproc',
+        'GLFWvkproc',
+    )
+)
 
 
 def _strip_c_comments(src: str) -> str:
@@ -180,11 +187,11 @@ def _storage_statements(src: str):
     for m in re.finditer(r'[{};]', src):
         ch = m.group()
         if ch == '{':
-            stack.append(bool(aggregate.search(src[start:m.start()].rstrip())))
+            stack.append(bool(aggregate.search(src[start : m.start()].rstrip())))
         elif ch == '}' and stack:  # both arms of an #if keep their braces once directives are gone
             stack.pop()
         else:
-            stmt = src[start:m.start()].strip()
+            stmt = src[start : m.start()].strip()
             if all(stack) or stmt.startswith('static'):
                 yield stmt
         start = m.end()
@@ -247,7 +254,7 @@ def _function_definitions(src: str):
         while depth and end < len(src):
             depth += {'{': 1, '}': -1}.get(src[end], 0)
             end += 1
-        yield m.group(1), m.group(2), src[m.end():end]
+        yield m.group(1), m.group(2), src[m.end() : end]
 
 
 class TestGLFWCallbackKinds(BaseTest):
@@ -259,10 +266,15 @@ class TestGLFWCallbackKinds(BaseTest):
 
     def test_wayland_scanner_output_is_not_scanned(self):
         import tempfile
+
         unclassified = 'typedef void (* GLFWfixturefun)(int);\nstatic GLFWfixturefun held;\n'
         with tempfile.TemporaryDirectory() as d:
-            for name in ('wayland-dropped-v1-client-protocol.h', 'wayland-xdg-shell-client-protocol.c', 'hand_written.h',
-                         'wayland-xdg-shell-server-protocol.h'):
+            for name in (
+                'wayland-dropped-v1-client-protocol.h',
+                'wayland-xdg-shell-client-protocol.c',
+                'hand_written.h',
+                'wayland-xdg-shell-server-protocol.h',
+            ):
                 with open(os.path.join(d, name), 'w') as f:
                     f.write(unclassified)
             self.assertEqual(['hand_written.h', 'wayland-xdg-shell-server-protocol.h'], [p.partition(':')[0] for p in unclassified_glfw_callbacks(d)])

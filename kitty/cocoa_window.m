@@ -30,23 +30,23 @@
 // event changes state and requests the tick itself (see request_tick_callback); a query answers
 // AppKit from Boss on AppKit's schedule and requests nothing. Every other way into Python is
 // poisoned below, so a new bridge cannot compile without picking one.
-#define call_boss_from_appkit(name, ...)                                                              \
-    do {                                                                                              \
-        if (global_state.boss) {                                                                      \
-            RAII_PyObject(_appkit_ret, PyObject_CallMethod(global_state.boss, #name, __VA_ARGS__));   \
-            if (!_appkit_ret) PyErr_Print();                                                          \
-        }                                                                                             \
-        request_tick_callback();                                                                      \
+#define call_boss_from_appkit(name, ...)                                                            \
+    do {                                                                                            \
+        if (global_state.boss) {                                                                    \
+            RAII_PyObject(_appkit_ret, PyObject_CallMethod(global_state.boss, #name, __VA_ARGS__)); \
+            if (!_appkit_ret) PyErr_Print();                                                        \
+        }                                                                                           \
+        request_tick_callback();                                                                    \
     } while (0)
-#define call_python_from_appkit(callable, fmt, ...)                                  \
-    do {                                                                             \
+#define call_python_from_appkit(callable, fmt, ...)                                    \
+    do {                                                                               \
         RAII_PyObject(_appkit_ret, PyObject_CallFunction(callable, fmt, __VA_ARGS__)); \
-        if (!_appkit_ret) PyErr_Print();                                             \
-        request_tick_callback();                                                     \
+        if (!_appkit_ret) PyErr_Print();                                               \
+        request_tick_callback();                                                       \
     } while (0)
 
 // A Boss method's answer, a new reference; NULL when there is no Boss or the method raised, which is printed
-static PyObject*
+static PyObject *
 boss_call(const char *method, id_type os_window_id) {
     if (!global_state.boss) return NULL;
     PyObject *ret = PyObject_CallMethod(global_state.boss, method, "K", (unsigned long long)os_window_id);
@@ -66,7 +66,10 @@ boss_number(const char *method, id_type os_window_id) {
     RAII_PyObject(ret, boss_call(method, os_window_id));
     if (!ret) return 0;
     long ans = PyLong_AsLong(ret);
-    if (ans == -1 && PyErr_Occurred()) { PyErr_Print(); return 0; }
+    if (ans == -1 && PyErr_Occurred()) {
+        PyErr_Print();
+        return 0;
+    }
     return ans;
 }
 #undef call_boss
@@ -303,14 +306,14 @@ update_secure_input_menu_bar_indicator(BOOL enabled) {
 // data down the USER_MENU_ACTION path to Boss.combine, so it needs no pending action of its own
 // nor a dispatch line in child-monitor.c: new items use this, not PENDING. Each still gets its
 // own selector, which is how global_shortcut_for_action finds the item's shortcut.
-#define ACTION(selector)                                         \
-    -(void)selector : (id)sender {                               \
-        (void)sender;                                            \
-        set_cocoa_pending_action(USER_MENU_ACTION, #selector);   \
+#define ACTION(selector)                                       \
+    -(void)selector : (id)sender {                             \
+        (void)sender;                                          \
+        set_cocoa_pending_action(USER_MENU_ACTION, #selector); \
     }
 
 // The screen of the active window in the key window, NULL when no window has keyboard focus
-static Screen*
+static Screen *
 key_window_screen(void) {
     if (![NSApp keyWindow]) return NULL;
     OSWindow *osw = current_os_window();
@@ -499,7 +502,8 @@ cocoa_set_global_shortcut(PyObject *self UNUSED, PyObject *args) {
     else Q(quit); else Q(show_find_bar);
     else Q(macos_cycle_through_os_windows); else Q(macos_cycle_through_os_windows_backwards);
     else Q(paste_from_clipboard); else Q(copy_or_noop);
-    else Q(find_next); else Q(find_previous); else Q(use_selection_for_find);
+    else Q(find_next); else Q(find_previous);
+    else Q(use_selection_for_find);
 #undef Q
     if (gs == NULL) {
         PyErr_SetString(PyExc_KeyError, "Unknown shortcut name");
@@ -1987,7 +1991,7 @@ cocoa_find_bar_covered_pixels(void *w) {
 }
 
 // NULL when the window has no bar; otherwise the text in its field, valid until control returns to the run loop
-const char*
+const char *
 cocoa_find_bar_query(void *w, bool *shown) {
     *shown = [KittyFindBar isShownIn:(NSWindow *)w];
     return [[KittyFindBar queryIn:(NSWindow *)w] UTF8String];

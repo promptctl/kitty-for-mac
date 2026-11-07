@@ -82,8 +82,9 @@ typedef struct Options {
     bool scrollback_fill_enlarged_window;
     char_type *select_by_word_characters;
     char_type *select_by_word_characters_forward;
-    color_type url_color, find_match_foreground, find_match_background, background, foreground, active_border_color, inactive_border_color, bell_border_color, tab_bar_background, tab_bar_margin_color,
-        window_title_bar_active_foreground, window_title_bar_active_background, window_title_bar_inactive_foreground, window_title_bar_inactive_background;
+    color_type url_color, find_match_foreground, find_match_background, background, foreground, active_border_color, inactive_border_color, bell_border_color,
+        tab_bar_background, tab_bar_margin_color, window_title_bar_active_foreground, window_title_bar_active_background, window_title_bar_inactive_foreground,
+        window_title_bar_inactive_background;
     monotonic_t repaint_delay, input_delay;
     struct {
         bool on_cross, on_drop;

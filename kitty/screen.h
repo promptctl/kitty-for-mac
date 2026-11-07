@@ -195,12 +195,21 @@ typedef struct {
     } find_last_rendered;
     // the find state this window last told its find bar, written only by find_status_for_bar:
     // the status, and whether a step waiting on it could land now (main screen, no drag)
-    struct { FindStatus status; bool main_screen, selecting; } find_reported;
+    struct {
+        FindStatus status;
+        bool main_screen, selecting;
+    } find_reported;
     // the most cells one search chunk walks; tests set it small to get many chunks
     uint64_t find_chunk_cells;
     // what the first of the window's waiting steps needs, so the frame's chunk searches there;
     // written only by Screen.find_set_want, which the window calls when that step changes
-    struct { bool wanted; struct { uint64_t line; bool forward; } want; } find_want;
+    struct {
+        bool wanted;
+        struct {
+            uint64_t line;
+            bool forward;
+        } want;
+    } find_want;
     // counts the user's own changes to the selection (a click, a drag, a clear), so a find step
     // pressed after one starts from it rather than from where an earlier waiting step lands
     uint64_t user_selection_changes;
@@ -263,7 +272,10 @@ typedef struct {
         MainBufferView main_buffer_view;
 #ifdef __APPLE__
         // the find matches on the paused rows, as the engine had them when the pause began
-        struct PausedFindMatches { struct FindMatch *items; size_t count, capacity; } find_matches;
+        struct PausedFindMatches {
+            struct FindMatch *items;
+            size_t count, capacity;
+        } find_matches;
 #endif
     } paused_rendering;
     CharsetState charset;

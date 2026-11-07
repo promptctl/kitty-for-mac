@@ -115,10 +115,11 @@ remap_hyperlink_ids(Screen *self, bool preserve_hyperlinks_in_history, hyperlink
     // find's record compares its copied cells with the live ones, so it holds ids too; an id
     // only the record holds is of a line since rewritten, and keeps no link in the pool
     FindFedRecord *r = self->find_record;
-    if (r) for (size_t i = 0; i < (size_t)r->rows * r->columns; i++) {
-        CPUCell *c = r->cells + i;
-        c->hyperlink_id = c->hyperlink_id < clone.count ? map[c->hyperlink_id] : 0;
-    }
+    if (r)
+        for (size_t i = 0; i < (size_t)r->rows * r->columns; i++) {
+            CPUCell *c = r->cells + i;
+            c->hyperlink_id = c->hyperlink_id < clone.count ? map[c->hyperlink_id] : 0;
+        }
 #endif
 }
 

@@ -812,14 +812,16 @@ glfwCocoaNativeViewHasFocus(void) {
 }
 
 // key_destination.h spells these out so kitty's tests can include it without AppKit.
-_Static_assert(kVK_Shift == 0x38 && kVK_RightShift == 0x3C && kVK_Control == 0x3B && kVK_RightControl == 0x3E &&
-               kVK_Option == 0x3A && kVK_RightOption == 0x3D && kVK_Command == 0x37 && kVK_RightCommand == 0x36 &&
-               kVK_Function == 0x3F, "key_destination.h key codes");
-_Static_assert(NX_DEVICELSHIFTKEYMASK == 0x2 && NX_DEVICERSHIFTKEYMASK == 0x4 && NX_DEVICELCTLKEYMASK == 0x1 &&
-               NX_DEVICERCTLKEYMASK == 0x2000 && NX_DEVICELALTKEYMASK == 0x20 && NX_DEVICERALTKEYMASK == 0x40 &&
-               NX_DEVICELCMDKEYMASK == 0x8 && NX_DEVICERCMDKEYMASK == 0x10 && NSEventModifierFlagFunction == 0x800000 &&
-               NX_SHIFTMASK == 0x20000 && NX_CONTROLMASK == 0x40000 && NX_ALTERNATEMASK == 0x80000 && NX_COMMANDMASK == 0x100000,
-               "key_destination.h modifier masks");
+_Static_assert(
+    kVK_Shift == 0x38 && kVK_RightShift == 0x3C && kVK_Control == 0x3B && kVK_RightControl == 0x3E && kVK_Option == 0x3A && kVK_RightOption == 0x3D &&
+        kVK_Command == 0x37 && kVK_RightCommand == 0x36 && kVK_Function == 0x3F,
+    "key_destination.h key codes");
+_Static_assert(
+    NX_DEVICELSHIFTKEYMASK == 0x2 && NX_DEVICERSHIFTKEYMASK == 0x4 && NX_DEVICELCTLKEYMASK == 0x1 && NX_DEVICERCTLKEYMASK == 0x2000 &&
+        NX_DEVICELALTKEYMASK == 0x20 && NX_DEVICERALTKEYMASK == 0x40 && NX_DEVICELCMDKEYMASK == 0x8 && NX_DEVICERCMDKEYMASK == 0x10 &&
+        NSEventModifierFlagFunction == 0x800000 && NX_SHIFTMASK == 0x20000 && NX_CONTROLMASK == 0x40000 && NX_ALTERNATEMASK == 0x80000 &&
+        NX_COMMANDMASK == 0x100000,
+    "key_destination.h modifier masks");
 
 // [LAW:no-shared-mutable-globals] Where each held key's press went. The key
 // monitors below own it; a native view's shortcuts record what they take
@@ -885,15 +887,18 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
         // performKeyEquivalent: says YES for a matching item that validateMenuItem: disables, and
         // sends it nothing: AppKit's notice of a sent action tells a menu that acted from one that did not
         static unsigned long menu_actions_sent = 0;
-        _glfw.ns.menuActionObserver = [[NSNotificationCenter defaultCenter] addObserverForName:NSMenuDidSendActionNotification object:nil queue:nil usingBlock:^(NSNotification *note) {
-            (void)note;
-            menu_actions_sent++;
-        }];
+        _glfw.ns.menuActionObserver = [[NSNotificationCenter defaultCenter] addObserverForName:NSMenuDidSendActionNotification
+                                                                                        object:nil
+                                                                                         queue:nil
+                                                                                    usingBlock:^(NSNotification *note) {
+                                                                                      (void)note;
+                                                                                      menu_actions_sent++;
+                                                                                    }];
         // the modifiers of a pending switch to the next input source
         static NSEventModifierFlags input_source_switch_modifiers = 0;
         void (^record_shortcut_keydown)(NSEvent *, NSEventModifierFlags) = ^(NSEvent *event, NSEventModifierFlags switch_modifiers) {
-            key_destination_consume(&key_destinations, [event keyCode], [event isARepeat]);
-            input_source_switch_modifiers = switch_modifiers;
+          key_destination_consume(&key_destinations, [event keyCode], [event isARepeat]);
+          input_source_switch_modifiers = switch_modifiers;
         };
         // The terminal a window number names, or nil for a window that is not a
         // terminal (an alert, the About panel) or is gone.
@@ -902,40 +907,35 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
             return window ? window->ns.view : nil;
         };
         KeyDestination (^current_key_destination)(void) = ^KeyDestination(void) {
-            NSWindow *kw = [NSApp keyWindow];
-            if (!kw) return KEY_DEST_NOT_HELD;
-            if (glfwCocoaNativeViewHasFocus() || !terminal_for_window_number([kw windowNumber])) return (KeyDestination){KEY_DEST_APPKIT, 0};
-            return (KeyDestination){KEY_DEST_TERMINAL, (uintptr_t)[kw windowNumber]};
+          NSWindow *kw = [NSApp keyWindow];
+          if (!kw) return KEY_DEST_NOT_HELD;
+          if (glfwCocoaNativeViewHasFocus() || !terminal_for_window_number([kw windowNumber])) return (KeyDestination){KEY_DEST_APPKIT, 0};
+          return (KeyDestination){KEY_DEST_TERMINAL, (uintptr_t)[kw windowNumber]};
         };
         // Sends an event to the terminal it is destined for, or returns it to
         // AppKit, as the monitor's return value. current is the destination the
         // table was just given. An AppKit event while a terminal has focus is
         // dropped, so a repeat or release never reaches the terminal; with no
         // key window it goes back to AppKit.
-        NSEvent * (^deliver_key_event)(NSEvent *, KeyDestination, KeyDestination, void (^)(id<GLFWTerminalKeyInput>, NSEvent *)) = ^NSEvent *(NSEvent *event, KeyDestination dest, KeyDestination current, void (^handler)(id<GLFWTerminalKeyInput>, NSEvent *)) {
-            switch (dest.kind) {
-                case KEY_DEST_APPKIT:
-                    if (current.kind != KEY_DEST_TERMINAL) return event;
-                    debug_input("key event dropped as its press went to a native view that no longer has focus\n");
-                    return nil;
-                case KEY_DEST_TERMINAL: {
-                    id<GLFWTerminalKeyInput> terminal = terminal_for_window_number((NSInteger)dest.id);
-                    if (terminal) handler(terminal, event);
-                    else debug_input("key event ignored as the window its press went to is gone\n");
-                    return nil;
-                }
-                case KEY_DEST_CONSUMED:
-                    debug_input("key event ignored as a shortcut took its press\n");
-                    return nil;
-                case KEY_DEST_SHORTCUT:
-                    _glfwCocoaReleaseNativeViewShortcutKey(event, dest.id);
-                    return nil;
-                case KEY_DEST_NONE:
-                    debug_input("key event ignored as no keyWindow present\n");
-                    return nil;
-            }
-            return nil;
-        };
+        NSEvent * (^deliver_key_event)(NSEvent *, KeyDestination, KeyDestination, void (^)(id<GLFWTerminalKeyInput>, NSEvent *)) =
+            ^NSEvent *(NSEvent *event, KeyDestination dest, KeyDestination current, void (^handler)(id<GLFWTerminalKeyInput>, NSEvent *)) {
+              switch (dest.kind) {
+                  case KEY_DEST_APPKIT:
+                      if (current.kind != KEY_DEST_TERMINAL) return event;
+                      debug_input("key event dropped as its press went to a native view that no longer has focus\n");
+                      return nil;
+                  case KEY_DEST_TERMINAL: {
+                      id<GLFWTerminalKeyInput> terminal = terminal_for_window_number((NSInteger)dest.id);
+                      if (terminal) handler(terminal, event);
+                      else debug_input("key event ignored as the window its press went to is gone\n");
+                      return nil;
+                  }
+                  case KEY_DEST_CONSUMED: debug_input("key event ignored as a shortcut took its press\n"); return nil;
+                  case KEY_DEST_SHORTCUT: _glfwCocoaReleaseNativeViewShortcutKey(event, dest.id); return nil;
+                  case KEY_DEST_NONE: debug_input("key event ignored as no keyWindow present\n"); return nil;
+              }
+              return nil;
+            };
 
         NSEvent * (^keydown_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("---------------- key down -------------------\n");
@@ -978,14 +978,21 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               return nil;
           }
           const KeyDestination current = current_key_destination();
-          return deliver_key_event(event, key_destination_for_key_down(&key_destinations, [event keyCode], [event isARepeat], current), current, ^(id<GLFWTerminalKeyInput> t, NSEvent *e) { [t terminalKeyDown:e]; });
+          return deliver_key_event(
+              event,
+              key_destination_for_key_down(&key_destinations, [event keyCode], [event isARepeat], current),
+              current,
+              ^(id<GLFWTerminalKeyInput> t, NSEvent *e) { [t terminalKeyDown:e]; });
         };
 
         NSEvent * (^keyup_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("----------------- key up --------------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
           const KeyDestination current = current_key_destination();
-          return deliver_key_event(event, key_destination_for_key_up(&key_destinations, [event keyCode], current), current, ^(id<GLFWTerminalKeyInput> t, NSEvent *e) { [t terminalKeyUp:e]; });
+          return deliver_key_event(
+              event, key_destination_for_key_up(&key_destinations, [event keyCode], current), current, ^(id<GLFWTerminalKeyInput> t, NSEvent *e) {
+                [t terminalKeyUp:e];
+              });
         };
 
         NSEvent * (^flags_changed_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {

@@ -77,7 +77,7 @@ typedef struct FindFedRecord {
 } FindFedRecord;
 
 // A new record of the buffer as it is now; NULL when out of memory.
-FindFedRecord* find_record_capture(Screen *self);
+FindFedRecord *find_record_capture(Screen *self);
 void find_record_free(FindFedRecord *r);
 // The first absolute line whose text may differ from what r recorded, taking the history
 // ring's own rewrites into account: a line in the buffer, or the buffer's end when only

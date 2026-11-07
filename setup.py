@@ -317,9 +317,12 @@ class CompilationDatabase:
         link_records.update((c.key, c.cmd) for c in self.built_now + self.link_commands if c.key in self.current)
         with suppress(FileNotFoundError):
             with open(self.dbpath, 'w') as f:
-                json.dump([
-                    {'file': k.src, 'arguments': cmd, 'directory': src_base, 'output': k.dest} for k, cmd in compile_records.items()
-                ], f, indent=2, sort_keys=True)
+                json.dump(
+                    [{'file': k.src, 'arguments': cmd, 'directory': src_base, 'output': k.dest} for k, cmd in compile_records.items()],
+                    f,
+                    indent=2,
+                    sort_keys=True,
+                )
             with open(self.linkdbpath, 'w') as f:
                 json.dump([{'output': k, 'arguments': cmd, 'directory': src_base} for k, cmd in link_records.items()], f, indent=2, sort_keys=True)
 

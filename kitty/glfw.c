@@ -415,9 +415,7 @@ live_resize_callback(GLFWwindow *w, bool started) {
     global_state.callback_os_window->live_resize.from_os_notification = true;
     change_live_resize_state(global_state.callback_os_window, true);
     global_state.has_pending_resizes = true;
-    if (!started) {
-        global_state.callback_os_window->live_resize.os_says_resize_complete = true;
-    }
+    if (!started) { global_state.callback_os_window->live_resize.os_says_resize_complete = true; }
     global_state.callback_os_window = NULL;
 }
 
@@ -1020,9 +1018,7 @@ native_view_focus_callback(GLFWwindow *w, bool native_view_has_focus) {
         if (osw->native_view_focused != native_view_has_focus) {
             osw->native_view_focused = native_view_has_focus;
             osw->cursor_blink_zero_time = monotonic();
-            if (osw->is_focused && is_window_ready_for_callbacks()) {
-                WINDOW_CALLBACK(on_focus, "O", terminal_has_focus(osw) ? Py_True : Py_False);
-            }
+            if (osw->is_focused && is_window_ready_for_callbacks()) { WINDOW_CALLBACK(on_focus, "O", terminal_has_focus(osw) ? Py_True : Py_False); }
         }
     }
     global_state.callback_os_window = outer_id ? os_window_for_id(outer_id) : NULL;
@@ -3216,13 +3212,13 @@ toggle_maximized(PyObject UNUSED *self, PyObject *args) {
 #ifdef __APPLE__
 // [LAW:single-enforcer] Which NSWindows take native chrome, such as the find bar: an OS window's,
 // never a layer-shell panel's. NULL when the OS window has none.
-static void*
+static void *
 chrome_window(OSWindow *w) {
     return w && w->handle && !w->is_layer_shell ? glfwGetCocoaWindow(w->handle) : NULL;
 }
 
 // key_window when it is an OS window that takes native chrome, NULL for an About panel, an alert or a layer-shell panel
-void*
+void *
 cocoa_chrome_window_for_key_window(void *key_window) {
     for (size_t i = 0; key_window && i < global_state.num_os_windows; i++) {
         if (chrome_window(global_state.os_windows + i) == key_window) return key_window;
@@ -3253,21 +3249,19 @@ cocoa_window_from_args(PyObject *args, void **ans) {
     *ans = chrome_window(os_window_id ? os_window_for_id(os_window_id) : current_os_window());
     return true;
 }
-#define COCOA_OS_WINDOW_FUNC(name, call) \
-static PyObject * \
-name(PyObject UNUSED *self, PyObject *args) { \
-    void *window; \
-    if (!cocoa_window_from_args(args, &window)) return NULL; \
-    if (window) call(window); \
-    Py_RETURN_NONE; \
-}
+#define COCOA_OS_WINDOW_FUNC(name, call)                           \
+    static PyObject *name(PyObject UNUSED *self, PyObject *args) { \
+        void *window;                                              \
+        if (!cocoa_window_from_args(args, &window)) return NULL;   \
+        if (window) call(window);                                  \
+        Py_RETURN_NONE;                                            \
+    }
 #else
-#define COCOA_OS_WINDOW_FUNC(name, call) \
-static PyObject * \
-name(PyObject UNUSED *self, PyObject *args UNUSED) { \
-    PyErr_SetString(PyExc_RuntimeError, #name "() is only supported on macOS"); \
-    return NULL; \
-}
+#define COCOA_OS_WINDOW_FUNC(name, call)                                            \
+    static PyObject *name(PyObject UNUSED *self, PyObject *args UNUSED) {           \
+        PyErr_SetString(PyExc_RuntimeError, #name "() is only supported on macOS"); \
+        return NULL;                                                                \
+    }
 #endif
 COCOA_OS_WINDOW_FUNC(cocoa_minimize_os_window, cocoa_minimize)
 COCOA_OS_WINDOW_FUNC(cocoa_show_find_bar_for_os_window, cocoa_show_find_bar)
@@ -3277,7 +3271,9 @@ COCOA_OS_WINDOW_FUNC(cocoa_seat_find_bar_for_os_window, cocoa_seat_find_bar)
 #ifdef __APPLE__
 static PyObject *
 cocoa_update_find_bar_py(PyObject UNUSED *self, PyObject *args) {
-    id_type os_window_id; const char *query; long current, total, count;
+    id_type os_window_id;
+    const char *query;
+    long current, total, count;
     if (!PyArg_ParseTuple(args, "Kslll", &os_window_id, &query, &current, &total, &count)) return NULL;
     void *window = chrome_window(os_window_for_id(os_window_id));
     if (window) cocoa_update_find_bar(window, query, current, total, count);

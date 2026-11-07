@@ -4293,7 +4293,9 @@ class Boss:
     def ungrab_keyboard(self) -> None:
         grab_keyboard(False)
 
-    @ac('misc', """
+    @ac(
+        'misc',
+        """
         Show the find bar of the active OS window and focus its search field, on macOS
 
         It takes how the query matches, which the field's menu also sets and which lasts: any of
@@ -4301,7 +4303,8 @@ class Boss:
         :code:`regex`. For example::
 
             map cmd+shift+f show_find_bar regex
-        """)
+        """,
+    )
     def show_find_bar(self, case_rule: FindCaseRule | None = None, syntax: FindSyntax | None = None) -> None:
         if (osw_id := self.os_window_id_for_dispatch()) is None:
             return

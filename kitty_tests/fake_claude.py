@@ -46,11 +46,11 @@ def main() -> None:
         if dialog:
             rows = list(DIALOG)
         elif state == 'P':
-            rows = conv[-(ROWS - 6):] + [rule, '❯ ', rule, '  🍫 polled  ~/code (main)', '  ⏵⏵ auto mode on (shift+tab to cycle)']
+            rows = conv[-(ROWS - 6) :] + [rule, '❯ ', rule, '  🍫 polled  ~/code (main)', '  ⏵⏵ auto mode on (shift+tab to cycle)']
         else:
             at = matches[current] if state == 'A' else max(len(conv) - 1, 0)
             top = max(0, min(at - 5, len(conv) - (ROWS - 2)))
-            shown = conv[top:top + ROWS - 2]
+            shown = conv[top : top + ROWS - 2]
             if state == 'T':
                 footer = '  Showing detailed transcript · ctrl+o to toggle · ↑↓ scroll · v to open in code · ? for shortcuts'.ljust(COLS)
             elif state == 'S':

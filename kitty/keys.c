@@ -384,8 +384,13 @@ on_key_input(const GLFWkeyevent *ev) {
 bool
 on_native_view_key(const GLFWkeyevent *ev) {
     const bool release = ev->action == GLFW_RELEASE;
-    if (OPT(debug_keyboard)) debug("\x1b[33mon_native_view_key\x1b[m: glfw key: 0x%x native_code: 0x%x action: %s %s", ev->key, ev->native_key,
-            release ? "RELEASE" : (ev->action == GLFW_PRESS ? "PRESS" : "REPEAT"), format_mods(ev->mods));
+    if (OPT(debug_keyboard))
+        debug(
+            "\x1b[33mon_native_view_key\x1b[m: glfw key: 0x%x native_code: 0x%x action: %s %s",
+            ev->key,
+            ev->native_key,
+            release ? "RELEASE" : (ev->action == GLFW_PRESS ? "PRESS" : "REPEAT"),
+            format_mods(ev->mods));
     if (!active_window()) {
         debug("no active window, ignoring\n");
         return false;
@@ -534,17 +539,31 @@ test_key_destination(PyObject *self UNUSED, PyObject *steps) {
     if (!ans || !it) return NULL;
     PyObject *step;
     while ((step = PyIter_Next(it))) {
-        const char *event; unsigned short vk; unsigned long long extra, id; int kind;
+        const char *event;
+        unsigned short vk;
+        unsigned long long extra, id;
+        int kind;
         const int ok = PyArg_ParseTuple(step, "sHKiK", &event, &vk, &extra, &kind, &id);
-        if (!ok) { Py_DECREF(step); return NULL; }
+        if (!ok) {
+            Py_DECREF(step);
+            return NULL;
+        }
         const KeyDestination current = {(KeyDestinationKind)kind, (uintptr_t)id};
         KeyDestination dest;
         if (strcmp(event, "down") == 0) dest = key_destination_for_key_down(&t, vk, extra != 0, current);
         else if (strcmp(event, "up") == 0) dest = key_destination_for_key_up(&t, vk, current);
         else if (strcmp(event, "flags") == 0) dest = key_destination_for_flags_changed(&t, vk, extra, current);
-        else if (strcmp(event, "consume") == 0) { key_destination_consume(&t, vk, extra != 0); dest = held(vk); }
-        else if (strcmp(event, "shortcut") == 0) { key_destination_take_for_shortcut(&t, vk, extra != 0, current.id); dest = held(vk); }
-        else { PyErr_Format(PyExc_ValueError, "unknown key event: %s", event); Py_DECREF(step); return NULL; }
+        else if (strcmp(event, "consume") == 0) {
+            key_destination_consume(&t, vk, extra != 0);
+            dest = held(vk);
+        } else if (strcmp(event, "shortcut") == 0) {
+            key_destination_take_for_shortcut(&t, vk, extra != 0, current.id);
+            dest = held(vk);
+        } else {
+            PyErr_Format(PyExc_ValueError, "unknown key event: %s", event);
+            Py_DECREF(step);
+            return NULL;
+        }
         Py_DECREF(step);
         RAII_PyObject(r, Py_BuildValue("iK", (int)dest.kind, (unsigned long long)dest.id));
         if (!r || PyList_Append(ans, r) != 0) return NULL;

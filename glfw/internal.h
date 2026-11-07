@@ -883,7 +883,8 @@ void _glfwPlatformRunMainLoop(GLFWtickcallback, void *);
 void _glfwPlatformStopMainLoop(void);
 unsigned long long _glfwPlatformAddTimer(monotonic_t interval, bool repeats, GLFWuserdatafun callback, void *callback_data, GLFWuserdatafun free_callback);
 // A timer whose firing is an event: see TimerFire in callback_kinds.h
-unsigned long long _glfwPlatformAddClientTimer(monotonic_t interval, bool repeats, ClientTimerFire callback, void *callback_data, GLFWuserdatafun free_callback);
+unsigned long long
+_glfwPlatformAddClientTimer(monotonic_t interval, bool repeats, ClientTimerFire callback, void *callback_data, GLFWuserdatafun free_callback);
 void _glfwPlatformUpdateTimer(unsigned long long timer_id, monotonic_t interval, bool enabled);
 void _glfwPlatformRemoveTimer(unsigned long long timer_id);
 int _glfwPlatformSetWindowBlur(_GLFWwindow *handle, int value);

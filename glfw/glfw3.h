@@ -1483,9 +1483,9 @@ typedef struct GLFWDropEvent {
         GLFWDragOperationType preferred;
         int allowed, source_actions;
     } operation;
-    bool from_self;                                                                         // Only valid upto GLFW_DROP_DROP
-    GLFWdropreaddatafun read_data;                                                          // Only valid for GLFW_DROP_DATA_AVAILABLE
-    GLFWdropfinishfun finish_drop;                                                          // Only valid for GLFW_DROP_DROP and GLFW_DROP_DATA_AVAILABLE
+    bool from_self;                // Only valid upto GLFW_DROP_DROP
+    GLFWdropreaddatafun read_data; // Only valid for GLFW_DROP_DATA_AVAILABLE
+    GLFWdropfinishfun finish_drop; // Only valid for GLFW_DROP_DROP and GLFW_DROP_DATA_AVAILABLE
 } GLFWDropEvent;
 typedef void (*GLFWdropeventfun)(GLFWwindow *, GLFWDropEvent *event);
 

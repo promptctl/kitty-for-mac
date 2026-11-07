@@ -75,6 +75,7 @@ def patient() -> TmuxOperation:
 
 class Command(NamedTuple):
     "One command a deadline test's operation sent: the clock reading its timeout was worked out from, and the timeout"
+
     at: float
     timeout: float
 
@@ -181,7 +182,11 @@ class TmuxFindPureTest(BaseTest):
         with self.assertRaises(TmuxError):
             parse_pane('', 5)
         for text, version in (
-            ('3.5a', (3, 5, True)), ('3.6', (3, 6, True)), ('3.6-rc2', (3, 6, True)), ('3.10', (3, 10, True)), ('next-3.7', (3, 7, False)),
+            ('3.5a', (3, 5, True)),
+            ('3.6', (3, 6, True)),
+            ('3.6-rc2', (3, 6, True)),
+            ('3.10', (3, 10, True)),
+            ('next-3.7', (3, 7, False)),
         ):
             self.ae(find_version(text), TmuxVersion(*version), text)
         # next-3.6 is code on the way to 3.6, which may not parse copy-mode options yet
@@ -268,7 +273,11 @@ class PrivateTmux:
             self.tmux('set', '-g', opt, val)
         self.client_proc = subprocess.Popen(
             [self.exe, '-u', '-S', self.socket, 'attach', '-t', 'p'],
-            stdin=self.slave, stdout=self.slave, stderr=self.slave, start_new_session=True, env=self.env,
+            stdin=self.slave,
+            stdout=self.slave,
+            stderr=self.slave,
+            start_new_session=True,
+            env=self.env,
         )
         deadline = time.monotonic() + 10
         while not self.tmux('list-clients', check=False) and time.monotonic() < deadline:
@@ -308,6 +317,7 @@ class PrivateTmux:
 
 class Script(NamedTuple):
     "What the pane runs, and the last line it prints before it waits: a search before that line is drawn searches part of it"
+
     command: str
     last: str
 
@@ -648,19 +658,46 @@ class TmuxFindWindowTest(BaseTest):
     def make_window(self, s: Any, fake: FakeTmux) -> SimpleNamespace:
         foreground: list[dict[str, Any]] = []
         w: Any = SimpleNamespace(
-            screen=s, find_query='', os_window_id=1, text_for_selection=lambda: s.callbacks.kitty_selection, geometry=None,
-            child=SimpleNamespace(foreground_processes=foreground), tmux_find_state=TmuxFindState(), claude_find_state=ClaudeFindState(),
-            claude_host=ClaudeHost(), find_reporting=None,
-            finish_scroll_animation=lambda: None, scroll_animation=SimpleNamespace(timer=0), find_bar_top_inset=lambda: 0, find_mode=lambda: FindMode(),
+            screen=s,
+            find_query='',
+            os_window_id=1,
+            text_for_selection=lambda: s.callbacks.kitty_selection,
+            geometry=None,
+            child=SimpleNamespace(foreground_processes=foreground),
+            tmux_find_state=TmuxFindState(),
+            claude_find_state=ClaudeFindState(),
+            claude_host=ClaudeHost(),
+            find_reporting=None,
+            finish_scroll_animation=lambda: None,
+            scroll_animation=SimpleNamespace(timer=0),
+            find_bar_top_inset=lambda: 0,
+            find_mode=lambda: FindMode(),
             pending_find_timer=0,
         )
         w.foreground = foreground
         w.engine_find = EngineFind(w)
         for name in (
-            'tmux_client', 'find_pane_backend', 'find_status', 'end_pane_finds', 'find_backend', 'find_holder', 'end_finds', 'find_backend_to_search',
-            'find_step', 'set_find_query', 'find', 'push_find_bar',
-            'find_selection_text', 'find_clear', 'find_status_changed', 'use_selection_for_find', 'settle_find', 'cancel_pending_find',
-            'find_backend_for', 'selection_text_in', 'begin_find_in',
+            'tmux_client',
+            'find_pane_backend',
+            'find_status',
+            'end_pane_finds',
+            'find_backend',
+            'find_holder',
+            'end_finds',
+            'find_backend_to_search',
+            'find_step',
+            'set_find_query',
+            'find',
+            'push_find_bar',
+            'find_selection_text',
+            'find_clear',
+            'find_status_changed',
+            'use_selection_for_find',
+            'settle_find',
+            'cancel_pending_find',
+            'find_backend_for',
+            'selection_text_in',
+            'begin_find_in',
         ):
             setattr(w, name, getattr(Window, name).__get__(w))
         w.pushed = []
@@ -751,7 +788,7 @@ class TmuxFindWindowTest(BaseTest):
         self.assertIsNotNone(w.tmux_find_state.held)
         self.ae(s.find_status()[1], 5)
         self.assertIs(w.find_holder(), w.engine_find)
-        self.ae(w.pushed[-1][1:5], ('x', s.find_status()[0], 5, 0), 'the engine\'s matches are painted, so the bar says so')
+        self.ae(w.pushed[-1][1:5], ('x', s.find_status()[0], 5, 0), "the engine's matches are painted, so the bar says so")
 
     def test_a_search_that_never_reached_a_pane_tells_the_bar_it_is_unavailable_until_it_ends(self):
         s = self.screen_with_matches()
@@ -773,9 +810,15 @@ class TmuxFindWindowTest(BaseTest):
         self.run_in_tmux(w)
         w.find('x')
         closing: Any = SimpleNamespace(
-            tmux_find_state=w.tmux_find_state, claude_find_state=w.claude_find_state, claude_host=w.claude_host,
-            call_watchers=lambda *a: None, watchers=SimpleNamespace(on_close=None), id=1,
-            clear_progress_timer=0, cancel_pending_find=lambda: None, clipboard_request_manager=SimpleNamespace(close=lambda: None),
+            tmux_find_state=w.tmux_find_state,
+            claude_find_state=w.claude_find_state,
+            claude_host=w.claude_host,
+            call_watchers=lambda *a: None,
+            watchers=SimpleNamespace(on_close=None),
+            id=1,
+            clear_progress_timer=0,
+            cancel_pending_find=lambda: None,
+            clipboard_request_manager=SimpleNamespace(close=lambda: None),
             kitten_result_processors=[],
         )
         closing.end_pane_finds = Window.end_pane_finds.__get__(closing)
@@ -788,11 +831,11 @@ class TmuxFindWindowTest(BaseTest):
         fake = FakeTmux(selection='from tmux')
         w = self.make_window(s, fake)
         s.callbacks.kitty_selection = 'from kitty'
-        self.ae(w.find_selection_text(), 'from kitty', 'a bare window uses kitty\'s selection')
+        self.ae(w.find_selection_text(), 'from kitty', "a bare window uses kitty's selection")
         self.run_in_tmux(w)
-        self.ae(w.find_selection_text(), 'from tmux', 'tmux\'s selection is the one the user made in a pane')
+        self.ae(w.find_selection_text(), 'from tmux', "tmux's selection is the one the user made in a pane")
         fake.selection = ''
-        self.ae(w.find_selection_text(), 'from kitty', 'with none in tmux, kitty\'s')
+        self.ae(w.find_selection_text(), 'from kitty', "with none in tmux, kitty's")
         s.callbacks.kitty_selection = ''
         self.assertIsNone(w.find_selection_text())
         # the menu asks the same function the key does
@@ -808,7 +851,7 @@ class TmuxFindWindowTest(BaseTest):
         w = self.make_window(s, FakeTmux())
         can = Boss.find_can_search.__get__(w.boss)
         s.toggle_alt_screen()
-        self.assertFalse(can(1), 'a full-screen program in a bare window: the keys are the program\'s')
+        self.assertFalse(can(1), "a full-screen program in a bare window: the keys are the program's")
         self.assertTrue(w.find_step(False))
         self.assertTrue(w.use_selection_for_find(), 'the key goes to the program')
         self.assertFalse(Boss.find_has_selection.__get__(w.boss)(1))

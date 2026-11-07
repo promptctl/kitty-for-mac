@@ -1164,12 +1164,9 @@ class Cursor:
     text_blink: bool
     shape: int
 
-
 # (after, match, start, end): after the match when after, else within start..end, each a (line, x)
 FindOrigin = tuple[bool, tuple[int, int, int, int], tuple[int, int], tuple[int, int]]
-FindStepResult = Union[
-    tuple[Literal['landed'], tuple[int, int, int, int]], tuple[Literal['none']], tuple[Literal['waiting'], tuple[int, bool]]]
-
+FindStepResult = Union[tuple[Literal['landed'], tuple[int, int, int, int]], tuple[Literal['none']], tuple[Literal['waiting'], tuple[int, bool]]]
 
 class Screen:
     color_profile: ColorProfile

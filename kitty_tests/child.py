@@ -285,9 +285,11 @@ class AwaitExitTest(BaseTest):
     def _first_poll_misses_the_exit(self):
         # Stages the race where the child ends between await_exit's last poll and its kill
         real_waitpid, polls = os.waitpid, []
+
         def waitpid(pid, options):
             polls.append(options)
             return (0, 0) if len(polls) == 1 else real_waitpid(pid, options)
+
         return patch('kitty_tests.base.os.waitpid', waitpid)
 
     def test_a_child_that_exits_just_before_the_kill_reports_its_own_status(self):

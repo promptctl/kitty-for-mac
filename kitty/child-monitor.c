@@ -1207,7 +1207,8 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     }
     if (prepare_to_render_os_window(w, now, &active_window_id, &active_window_bg, &num_visible_windows, &all_windows_have_same_bg, scan_for_animated_images))
         needs_render = true;
-    if (w->last_active_window_id != active_window_id || w->last_active_tab != w->active_tab || w->focused_at_last_render != terminal_has_focus(w)) needs_render = true;
+    if (w->last_active_window_id != active_window_id || w->last_active_tab != w->active_tab || w->focused_at_last_render != terminal_has_focus(w))
+        needs_render = true;
     if (w->render_calls < 3 && background_image_for_os_window(w) != NULL) needs_render = true;
     if (needs_render) render_prepared_os_window(w, active_window_id, active_window_bg, num_visible_windows, all_windows_have_same_bg, now);
     if (w->is_focused) change_menubar_title(w->window_title);
@@ -1221,7 +1222,10 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
 static void
 report_find_status_changes(monotonic_t now) {
     RAII_PyObject(changed, PyList_New(0));
-    if (!changed) { PyErr_Print(); return; }
+    if (!changed) {
+        PyErr_Print();
+        return;
+    }
     for (size_t o = 0; o < global_state.num_os_windows; o++) {
         OSWindow *os_window = global_state.os_windows + o;
         for (unsigned t = 0; t < os_window->num_tabs; t++) {
@@ -1236,11 +1240,11 @@ report_find_status_changes(monotonic_t now) {
                 } else if (screen_find_searching(screen) && screen->paused_rendering.expires_at > now) {
                     set_maximum_wait(screen->paused_rendering.expires_at - now);
                 }
-                if (screen_find_status_changed(screen) && PyList_Append(changed, (PyObject*)screen) != 0) PyErr_Print();
+                if (screen_find_status_changed(screen) && PyList_Append(changed, (PyObject *)screen) != 0) PyErr_Print();
             }
         }
     }
-    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(changed); i++) screen_report_find_status_change((Screen*)PyList_GET_ITEM(changed, i));
+    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(changed); i++) screen_report_find_status_change((Screen *)PyList_GET_ITEM(changed, i));
 }
 #endif
 
@@ -2026,7 +2030,7 @@ io_loop(void *data) {
         if (self->benchmark_wakeup_fd >= 0) {                                                \
             static const char _wakeup_byte = 1;                                              \
             ssize_t _wakeup_ret UNUSED = write(self->benchmark_wakeup_fd, &_wakeup_byte, 1); \
-        } else request_tick_callback();                                                       \
+        } else request_tick_callback();                                                      \
         last_main_loop_wakeup_at = now;                                                      \
         last_wakeup_was_early = false;                                                       \
         wake_latched = false;                                                                \

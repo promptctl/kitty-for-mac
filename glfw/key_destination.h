@@ -26,10 +26,15 @@ typedef enum { KEY_DEST_NONE, KEY_DEST_TERMINAL, KEY_DEST_APPKIT, KEY_DEST_CONSU
 // keys reach the shortcuts again, and its release goes to that window's
 // shortcut release, as a shortcut's release does in the terminal. NONE: nowhere
 // to send it (no key window), or, in the table, not held.
-typedef struct { KeyDestinationKind kind; uintptr_t id; } KeyDestination;
+typedef struct {
+    KeyDestinationKind kind;
+    uintptr_t id;
+} KeyDestination;
 
 #define KEY_DESTINATION_TABLE_SIZE 128
-typedef struct { KeyDestination held[KEY_DESTINATION_TABLE_SIZE]; } KeyDestinationTable;
+typedef struct {
+    KeyDestination held[KEY_DESTINATION_TABLE_SIZE];
+} KeyDestinationTable;
 
 static const KeyDestination KEY_DEST_NOT_HELD = {KEY_DEST_NONE, 0};
 
@@ -38,7 +43,10 @@ static const KeyDestination KEY_DEST_NOT_HELD = {KEY_DEST_NONE, 0};
 // the other key of its pair, and the device-independent flag of the pair.
 // CapsLock is absent: each of its flagsChanged events is a whole toggle, not a
 // press or a release, so it is never held.
-static const struct { unsigned short vk; uint64_t down_flag, other_flag, either_flag; } key_destination_held_modifiers[] = {
+static const struct {
+    unsigned short vk;
+    uint64_t down_flag, other_flag, either_flag;
+} key_destination_held_modifiers[] = {
     {0x38 /* kVK_Shift */, 0x00000002 /* NX_DEVICELSHIFTKEYMASK */, 0x00000004, 0x00020000 /* NX_SHIFTMASK */},
     {0x3C /* kVK_RightShift */, 0x00000004 /* NX_DEVICERSHIFTKEYMASK */, 0x00000002, 0x00020000},
     {0x3B /* kVK_Control */, 0x00000001 /* NX_DEVICELCTLKEYMASK */, 0x00002000, 0x00040000 /* NX_CONTROLMASK */},
@@ -52,7 +60,9 @@ static const struct { unsigned short vk; uint64_t down_flag, other_flag, either_
 #define KEY_DESTINATION_HELD_MODIFIER_COUNT (sizeof(key_destination_held_modifiers) / sizeof(key_destination_held_modifiers[0]))
 
 static inline bool
-key_destination_in_table(unsigned short vk) { return vk < KEY_DESTINATION_TABLE_SIZE; }
+key_destination_in_table(unsigned short vk) {
+    return vk < KEY_DESTINATION_TABLE_SIZE;
+}
 
 // A press is always a new hold: it replaces any record whose release was never
 // seen (it went to another app after Cmd+Tab, or was handed to AppKit early).
@@ -111,7 +121,8 @@ key_destination_modifier_down(uint64_t flags, unsigned i) {
 // The index of a held modifier's key code in the table, or -1.
 static inline int
 key_destination_modifier_index(unsigned short vk) {
-    for (unsigned i = 0; i < KEY_DESTINATION_HELD_MODIFIER_COUNT; i++) if (key_destination_held_modifiers[i].vk == vk) return (int)i;
+    for (unsigned i = 0; i < KEY_DESTINATION_HELD_MODIFIER_COUNT; i++)
+        if (key_destination_held_modifiers[i].vk == vk) return (int)i;
     return -1;
 }
 

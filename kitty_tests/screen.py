@@ -18,7 +18,7 @@ SELECTION_BIT, FIND_MATCH_BIT = 1, 32
 
 
 def cells_with(s, bits, all_bits=False):
-    ''' The (x, y) screen cells whose selection byte has any (or all) of bits '''
+    """The (x, y) screen cells whose selection byte has any (or all) of bits"""
     data = s.current_selections()
     # the render buffer may start with a pixel scroll row above screen row 0
     leading = (len(data) // s.columns - s.lines) * s.columns
@@ -1673,6 +1673,7 @@ class TestScreen(BaseTest):
 
     def test_find(self):
         from kitty.constants import is_macos
+
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
@@ -1748,6 +1749,7 @@ class TestScreen(BaseTest):
 
     def test_find_highlight(self):
         from kitty.constants import is_macos
+
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
         from .base import draw_multicell
@@ -1874,6 +1876,7 @@ class TestScreen(BaseTest):
 
     def test_find_current_match(self):
         from kitty.constants import is_macos
+
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
@@ -1959,6 +1962,7 @@ class TestScreen(BaseTest):
 
     def test_find_step(self):
         from kitty.constants import is_macos
+
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
@@ -2063,6 +2067,7 @@ class TestScreen(BaseTest):
                 s.draw('Q' if i == 3 else 'ab'), s.carriage_return(), s.linefeed()
             s.find_set_query('Q', *MATCH_CASE)
             return find_step(s, False, top_inset)[0] - s.abs_line_at_viewport_top()
+
         self.ae(row_of_revealed(0), 2)
         self.ae(row_of_revealed(2), 3)
 
@@ -2081,15 +2086,44 @@ class TestScreen(BaseTest):
         from kitty.find_backends import EngineFind
         from kitty.tmux_find import TmuxFindState
         from kitty.window import Window
+
         attrs.setdefault('find_mode', lambda: FindMode())
-        w = SimpleNamespace(screen=s, find_query='', pending_find_timer=0, os_window_id=1, finish_scroll_animation=lambda: None,
-                            scroll_animation=SimpleNamespace(timer=0), find_bar_top_inset=lambda: 0,
-                            child=SimpleNamespace(foreground_processes=[]), tmux_find_state=TmuxFindState(), claude_find_state=ClaudeFindState(),
-                            claude_host=ClaudeHost(), find_reporting=None, **attrs)
+        w = SimpleNamespace(
+            screen=s,
+            find_query='',
+            pending_find_timer=0,
+            os_window_id=1,
+            finish_scroll_animation=lambda: None,
+            scroll_animation=SimpleNamespace(timer=0),
+            find_bar_top_inset=lambda: 0,
+            child=SimpleNamespace(foreground_processes=[]),
+            tmux_find_state=TmuxFindState(),
+            claude_find_state=ClaudeFindState(),
+            claude_host=ClaudeHost(),
+            find_reporting=None,
+            **attrs,
+        )
         w.engine_find = EngineFind(w)
-        for name in ('tmux_client', 'find_pane_backend', 'find_status', 'end_pane_finds', 'find_backend', 'find_holder', 'end_finds',
-                     'find_backend_to_search', 'find_backend_for', 'selection_text_in', 'begin_find_in', 'find_step', 'set_find_query', 'find',
-                     'find_clear', 'settle_find', 'cancel_pending_find', *bound):
+        for name in (
+            'tmux_client',
+            'find_pane_backend',
+            'find_status',
+            'end_pane_finds',
+            'find_backend',
+            'find_holder',
+            'end_finds',
+            'find_backend_to_search',
+            'find_backend_for',
+            'selection_text_in',
+            'begin_find_in',
+            'find_step',
+            'set_find_query',
+            'find',
+            'find_clear',
+            'settle_find',
+            'cancel_pending_find',
+            *bound,
+        ):
             if name not in attrs:
                 setattr(w, name, getattr(Window, name).__get__(w))
         return w
@@ -2099,6 +2133,7 @@ class TestScreen(BaseTest):
 
         from kitty.constants import is_macos
         from kitty.window import Window
+
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
         s = self.create_screen(cols=5, lines=4, scrollback=50)
@@ -2120,10 +2155,23 @@ class TestScreen(BaseTest):
         # a query with no matches is searched once per keystroke, not again by the step that follows it
         walks = []
         find_set_query = s.find_set_query
-        w.screen = SimpleNamespace(**{n: getattr(s, n) for n in (
-            'find_status', 'find_status_for_bar', 'find_origin', 'find_step', 'find_set_want', 'user_selection_changes', 'selection_in_progress',
-            'is_main_linebuf', 'pause_rendering')},
-                                   find_set_query=lambda *a: walks.append(a) or find_set_query(*a))
+        w.screen = SimpleNamespace(
+            **{
+                n: getattr(s, n)
+                for n in (
+                    'find_status',
+                    'find_status_for_bar',
+                    'find_origin',
+                    'find_step',
+                    'find_set_want',
+                    'user_selection_changes',
+                    'selection_in_progress',
+                    'is_main_linebuf',
+                    'pause_rendering',
+                )
+            },
+            find_set_query=lambda *a: walks.append(a) or find_set_query(*a),
+        )
         Window.find(w, 'nomatch')
         self.ae(len(walks), 1)
         # a pattern that does not parse is the query the bar shows, rejected: it raises nothing and
@@ -2147,6 +2195,7 @@ class TestScreen(BaseTest):
         from kitty.constants import is_macos
         from kitty.options.utils import show_find_bar
         from kitty.window import Window
+
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
@@ -2165,7 +2214,14 @@ class TestScreen(BaseTest):
 
         # each mode, end to end from the find action
         text = ('abc', 'ABC', 'aBc', 'a.c')
-        self.ae(found(FindMode(), 'abc', *text), [(0, 0), (1, 0), (2, 0), ])
+        self.ae(
+            found(FindMode(), 'abc', *text),
+            [
+                (0, 0),
+                (1, 0),
+                (2, 0),
+            ],
+        )
         self.ae(found(FindMode(), 'aBc', *text), [(2, 0)], 'smart case matches case once the query has an uppercase letter')
         self.ae(found(FindMode(FindCaseRule.ignore), 'aBc', *text), [(0, 0), (1, 0), (2, 0)])
         self.ae(found(FindMode(FindCaseRule.match), 'abc', *text), [(0, 0)])
@@ -2222,8 +2278,11 @@ class TestScreen(BaseTest):
         w = SimpleNamespace(os_window_id=1, screen_top=top)
         w.find_bar_clearance = Window.find_bar_clearance.__get__(w)
         clearance = top + FIND_BAR_CLEARANCE_ROWS * cell_height
-        with mock.patch.object(window_module, 'is_macos', True), mock.patch.object(window_module, 'cell_size_for_window', lambda osw: (10, cell_height)), \
-                mock.patch.object(window_module, 'cocoa_find_bar_covered_pixels', lambda osw: clearance + bar_height):
+        with (
+            mock.patch.object(window_module, 'is_macos', True),
+            mock.patch.object(window_module, 'cell_size_for_window', lambda osw: (10, cell_height)),
+            mock.patch.object(window_module, 'cocoa_find_bar_covered_pixels', lambda osw: clearance + bar_height),
+        ):
             self.ae(Window.find_bar_clearance(w), clearance)
             # a match is revealed below the cleared rows and the bar: rows are counted from the screen's top
             self.ae(Window.find_bar_top_inset(w), -(-(FIND_BAR_CLEARANCE_ROWS * cell_height + bar_height) // cell_height))
@@ -2237,8 +2296,11 @@ class TestScreen(BaseTest):
         other = SimpleNamespace(os_window_id=1)
         boss = SimpleNamespace(os_window_map={1: SimpleNamespace(active_window=w)})
         seated = []
-        with mock.patch.object(window_module, 'is_macos', True), mock.patch.object(window_module, 'get_boss', lambda: boss), \
-                mock.patch.object(window_module, 'cocoa_seat_find_bar_for_os_window', seated.append):
+        with (
+            mock.patch.object(window_module, 'is_macos', True),
+            mock.patch.object(window_module, 'get_boss', lambda: boss),
+            mock.patch.object(window_module, 'cocoa_seat_find_bar_for_os_window', seated.append),
+        ):
             Window.seat_find_bar(other)
             self.ae(seated, [])
             Window.seat_find_bar(w)
@@ -2251,6 +2313,7 @@ class TestScreen(BaseTest):
         from kitty import window as window_module
         from kitty.boss import Boss
         from kitty.constants import is_macos
+
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
@@ -2274,9 +2337,12 @@ class TestScreen(BaseTest):
             active[0] = tab_manager.active_window = window
             window.follow_find_bar()
 
-        with mock.patch.object(window_module, 'is_macos', True), mock.patch.object(window_module, 'get_boss', lambda: boss), \
-                mock.patch.object(window_module, 'cocoa_find_bar_state', lambda os_window_id: bar[0]), \
-                mock.patch.object(window_module, 'cocoa_seat_find_bar_for_os_window', seated.append):
+        with (
+            mock.patch.object(window_module, 'is_macos', True),
+            mock.patch.object(window_module, 'get_boss', lambda: boss),
+            mock.patch.object(window_module, 'cocoa_find_bar_state', lambda os_window_id: bar[0]),
+            mock.patch.object(window_module, 'cocoa_seat_find_bar_for_os_window', seated.append),
+        ):
             follow(a)
             self.ae(seated, [1], 'the bar sits by the screen of the window it follows')
             self.ae(a.find_query, 'b')
@@ -2326,6 +2392,7 @@ class TestScreen(BaseTest):
 
     def test_find_live(self):
         from kitty.constants import is_macos
+
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
@@ -2420,6 +2487,7 @@ class TestScreen(BaseTest):
             s = self.create_screen(cols=5, lines=2, scrollback=2)
             s.draw('abcdefgh'), s.carriage_return(), s.linefeed()
             return s
+
         s = head_evicted()
         s.find_set_query('^[a-f]', *REGEX)
         self.ae(s.find_count(), 1)
@@ -2632,10 +2700,12 @@ class TestScreen(BaseTest):
             ans, w.screen.callbacks.wtcbuf = w.screen.callbacks.wtcbuf, b''
             return ans
 
-        with mock.patch.object(window_module, 'terminal_has_focus', lambda os_window_id: keys[0]), \
-                mock.patch.object(window_module, 'call_watchers', lambda *a: None), \
-                mock.patch.object(window_module, 'update_ime_position_for_window', lambda *a: None), \
-                mock.patch.object(window_module, 'current_focused_os_window_id', lambda: 1):
+        with (
+            mock.patch.object(window_module, 'terminal_has_focus', lambda os_window_id: keys[0]),
+            mock.patch.object(window_module, 'call_watchers', lambda *a: None),
+            mock.patch.object(window_module, 'update_ime_position_for_window', lambda *a: None),
+            mock.patch.object(window_module, 'current_focused_os_window_id', lambda: 1),
+        ):
             a.activation_changed(True)
             self.ae((a.is_focused, sent(a)), (True, b'\x1b[I'))  # ]
             # the find bar's field takes the keys: the program loses focus once
@@ -2659,6 +2729,7 @@ class TestScreen(BaseTest):
 
         from kitty import window as window_module
         from kitty.constants import is_macos
+
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
@@ -2714,8 +2785,11 @@ class TestScreen(BaseTest):
         w.find_query = 'x'
         tab_manager = SimpleNamespace(active_window=w)
         boss = SimpleNamespace(os_window_map={1: tab_manager})
-        with mock.patch.object(window_module, 'is_macos', True), mock.patch.object(window_module, 'get_boss', lambda: boss), \
-                mock.patch.object(window_module, 'cocoa_update_find_bar', lambda *a: pushed.append(a)):
+        with (
+            mock.patch.object(window_module, 'is_macos', True),
+            mock.patch.object(window_module, 'get_boss', lambda: boss),
+            mock.patch.object(window_module, 'cocoa_update_find_bar', lambda *a: pushed.append(a)),
+        ):
             w.find_status_changed()
             self.ae(pushed, [(1, 'x', *s.find_status()[:2], 0)])
             tab_manager.active_window = None
@@ -2724,6 +2798,7 @@ class TestScreen(BaseTest):
 
     def test_find_in_chunks(self):
         from kitty.constants import is_macos
+
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
@@ -2825,6 +2900,7 @@ class TestScreen(BaseTest):
         from kitty import window as window_module
         from kitty.constants import is_macos
         from kitty.window import Window
+
         if not is_macos:
             self.skipTest('The Rust find engine is linked on macOS only')
 
@@ -2837,8 +2913,12 @@ class TestScreen(BaseTest):
             return s
 
         def window(s):
-            return self.find_window(s, ('find_status_changed', 'find_typed', 'use_selection_for_find', 'find_selection_text'),
-                                    push_find_bar=lambda: None, text_for_selection=lambda: ''.join(s.text_for_selection()))
+            return self.find_window(
+                s,
+                ('find_status_changed', 'find_typed', 'use_selection_for_find', 'find_selection_text'),
+                push_find_bar=lambda: None,
+                text_for_selection=lambda: ''.join(s.text_for_selection()),
+            )
 
         # what the frames do while steps wait
         def frames(w):
@@ -2869,12 +2949,14 @@ class TestScreen(BaseTest):
             Window.find_step(w, False), Window.find_step(w, False)
             if s.find_status()[3]:
                 self.ae(len(w.engine_find.waiting), 3)
+
         self.ae(same_as_instant(three), (79, 0, 79, 0))
 
         # scrolling while a step waits leaves it starting from where the user was when they pressed it
         def scrolled(s, w):
             Window.find(w, 'x')
             s.scroll(30, True)
+
         self.ae(same_as_instant(scrolled), (77, 0, 77, 0))
         # and a landing that comes after the scroll scrolls the match back into view
         s = screen(1)
@@ -2886,6 +2968,7 @@ class TestScreen(BaseTest):
         # a wrapping step searches from the oldest line first, so it lands with lines left unsearched
         def wraps(s, w):
             Window.find(w, 'x')
+
         self.ae(same_as_instant(wraps, tail=('y',) * 6), (0, 0, 0, 0))
         s = screen(1, tail=('y',) * 6)
         w = window(s)
@@ -2906,6 +2989,7 @@ class TestScreen(BaseTest):
 
         # a scroll animation holds the landing, and ending it early, as a key release does, lands it
         from types import SimpleNamespace
+
         s = screen(1)
         w = self.find_window(s, ('find_status_changed', 'finish_scroll_animation'), push_find_bar=lambda: None)
         Window.find(w, 'x')
@@ -2938,8 +3022,11 @@ class TestScreen(BaseTest):
         # short queries search once typing pauses; a step first runs the search typing left pending,
         # so typing fast or slow ends the same
         timers = []
-        with mock.patch.object(window_module, 'add_timer', lambda cb, *a: timers.append(cb) or len(timers)), \
-                mock.patch.object(window_module, 'remove_timer', lambda timer_id: None):
+        with (
+            mock.patch.object(window_module, 'add_timer', lambda cb, *a: timers.append(cb) or len(timers)),
+            mock.patch.object(window_module, 'remove_timer', lambda timer_id: None),
+        ):
+
             def typed(slow):
                 s = screen()
                 w = window(s)
@@ -2951,11 +3038,13 @@ class TestScreen(BaseTest):
                 self.ae(bool(w.pending_find_timer), not slow)
                 Window.find_step(w, False)
                 return w.find_query, current(s)
+
             self.ae(typed(True), ('x7', (78, 0, 78, 1)))
             self.ae(typed(False), typed(True))
 
             # while a short query waits, the bar shows no count: the search running is the previous query's
             from kitty.find_backends import FindCount
+
             s = screen()
             w = self.find_window(s, ('find_status_changed', 'find_typed', 'find_status'), push_find_bar=lambda: None)
             w.find_typed('x79')

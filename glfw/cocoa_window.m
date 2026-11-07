@@ -1245,12 +1245,13 @@ static bool
 send_native_view_shortcut_key(_GLFWwindow *window, NSEvent *event, int action) {
     const NSUInteger flags = remap_cocoa_flags([event modifierFlags]);
     const unsigned int keycode = [event keyCode];
-    GLFWkeyevent ev = {
-        .key = translateKey(keycode, true), .native_key = keycode, .native_key_id = keycode,
-        .action = action, .mods = translateFlags(flags)};
+    GLFWkeyevent ev = {.key = translateKey(keycode, true), .native_key = keycode, .native_key_id = keycode, .action = action, .mods = translateFlags(flags)};
     add_alternate_keys(&ev, event_with_remapped_flags(event, flags));
-    debug_input("Sending key of the focused native view to shortcuts: %s 0x%x %s\n",
-                action == GLFW_RELEASE ? "release" : (action == GLFW_PRESS ? "press" : "repeat"), keycode, format_mods(ev.mods));
+    debug_input(
+        "Sending key of the focused native view to shortcuts: %s 0x%x %s\n",
+        action == GLFW_RELEASE ? "release" : (action == GLFW_PRESS ? "press" : "repeat"),
+        keycode,
+        format_mods(ev.mods));
     return _glfwDeliverResult(_glfw.ns.native_view_shortcut_callback, false, (GLFWwindow *)window, &ev);
 }
 
@@ -1316,9 +1317,7 @@ is_ascii_control_char(char x) {
     text_input_caller = caller;
     @try {
         body();
-    } @finally {
-        text_input_caller = previous;
-    }
+    } @finally { text_input_caller = previous; }
 }
 
 - (void)interpretKeyEventsForPress:(NSEvent *)event {
@@ -1453,10 +1452,10 @@ is_ascii_control_char(char x) {
     const char *mod_name = "unknown";
 
     // Code for handling modifier key events copied form SDL_cocoakeyboard.m, with thanks. See IsModifierKeyPressedFunction()
-#define action_for(modname)                                                                                         \
-    if (key_destination_modifier_index(keycode) < 0) return;                                                        \
+#define action_for(modname)                                                                                                                       \
+    if (key_destination_modifier_index(keycode) < 0) return;                                                                                      \
     action = key_destination_modifier_down([event modifierFlags], (unsigned)key_destination_modifier_index(keycode)) ? GLFW_PRESS : GLFW_RELEASE; \
-    mod_name = #modname;                                                                                            \
+    mod_name = #modname;                                                                                                                          \
     break;
     switch (key) {
         case GLFW_FKEY_CAPS_LOCK:

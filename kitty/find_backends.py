@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 # The values of the three enums below are kitty/kitty_rs.h's and kitty/swift/KittyFindBar.swift's.
 class FindCaseRule(IntEnum):
     "How a query's case decides a match"
+
     smart = 0  # ignore case unless the query has an uppercase letter of its own
     ignore = 1
     match = 2
@@ -27,6 +28,7 @@ class FindSyntax(IntEnum):
 
 class FindMode(NamedTuple):
     "How a query matches: what the find bar's menu sets, for kitty's own search"
+
     case_rule: FindCaseRule = FindCaseRule.smart
     syntax: FindSyntax = FindSyntax.literal
 
@@ -38,6 +40,7 @@ class FindQuery(NamedTuple):
 
 class FindQueryChange(IntEnum):
     "What setting the engine's query or mode did"
+
     unchanged = 0
     changed = 1
     rejected = 2  # a new query that cannot be searched for, such as a regular expression that does not parse
@@ -51,6 +54,7 @@ class FindQueryState(IntEnum):
 
 class FindCount(IntEnum):
     "How the find bar reads a search's total. The values reach Swift as KittyFindCount."
+
     exact = 0
     partial = 1  # the backend is still counting: the total is a lower bound
     unavailable = 2  # the backend could not be asked: there is no total, which is not the same as no matches
@@ -97,6 +101,7 @@ class FindBackend(Protocol):
 
 class WaitingStep(NamedTuple):
     "A step pressed before the search reached its answer"
+
     backwards: bool
     origin: 'FindOrigin'  # where the user was when they pressed it
     user_selection_changes: int  # the screen's count of the user's selection changes at the press
@@ -122,6 +127,7 @@ class EngineFind:
 
     def use_selection(self, query: FindQuery) -> str:
         from .fast_data_types import find_escape  # the engine is macOS only
+
         # a regular expression is seeded with the pattern that matches the selection as written
         text = find_escape(query.text) if query.mode.syntax is FindSyntax.regex else query.text
         # the selection may be find's current match: a new query lands on the text the user points

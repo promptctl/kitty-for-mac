@@ -63,7 +63,7 @@ buffer_limit(const Screen *self) {
     return self->historybuf->abs_oldest_line + self->historybuf->count + self->main_linebuf->ynum;
 }
 
-static CPUCell*
+static CPUCell *
 cells_at(Screen *self, uint64_t abs_line) {
     HistoryBuf *hb = self->historybuf;
     const uint64_t i = abs_line - hb->abs_oldest_line;
@@ -124,7 +124,14 @@ find_walk_main_buffer(Screen *self, FindRefeedRange lines, FindLineSink sink, vo
         }
         if (!append_physical_line(&b, line, i - first)) return FIND_WALK_OUT_OF_MEMORY;
         if (!continues(self, hb->abs_oldest_line + i)) {
-            const FindLogicalLine l = {.abs_first_line = hb->abs_oldest_line + first, .before = before, .before_len = first == 0 ? before_len : 0, .rows = i - first + 1, .text = b.text, .text_len = b.len, .cells = b.cells};
+            const FindLogicalLine l = {
+                .abs_first_line = hb->abs_oldest_line + first,
+                .before = before,
+                .before_len = first == 0 ? before_len : 0,
+                .rows = i - first + 1,
+                .text = b.text,
+                .text_len = b.len,
+                .cells = b.cells};
             if (!sink(ctx, &l)) return FIND_WALK_SINK_STOPPED;
             b.len = 0;
             first = i + 1;
@@ -133,7 +140,7 @@ find_walk_main_buffer(Screen *self, FindRefeedRange lines, FindLineSink sink, vo
     return FIND_WALK_COMPLETE;
 }
 
-FindFedRecord*
+FindFedRecord *
 find_record_capture(Screen *self) {
     HistoryBuf *hb = self->historybuf;
     const index_type columns = self->main_linebuf->xnum;
@@ -141,9 +148,17 @@ find_record_capture(Screen *self) {
     const index_type rows = buffer_limit(self) - first_line;
     FindFedRecord *r = malloc(sizeof(FindFedRecord));
     if (!r) return NULL;
-    *r = (FindFedRecord){.first_line = first_line, .abs_oldest_line = hb->abs_oldest_line, .evicted_head_last_char = hb->evicted_head_last_char, .rows = rows, .columns = columns};
+    *r = (FindFedRecord){
+        .first_line = first_line,
+        .abs_oldest_line = hb->abs_oldest_line,
+        .evicted_head_last_char = hb->evicted_head_last_char,
+        .rows = rows,
+        .columns = columns};
     r->cells = malloc((size_t)rows * columns * sizeof(CPUCell));
-    if (!r->cells) { free(r); return NULL; }
+    if (!r->cells) {
+        free(r);
+        return NULL;
+    }
     for (index_type y = 0; y < rows; y++) memcpy(r->cells + (size_t)y * columns, cells_at(self, first_line + y), columns * sizeof(CPUCell));
     return r;
 }

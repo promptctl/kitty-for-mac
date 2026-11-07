@@ -12,7 +12,10 @@
 // tick of the client's main loop (see request_tick_callback in kitty/state.h). An event can only be
 // invoked through _glfwDeliver: calling it directly does not compile. A _GLFW_NO_TICK callback
 // (glfw3.h) is called directly and requests nothing.
-#define _GLFW_EVENT(fun_type) struct { fun_type fn; }
+#define _GLFW_EVENT(fun_type) \
+    struct {                  \
+        fun_type fn;          \
+    }
 // The request comes before the callback runs: it only marks a tick as due (or due again, inside the
 // tick), so the order makes no difference, and it lets an event that answers stay an expression.
 #define _glfwDeliver(event, ...) ((event).fn ? (void)(_glfwPlatformPostEmptyEvent(), (event).fn(__VA_ARGS__)) : (void)0)
@@ -27,7 +30,7 @@ typedef void (*GLFWuserdatafreefun)(id_type, void *);
 // A timer the client added with glfwAddTimer is an event; GLFW's own timers (key repeat, cursor
 // animation, D-Bus timeouts, ...) are not, since the ones that change client state do it through
 // an event of their own. The timer's free hook only releases data and never ticks.
-typedef _GLFW_EVENT(timer_callback_func) ClientTimerFire;  // made only by glfwAddTimer
+typedef _GLFW_EVENT(timer_callback_func) ClientTimerFire; // made only by glfwAddTimer
 typedef enum { INTERNAL_TIMER, CLIENT_TIMER } TimerKind;
 typedef struct {
     TimerKind kind;

@@ -88,11 +88,11 @@ static const struct xdg_activation_token_v1_listener activation_token_listener =
 
 static bool
 get_activation_token(_GLFWwindow *window, uint32_t serial, GLFWactivationcallback cb, void *cb_data) {
-#define fail(msg)                                        \
-    {                                                    \
-        _glfwInputError(GLFW_PLATFORM_ERROR, msg);       \
+#define fail(msg)                                                                                             \
+    {                                                                                                         \
+        _glfwInputError(GLFW_PLATFORM_ERROR, msg);                                                            \
         _glfwDeliver(((_GLFW_EVENT(GLFWactivationcallback)){.fn = cb}), (GLFWwindow *)window, NULL, cb_data); \
-        return false;                                    \
+        return false;                                                                                         \
     }
     if (_glfw.wl.xdg_activation_v1 == NULL) fail("Wayland: activation requests not supported by this Wayland compositor");
     struct xdg_activation_token_v1 *token = xdg_activation_v1_get_activation_token(_glfw.wl.xdg_activation_v1);

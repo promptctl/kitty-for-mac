@@ -449,7 +449,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             self.ae(state.status, FindStatus(2, 3, FindCount.exact))
             c.say('another zebra', 'and one more zebra')
             c.finder(state).step(default_query('zebra'), False)
-            self.ae(state.status.total, 5, 'Claude\'s list is a snapshot, so the new matches needed a new search')
+            self.ae(state.status.total, 5, "Claude's list is a snapshot, so the new matches needed a new search")
             # nothing new: a plain step again
             keys = len(c.keys())
             c.finder(state).step(default_query('zebra'), False)
@@ -505,6 +505,7 @@ class ClaudeFindIntegrationTest(BaseTest):
         with fake_claude(*CONVERSATION) as c:
             state = ClaudeFindState()
             clock = [0.0]
+
             # Ctrl+o goes out, then the clock runs past the deadline while the pane is awaited
             def run(argv, env, timeout):
                 out = run_tmux(argv, env, timeout)
@@ -531,7 +532,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             keys = len(c.keys())
             c.holding(state).clear()
             self.assertIsNone(state.held)
-            self.ae(len(c.keys()), keys, 'Esc at the prompt would be Claude\'s rewind')
+            self.ae(len(c.keys()), keys, "Esc at the prompt would be Claude's rewind")
 
     def test_claude_quitting_to_a_shell_releases_the_hold_without_keys(self):
         with fake_claude(*CONVERSATION, then='stty -echo; sleep 600') as c:
@@ -628,7 +629,7 @@ class SelectionTest(BaseTest):
             (999, False, 'an old copy'),
             (1000, True, 'the same second as the release'),
             (1001, True, 'Claude copied just after the second turned'),
-            (1002, True, 'the slack tmux\'s whole seconds need'),
+            (1002, True, "the slack tmux's whole seconds need"),
             (1003, False, 'a later copy: /copy, or a yank in copy mode'),
         ):
             self.ae(PasteBuffer('buffer1', created).copied_at_release(released), expected, why)

@@ -39,6 +39,7 @@ UNAVAILABLE = FindStatus(0, 0, FindCount.unavailable)
 
 class Cause(Enum):
     "Why a Claude find could not do what it was asked: what the log says and the bar's unavailable stands for"
+
     unrecognised = 'the pane shows something other than the views of Claude Code 2.1.299'
     refused = 'the query cannot be typed and checked'
     tmux = 'tmux could not be asked'

@@ -1129,7 +1129,8 @@ screen_garbage_collect_text_cache(Screen *self) {
         text_cache_gc_process_cells(self->text_cache, gc, self->overlay_line.original_line.cpu_cells, self->overlay_line.xnum);
 #ifdef __APPLE__
     // find's record compares its copied cells with the live ones, so it holds indices too
-    if (self->find_record) text_cache_gc_process_cells(self->text_cache, gc, self->find_record->cells, (size_t)self->find_record->rows * self->find_record->columns);
+    if (self->find_record)
+        text_cache_gc_process_cells(self->text_cache, gc, self->find_record->cells, (size_t)self->find_record->rows * self->find_record->columns);
 #endif
     tc_gc_end(self->text_cache, gc);
     // the GC remaps all cache indices so the memoized tab indices are stale
@@ -4547,7 +4548,7 @@ feed_find_refeed(void *ctx, const FindLogicalLine *l) {
 // [LAW:single-enforcer] the one walker into a refeed. Walks lines, which start a logical line and
 // end one or run onward, into a new refeed, stopping after the logical line that reaches stop_at
 // (UINT64_MAX walks them all); NULL when out of memory.
-static FindRefeed*
+static FindRefeed *
 walk_find_refeed(Screen *self, FindRefeedRange lines, uint64_t stop_at) {
     BudgetedFeed feed = {.refeed = kitty_rs_find_refeed_new(self->find_engine, lines), .stop_at = stop_at};
     if (find_walk_main_buffer(self, lines, feed_find_refeed, &feed) != FIND_WALK_OUT_OF_MEMORY) return feed.refeed;
@@ -4624,7 +4625,7 @@ record_fed_buffer(Screen *self) {
 
 static void
 screen_find_clear(Screen *self) {
-    kitty_rs_find_set_query(self->find_engine, (const uint8_t*)"", 0, (FindMode){0});
+    kitty_rs_find_set_query(self->find_engine, (const uint8_t *)"", 0, (FindMode){0});
     find_record_free(self->find_record);
     self->find_record = NULL;
 }
@@ -4662,8 +4663,7 @@ sync_find_engine(Screen *self) {
     // again only when the engine searched it, and a change inside it is the refresh's to search
     const FindRefeedRange cut = find_logical_line_range(self, oldest);
     const bool refeed_cut_line = oldest_line_differs && kitty_rs_find_evict_before(self->find_engine, oldest) && changed >= cut.limit;
-    const bool fed = (!refeed_cut_line || refeed_find_engine(self, cut)) &&
-        (changed == UINT64_MAX || refresh_find_engine(self, changed));
+    const bool fed = (!refeed_cut_line || refeed_find_engine(self, cut)) && (changed == UINT64_MAX || refresh_find_engine(self, changed));
     if (fed && record_fed_buffer(self)) return;
     clear_find_out_of_memory(self);
 }
@@ -4691,13 +4691,14 @@ selection_extent(Screen *self, uint64_t abs_row0, FindPos *start, FindPos *end) 
 // the re-fed match is adopted), and ends with it when the user changes it or anything clears
 // it, so the next step starts from where the user now is. A find selection over cells that no
 // longer hold a match is released.
-static FindEngine*
+static FindEngine *
 screen_find_engine(Screen *self) {
     sync_find_engine(self);
     FindPos start, end;
-    const bool shows_match = self->selections.count && self->selections.items->is_find_match &&
-        selection_extent(self, main_buffer_view(self).abs_row0, &start, &end) &&
-        kitty_rs_find_set_current(self->find_engine, (FindMatch){.abs_start_line = start.line, .start_x = start.x, .abs_end_line = end.line, .end_x = end.x - 1});
+    const bool shows_match =
+        self->selections.count && self->selections.items->is_find_match && selection_extent(self, main_buffer_view(self).abs_row0, &start, &end) &&
+        kitty_rs_find_set_current(
+            self->find_engine, (FindMatch){.abs_start_line = start.line, .start_x = start.x, .abs_end_line = end.line, .end_x = end.x - 1});
     if (!shows_match) {
         release_find_selection(self);
         kitty_rs_find_end_current(self->find_engine);
@@ -4714,13 +4715,20 @@ match_as_selection(FindMatch m, uint64_t abs_row0) {
     const SelectionBoundary start = {.x = m.start_x, .y = MAX(start_row, 0), .in_left_half_of_cell = true};
     const SelectionBoundary end = {.x = m.end_x, .y = MAX(end_row, 0), .in_left_half_of_cell = false};
     return (Selection){
-        .start = start, .end = end, .input_start = start, .input_current = end,
-        .start_scrolled_by = MAX(-start_row, 0), .end_scrolled_by = MAX(-end_row, 0),
-        .last_rendered = {.y = INT_MAX}, .is_find_match = true,
+        .start = start,
+        .end = end,
+        .input_start = start,
+        .input_current = end,
+        .start_scrolled_by = MAX(-start_row, 0),
+        .end_scrolled_by = MAX(-end_row, 0),
+        .last_rendered = {.y = INT_MAX},
+        .is_find_match = true,
     };
 }
 
-typedef struct { uint64_t first, limit; } FindLines;
+typedef struct {
+    uint64_t first, limit;
+} FindLines;
 
 // The rows from the pixel scroll row through the last screen row: none while the alternate
 // screen shows, since the engine searches the main buffer.
@@ -4737,7 +4745,10 @@ visit_visible_find_matches(Screen *self, MainBufferView view, int extra_leading_
     kitty_rs_find_each_match_in_lines(screen_find_engine(self), l.first, l.limit, visit, ctx);
 }
 
-struct PauseFindMatches { struct PausedFindMatches *p; bool out_of_memory; };
+struct PauseFindMatches {
+    struct PausedFindMatches *p;
+    bool out_of_memory;
+};
 
 static void
 pause_find_match_run(void *ctx_, const FindMatch *run, size_t n) {
@@ -4766,11 +4777,18 @@ static void
 pause_find_matches(Screen *self) {
     struct PauseFindMatches ctx = {.p = &self->paused_rendering.find_matches};
     ctx.p->count = 0;
-    visit_visible_find_matches(self, self->paused_rendering.main_buffer_view, self->paused_rendering.pixel_scroll, self->paused_rendering.scrolled_by, pause_find_match_run, &ctx);
+    visit_visible_find_matches(
+        self, self->paused_rendering.main_buffer_view, self->paused_rendering.pixel_scroll, self->paused_rendering.scrolled_by, pause_find_match_run, &ctx);
     if (ctx.out_of_memory) log_error("Out of memory while pausing rendering, the paused frame shows no find matches");
 }
 
-struct PaintFindMatches { Screen *self; uint8_t *data; uint64_t abs_row0; int extra_leading_rows, scrolled_by; size_t painted; };
+struct PaintFindMatches {
+    Screen *self;
+    uint8_t *data;
+    uint64_t abs_row0;
+    int extra_leading_rows, scrolled_by;
+    size_t painted;
+};
 
 static void
 paint_find_match_run(void *ctx_, const FindMatch *run, size_t n) {
@@ -4820,7 +4838,7 @@ screen_apply_selection(Screen *self, void *address_, size_t size) {
         apply_selection(self, address, s, 2, offset, scrolled_by);
     }
     sel->last_rendered_count = sel->count;
-    address +=(size_t)offset * self->columns;
+    address += (size_t)offset * self->columns;
     size -= (size_t)offset * self->columns;
     ExtraCursors *ec = self->paused_rendering.expires_at ? &self->paused_rendering.extra_cursors : &self->extra_cursors;
     for (unsigned i = 0; i < ec->count; i++) {
@@ -6599,9 +6617,9 @@ screen_is_selection_dirty(Screen *self) {
     const MainBufferView view = main_buffer_view(self);
     const FindLines l = visible_find_lines(self, view, pixel_scroll_enabled(self), self->scrolled_by);
     const size_t visible = kitty_rs_find_count_in_lines(screen_find_engine(self), l.first, l.limit);
-    const bool view_moved = view.abs_row0 != self->find_last_rendered.view.abs_row0 || view.shows_main_buffer != self->find_last_rendered.view.shows_main_buffer;
-    if (kitty_rs_find_generation(self->find_engine) != self->find_last_rendered.generation ||
-        (view_moved && (visible || self->find_last_rendered.painted)))
+    const bool view_moved =
+        view.abs_row0 != self->find_last_rendered.view.abs_row0 || view.shows_main_buffer != self->find_last_rendered.view.shows_main_buffer;
+    if (kitty_rs_find_generation(self->find_engine) != self->find_last_rendered.generation || (view_moved && (visible || self->find_last_rendered.painted)))
         return true;
 #endif
     if (self->selections.last_rendered_count != self->selections.count || self->url_ranges.last_rendered_count != self->url_ranges.count ||
@@ -7302,7 +7320,7 @@ find_clear(Screen *self, PyObject *o UNUSED) {
     Py_RETURN_NONE;
 }
 
-static PyObject*
+static PyObject *
 find_match_as_tuple(FindMatch m) {
     return Py_BuildValue("KIKI", (unsigned long long)m.abs_start_line, m.start_x, (unsigned long long)m.abs_end_line, m.end_x);
 }
@@ -7330,7 +7348,8 @@ find_set_current(Screen *self, PyObject *args) {
     unsigned long long abs_start_line, abs_end_line;
     FindMatch m;
     if (!PyArg_ParseTuple(args, "(KIKI)", &abs_start_line, &m.start_x, &abs_end_line, &m.end_x)) return NULL;
-    m.abs_start_line = abs_start_line; m.abs_end_line = abs_end_line;
+    m.abs_start_line = abs_start_line;
+    m.abs_end_line = abs_end_line;
     MainBufferView view;
     if (!main_buffer_view_for_selecting(self, &view)) return NULL;
     if (!kitty_rs_find_set_current(screen_find_engine(self), m)) {
@@ -7364,10 +7383,16 @@ reveal_find_match(Screen *self, FindMatch m, MainBufferView view, index_type top
     screen_history_scroll_to_absolute(self, (double)((int64_t)view.abs_row0 - new_top));
 }
 
-static PyObject*
+static PyObject *
 find_origin_as_tuple(FindOrigin o) {
-    return Py_BuildValue("ON(KI)(KI)", o.after ? Py_True : Py_False, find_match_as_tuple(o.after_match),
-        (unsigned long long)o.start.line, o.start.x, (unsigned long long)o.end.line, o.end.x);
+    return Py_BuildValue(
+        "ON(KI)(KI)",
+        o.after ? Py_True : Py_False,
+        find_match_as_tuple(o.after_match),
+        (unsigned long long)o.start.line,
+        o.start.x,
+        (unsigned long long)o.end.line,
+        o.end.x);
 }
 
 static bool
@@ -7376,8 +7401,10 @@ find_origin_from_tuple(PyObject *t, FindOrigin *o) {
     unsigned long long ms, me, s, e;
     if (!PyArg_ParseTuple(t, "p(KIKI)(KI)(KI)", &after, &ms, &o->after_match.start_x, &me, &o->after_match.end_x, &s, &o->start.x, &e, &o->end.x)) return false;
     o->after = after;
-    o->after_match.abs_start_line = ms; o->after_match.abs_end_line = me;
-    o->start.line = s; o->end.line = e;
+    o->after_match.abs_start_line = ms;
+    o->after_match.abs_end_line = me;
+    o->start.line = s;
+    o->end.line = e;
     return true;
 }
 
@@ -7433,7 +7460,8 @@ find_set_want(Screen *self, PyObject *want) {
         self->find_want.wanted = false;
         Py_RETURN_NONE;
     }
-    unsigned long long line; int forward;
+    unsigned long long line;
+    int forward;
     if (!PyArg_ParseTuple(want, "Kp", &line, &forward)) return NULL;
     self->find_want.wanted = true;
     self->find_want.want.line = line;
@@ -7474,7 +7502,8 @@ find_advance(Screen *self, PyObject *o UNUSED) {
 
 static PyObject *
 find_status_tuple(FindStatus st) {
-    return Py_BuildValue("nnOKi", (Py_ssize_t)st.current, (Py_ssize_t)st.total, st.wrapped ? Py_True : Py_False, (unsigned long long)st.unsearched, (int)st.query);
+    return Py_BuildValue(
+        "nnOKi", (Py_ssize_t)st.current, (Py_ssize_t)st.total, st.wrapped ? Py_True : Py_False, (unsigned long long)st.unsearched, (int)st.query);
 }
 
 static PyObject *
@@ -7525,7 +7554,7 @@ screen_find_status_changed(Screen *self) {
     const FindStatus told = self->find_reported.status;
     // wrapped changes only with a step, and the step tells the bar itself
     return st.current != told.current || st.total != told.total || st.unsearched != told.unsearched || st.query != told.query ||
-        (self->linebuf == self->main_linebuf) != self->find_reported.main_screen || self->selections.in_progress != self->find_reported.selecting;
+           (self->linebuf == self->main_linebuf) != self->find_reported.main_screen || self->selections.in_progress != self->find_reported.selecting;
 }
 
 void
@@ -7576,14 +7605,15 @@ find_search_changed(Screen *self, FindQueryChange change, bool users_selection) 
 // the query and mode are the ones already set, which changes nothing.
 static PyObject *
 find_set_query(Screen *self, PyObject *args) {
-    PyObject *text; int case_rule, syntax, users_selection = 0;
+    PyObject *text;
+    int case_rule, syntax, users_selection = 0;
     FindMode mode;
     // [LAW:parse-dont-validate] a str, never bytes: its UTF-8 is valid by construction
     if (!PyArg_ParseTuple(args, "Uii|p", &text, &case_rule, &syntax, &users_selection) || !find_mode_from_args(case_rule, syntax, &mode)) return NULL;
     Py_ssize_t len;
     const char *query = PyUnicode_AsUTF8AndSize(text, &len);
     if (!query) return NULL;
-    return find_search_changed(self, kitty_rs_find_set_query(self->find_engine, (const uint8_t*)query, len, mode), users_selection);
+    return find_search_changed(self, kitty_rs_find_set_query(self->find_engine, (const uint8_t *)query, len, mode), users_selection);
 }
 
 // Sets the query already set again, in the mode (case_rule, syntax). Returns the FindQueryChange.
@@ -8125,11 +8155,15 @@ static PyMethodDef methods[] = {
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
     MND(find_logical_lines, METH_NOARGS)
 #ifdef __APPLE__
-    MND(find_set_query, METH_VARARGS) MND(find_set_mode, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS) MND(find_origin, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_set_want, METH_O) MND(find_set_chunk_cells, METH_O) MND(find_advance, METH_NOARGS) MND(user_selection_changes, METH_NOARGS) MND(selection_in_progress, METH_NOARGS) MND(find_status, METH_NOARGS) MND(find_status_for_bar, METH_NOARGS) MND(find_report_status_change, METH_NOARGS) MND(find_count, METH_NOARGS) MND(find_matches, METH_NOARGS)
+        MND(find_set_query, METH_VARARGS) MND(find_set_mode, METH_VARARGS) MND(find_clear, METH_NOARGS) MND(find_set_current, METH_VARARGS)
+            MND(find_origin, METH_VARARGS) MND(find_step, METH_VARARGS) MND(find_set_want, METH_O) MND(find_set_chunk_cells, METH_O)
+                MND(find_advance, METH_NOARGS) MND(user_selection_changes, METH_NOARGS) MND(selection_in_progress, METH_NOARGS) MND(find_status, METH_NOARGS)
+                    MND(find_status_for_bar, METH_NOARGS) MND(find_report_status_change, METH_NOARGS) MND(find_count, METH_NOARGS)
+                        MND(find_matches, METH_NOARGS)
 #endif
-    MND(abs_line_at_viewport_top, METH_NOARGS)
+                            MND(abs_line_at_viewport_top, METH_NOARGS)
 
-    {NULL} /* Sentinel */
+                                {NULL} /* Sentinel */
 };
 
 static PyGetSetDef getsetters[] = {
@@ -8193,14 +8227,17 @@ test_set_history_reuse(PyObject *self UNUSED, PyObject *val) {
 // The regular expression that matches text literally: the one escaper, the engine's own
 static PyObject *
 find_escape(PyObject *self UNUSED, PyObject *text) {
-    if (!PyUnicode_Check(text)) { PyErr_SetString(PyExc_TypeError, "find_escape takes a str"); return NULL; }
+    if (!PyUnicode_Check(text)) {
+        PyErr_SetString(PyExc_TypeError, "find_escape takes a str");
+        return NULL;
+    }
     Py_ssize_t len;
     const char *utf8 = PyUnicode_AsUTF8AndSize(text, &len);
     if (!utf8) return NULL;
     RAII_ALLOC(uint8_t, out, malloc(2 * (size_t)len + 1));
     if (!out) return PyErr_NoMemory();
-    const size_t n = kitty_rs_find_escape((const uint8_t*)utf8, len, out);
-    return PyUnicode_FromStringAndSize((const char*)out, n);
+    const size_t n = kitty_rs_find_escape((const uint8_t *)utf8, len, out);
+    return PyUnicode_FromStringAndSize((const char *)out, n);
 }
 #endif
 

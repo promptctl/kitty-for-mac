@@ -25,13 +25,16 @@ typedef struct FindMatch {
 typedef struct FindEngine FindEngine;
 
 // Never NULL: allocation failure aborts. The new engine holds the empty query.
-FindEngine* kitty_rs_find_engine_new(void);
+FindEngine *kitty_rs_find_engine_new(void);
 void kitty_rs_find_engine_free(FindEngine *engine);
 // How a query matches. SMART ignores case unless the query has an uppercase letter of its own.
 // The values are Python's FindCaseRule and FindSyntax.
 typedef enum { FIND_CASE_SMART, FIND_CASE_IGNORE, FIND_CASE_MATCH } FindCaseRule;
 typedef enum { FIND_SYNTAX_LITERAL, FIND_SYNTAX_REGEX } FindSyntax;
-typedef struct { FindCaseRule case_rule; FindSyntax syntax; } FindMode;
+typedef struct {
+    FindCaseRule case_rule;
+    FindSyntax syntax;
+} FindMode;
 typedef enum { FIND_QUERY_UNCHANGED, FIND_QUERY_CHANGED, FIND_QUERY_REJECTED } FindQueryChange;
 // Sets the query; "" is the query that finds nothing, in every mode. UNCHANGED when the query and
 // mode are the ones already set, touching nothing. CHANGED drops every match and searched line.
@@ -47,7 +50,7 @@ size_t kitty_rs_find_escape(const uint8_t *utf8, size_t len, uint8_t *out);
 // The matches in a range of lines searched under the engine's query, spliced in whole.
 typedef struct FindRefeed FindRefeed;
 // Never NULL: allocation failure aborts.
-FindRefeed* kitty_rs_find_refeed_new(const FindEngine *engine, FindRefeedRange lines);
+FindRefeed *kitty_rs_find_refeed_new(const FindEngine *engine, FindRefeedRange lines);
 // Adds the matches in one logical line; lines must lie in the range and arrive in buffer order.
 void kitty_rs_find_refeed_line(FindRefeed *refeed, const FindLogicalLine *line);
 // Replaces the matches starting in the refeed's lines, which must all be searched, with its

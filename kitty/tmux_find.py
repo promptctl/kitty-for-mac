@@ -59,6 +59,7 @@ class TmuxError(Exception):
 @dataclass(frozen=True)
 class TmuxClient:
     "A tmux client process in a window's foreground, with what it takes to reach its server"
+
     pid: int
     exe: str  # as the client was started
     server_args: tuple[str, ...]  # ('-L', name) or ('-S', path), or () for the default socket
@@ -94,12 +95,14 @@ class Counted(NamedTuple):
 
 class ClientPane(NamedTuple):
     "What list-clients says of one client: the pane it shows, and its server's #{version} as tmux wrote it, parsed only where find needs it"
+
     pane: PaneRef
     version: str
 
 
 class Held(NamedTuple):
     "The pane a window put into copy mode, and the client it reached it through"
+
     client: TmuxClient
     pane: str
 
@@ -116,16 +119,14 @@ def server_args_of(args: Sequence[str], cwd: str | None) -> tuple[str, ...]:
             break  # the command starts here
         for i, flag in enumerate(arg[1:], 1):
             if flag in 'LSfcT':  # options that take a value, attached or as the next argument
-                value = arg[i + 1:] or next(it, '')
+                value = arg[i + 1 :] or next(it, '')
                 if flag in 'LS':
                     ans = (f'-{flag}', os.path.join(cwd or '', value) if flag == 'S' else value)
                 break
     return ans
 
 
-def tmux_client_of(
-    processes: Iterable[ProcessDesc], environ_of: Callable[[int], Mapping[str, str]] = environ_of_process
-) -> TmuxClient | None:
+def tmux_client_of(processes: Iterable[ProcessDesc], environ_of: Callable[[int], Mapping[str, str]] = environ_of_process) -> TmuxClient | None:
     "The tmux client among a window's foreground processes, None when it runs something else"
     for p in sorted(processes, key=lambda p: p['pid']):
         argv = list(p['cmdline'] or ())
@@ -160,7 +161,7 @@ def parse_pane(output: str, client_pid: int) -> ClientPane:
         fields = line.split(' ', 6)
         if len(fields) == 7 and fields[0] == str(client_pid):
             return ClientPane(parse_pane_fields(fields[2:]), fields[1])
-    raise TmuxError(f'tmux client {client_pid} is not among its server\'s clients')
+    raise TmuxError(f"tmux client {client_pid} is not among its server's clients")
 
 
 def parse_displayed_pane(output: str) -> PaneRef:

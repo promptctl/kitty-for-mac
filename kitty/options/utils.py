@@ -512,6 +512,7 @@ def toggle_marker(func: str, rest: str) -> FuncArgsType:
 @func_with_args('show_find_bar')
 def show_find_bar(func: str, rest: str) -> FuncArgsType:
     from kitty.find_backends import FindCaseRule, FindSyntax
+
     words = {f'{r.name}_case': r for r in FindCaseRule} | {s.name: s for s in FindSyntax}
     case_rule: FindCaseRule | None = None
     syntax: FindSyntax | None = None
@@ -522,8 +523,10 @@ def show_find_bar(func: str, rest: str) -> FuncArgsType:
             case FindSyntax() as s if syntax is None:
                 syntax = s
             case _:
-                raise ValueError(f'{word} is not a find mode, or names a second one of its kind: show_find_bar takes one of '
-                                 f'{", ".join(f"{r.name}_case" for r in FindCaseRule)} and one of {", ".join(s.name for s in FindSyntax)}')
+                raise ValueError(
+                    f'{word} is not a find mode, or names a second one of its kind: show_find_bar takes one of '
+                    f'{", ".join(f"{r.name}_case" for r in FindCaseRule)} and one of {", ".join(s.name for s in FindSyntax)}'
+                )
     return func, [case_rule, syntax]
 
 

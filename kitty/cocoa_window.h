@@ -63,7 +63,7 @@ void cocoa_show_find_bar(void *w);
 void cocoa_seat_find_bar(void *w);
 void cocoa_update_find_bar(void *w, const char *query, long current, long total, long count);
 long cocoa_find_bar_covered_pixels(void *w);
-const char* cocoa_find_bar_query(void *w, bool *shown);
+const char *cocoa_find_bar_query(void *w, bool *shown);
 void cocoa_find_mode(long *case_rule, long *syntax);
 void cocoa_set_find_mode(long case_rule, long syntax);
 id_type cocoa_os_window_id_for_window(void *w);

@@ -418,18 +418,20 @@ class BaseTest(TestCase):
         self.set_options(options)
         # [LAW:single-enforcer] teardown runs as a test cleanup, inside the test, where a
         # failure reaches the result pipe; GC would run it after the test, out of reach
-        return self.enterContext(PTY(
-            argv,
-            lines,
-            cols,
-            scrollback,
-            cell_width,
-            cell_height,
-            cwd,
-            env,
-            stdin_fd=stdin_fd,
-            needs_da1=needs_da1,
-        ))
+        return self.enterContext(
+            PTY(
+                argv,
+                lines,
+                cols,
+                scrollback,
+                cell_width,
+                cell_height,
+                cwd,
+                env,
+                stdin_fd=stdin_fd,
+                needs_da1=needs_da1,
+            )
+        )
 
     def assertEqualAttributes(self, c1, c2):
         x1, y1, c1.x, c1.y = c1.x, c1.y, 0, 0

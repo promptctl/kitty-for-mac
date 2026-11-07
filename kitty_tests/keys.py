@@ -479,7 +479,7 @@ class TestKeys(BaseTest):
         ae(eq(ord('a'), mods=shift, text='A'), csi(shift, num='a', text='A'))
         ae(eq(ord('a'), mods=shift, text='AB'), csi(shift, num='a', text='AB'))
         # text far longer than one key's escape, as an input method commits it
-        for text in ('あ' * 200, 'a\xe9あ\U0001F600\U0010FFFF~' * 40):
+        for text in ('あ' * 200, 'a\xe9あ\U0001f600\U0010ffff~' * 40):
             ae(eq(0, text=text), csi(num=0, text=text))
         # escapes whose length steps across the inline buffer's 128 bytes, one byte at a time:
         # each 'a' adds 3 bytes, and the tails add 0, 4 and 5
@@ -489,8 +489,10 @@ class TestKeys(BaseTest):
         # every text byte encodes to the widest field, ":127", beside every other field at its widest
         all_mods = shift | alt | ctrl | super | hyper | meta
         text = ''.join(map(chr, range(100, 128))) * 40
-        ae(enc(ord('a'), key_encoding_flags=0b11111, mods=all_mods, action=repeat, shifted_key=ord('A'), alternate_key=ord('b'), text=text),
-           csi(all_mods, 'a', action=2, shifted_key='A', alternate_key='b', text=text))
+        ae(
+            enc(ord('a'), key_encoding_flags=0b11111, mods=all_mods, action=repeat, shifted_key=ord('A'), alternate_key=ord('b'), text=text),
+            csi(all_mods, 'a', action=2, shifted_key='A', alternate_key='b', text=text),
+        )
 
         # test roundtripping via KeyEvent
         for mods in range(64):
@@ -710,6 +712,7 @@ class TestKeys(BaseTest):
                 return False  # the action passed the key on
 
         from unittest.mock import patch
+
         with patch('kitty.keys.grab_keyboard', return_value=False):
             tm = GlobalTM()
             self.ae(tm('cmd+g', 'cmd+w'), [False, True])
@@ -1016,6 +1019,7 @@ class TestKeys(BaseTest):
 
     def test_key_destination(self):
         from kitty.fast_data_types import test_key_destination
+
         # destinations as (kind, id): kind 1 is a terminal window, 2 AppKit, 3 consumed by a menu or
         # macOS shortcut, 4 held by a shortcut of the window's native view
         term, other, field, gone, taken = (1, 7), (1, 9), (2, 0), (3, 0), (4, 7)
@@ -1032,11 +1036,17 @@ class TestKeys(BaseTest):
         # Cmd pressed in the terminal, released in another app after Cmd+Tab: the next press goes to the field
         t([('flags', cmd, CMD | LCMD, term), ('flags', cmd, CMD | LCMD, field), ('flags', cmd, 0, term)], [term, field, field])
         # a release handed to AppKit early still ends the hold: the shift release lands on an event for another key
-        t([('flags', lshift, SHIFT | LSHIFT, term), ('flags', cmd, CMD | LCMD, field), ('flags', lshift, SHIFT | LSHIFT, field)],
-          [term, field, field])
+        t([('flags', lshift, SHIFT | LSHIFT, term), ('flags', cmd, CMD | LCMD, field), ('flags', lshift, SHIFT | LSHIFT, field)], [term, field, field])
         # both shifts held: releasing either one releases that key, each to where its press went
-        t([('flags', lshift, SHIFT | LSHIFT, term), ('flags', rshift, SHIFT | LSHIFT | RSHIFT, field),
-           ('flags', lshift, SHIFT | RSHIFT, other), ('flags', rshift, 0, other)], [term, field, term, field])
+        t(
+            [
+                ('flags', lshift, SHIFT | LSHIFT, term),
+                ('flags', rshift, SHIFT | LSHIFT | RSHIFT, field),
+                ('flags', lshift, SHIFT | RSHIFT, other),
+                ('flags', rshift, 0, other),
+            ],
+            [term, field, term, field],
+        )
         # CapsLock toggles go where focus is at each toggle
         t([('flags', caps, CAPS, term), ('flags', caps, 0, field)], [term, field])
         # keys outside the table follow focus
@@ -1050,8 +1060,10 @@ class TestKeys(BaseTest):
         # a native view's shortcut took a press AppKit was given: the table gives its repeats to AppKit
         # whatever focus is (the monitor drops them while a terminal has focus), its release once to the
         # shortcut of the window that took it, and the next release follows focus
-        t([('down', a, 0, field), ('shortcut', a, 0, term), ('down', a, 1, term), ('down', a, 1, field), ('up', a, 0, term),
-           ('up', a, 0, field)], [field, taken, field, field, taken, field])
+        t(
+            [('down', a, 0, field), ('shortcut', a, 0, term), ('down', a, 1, term), ('down', a, 1, field), ('up', a, 0, term), ('up', a, 0, field)],
+            [field, taken, field, field, taken, field],
+        )
         # a shortcut taking a repeat leaves the hold, and a new press replaces it
         t([('shortcut', a, 0, term), ('shortcut', a, 1, other), ('up', a, 0, field)], [taken, taken, taken])
         t([('shortcut', a, 0, term), ('down', a, 0, term), ('up', a, 0, field)], [taken, term, term])

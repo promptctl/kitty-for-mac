@@ -207,7 +207,10 @@ line_text_cell(const Line *line, index_type x, index_type limit, ListOfChars *lc
     // them) and apply_mark each still state on their own
     const CPUCell *c = line->cpu_cells + x;
     // wide-char continuation cells and the lower rows of scaled text carry no text of their own
-    if (c->is_multicell && (c->x || c->y)) { lc->count = 0; return x; }
+    if (c->is_multicell && (c->x || c->y)) {
+        lc->count = 0;
+        return x;
+    }
     text_in_cell(c, line->text_cache, lc);
     // a never-written interior cell reads as one space
     if (!lc->chars[0]) lc->chars[0] = ' ';

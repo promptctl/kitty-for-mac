@@ -42,20 +42,27 @@ class TestConfParsing(BaseTest):
         from kitty.config import load_config
         from kitty.constants import is_macos
         from kitty.fast_data_types import GLFW_MOD_SHIFT, GLFW_MOD_SUPER
+
         if not is_macos:
             self.skipTest('The find shortcuts are macOS defaults')
 
         # what set_cocoa_global_shortcuts turns into the Edit > Find items' key equivalents
         def find_keys(*lines):
             keymap = load_config(overrides=lines).keyboard_modes[''].keymap
-            return {kd[-1].definition: (sk.mods, sk.key) for sk, kd in keymap.items() if kd[-1].definition.partition(' ')[0] in (
-                'find_next', 'find_previous', 'use_selection_for_find')}
+            return {
+                kd[-1].definition: (sk.mods, sk.key)
+                for sk, kd in keymap.items()
+                if kd[-1].definition.partition(' ')[0] in ('find_next', 'find_previous', 'use_selection_for_find')
+            }
 
-        self.ae(find_keys(), {
-            'find_next': (GLFW_MOD_SUPER, ord('g')),
-            'find_previous': (GLFW_MOD_SUPER | GLFW_MOD_SHIFT, ord('g')),
-            'use_selection_for_find': (GLFW_MOD_SUPER, ord('e')),
-        })
+        self.ae(
+            find_keys(),
+            {
+                'find_next': (GLFW_MOD_SUPER, ord('g')),
+                'find_previous': (GLFW_MOD_SUPER | GLFW_MOD_SHIFT, ord('g')),
+                'use_selection_for_find': (GLFW_MOD_SUPER, ord('e')),
+            },
+        )
         # a user's map of the key replaces the action, so the menu item loses its key equivalent
         self.ae(find_keys('map cmd+g new_window', 'map cmd+e no_op'), {'find_previous': (GLFW_MOD_SUPER | GLFW_MOD_SHIFT, ord('g'))})
 
