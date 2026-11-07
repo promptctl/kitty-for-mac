@@ -14,7 +14,9 @@ import sys
 import termios
 import time
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from functools import wraps
+from typing import Union
 from unittest import TestCase
 
 from kitty.config import finalize_keys, finalize_mouse_mappings
@@ -288,26 +290,53 @@ def retry_on_failure(max_attempts=max_attempts, sleep_duration=sleep_duration):
     return decorator
 
 
-def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 10) -> str:
+@dataclass(frozen=True)
+class Exited:
+    status: int  # os.waitstatus_to_exitcode(): a negative status is the signal that ended it
+
+    def __str__(self) -> str:
+        return f'exited with status {self.status}'
+
+
+@dataclass(frozen=True)
+class ReapedElsewhere:
+    def __str__(self) -> str:
+        return 'was already reaped by another waiter in this process'
+
+
+@dataclass(frozen=True)
+class KilledAtDeadline:
+    patience: float
+    status: int
+
+    def __str__(self) -> str:
+        return f'was still running {self.patience}s after its output ended, killed, status {self.status}'
+
+
+ChildEnd = Union[Exited, ReapedElsewhere, KilledAtDeadline]
+
+
+def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 10) -> ChildEnd:
     # Awaits the exit of a child whose output has ended and says how it ended.
-    # Popen.wait() and poll() report a child that another waiter in this process
-    # reaped as exit 0, so this reads waitpid() itself and puts the status it
-    # reaps on p, where a later p.wait() finds it.
+    # Popen's poll(), wait() and kill() report a child that another waiter in
+    # this process reaped as exit 0, so nothing may reap p through Popen before
+    # this runs: signal it with os.kill(). This reads waitpid() itself and puts
+    # the status it reaps on p, where a later p.wait() finds it.
     # [LAW:one-source-of-truth] p.returncode holds the one status reaped here
     deadline = time.monotonic() + patience
     while True:
         try:
             pid, status = os.waitpid(p.pid, os.WNOHANG)
         except ChildProcessError:
-            return 'already reaped by another waiter in this process'
+            return ReapedElsewhere()
         if pid:
             p.returncode = os.waitstatus_to_exitcode(status)
-            return f'exited with status {p.returncode}'
+            return Exited(p.returncode)
         # [LAW:no-ambient-temporal-coupling] only a wedged child reaches the deadline
         if time.monotonic() > deadline:
-            p.kill()
-            p.wait()
-            return f'still running {patience}s after its output ended, killed'
+            os.kill(p.pid, signal.SIGKILL)  # a zombie ignores it, so the status reaped next is still the true one
+            p.returncode = os.waitstatus_to_exitcode(os.waitpid(p.pid, 0)[1])
+            return KilledAtDeadline(patience, p.returncode)
         time.sleep(0.01)
 
 

@@ -2,30 +2,35 @@
 # License: GPL v3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
+import signal
 import subprocess
 import tempfile
 
 from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
 from kitty.constants import is_macos, kitty_exe
 
-from .base import BaseTest, await_exit
+from .base import BaseTest, Exited, KilledAtDeadline, ReapedElsewhere, await_exit
 
 
 def spawn_and_wait_for_ready(code: str, what: str) -> subprocess.Popen:
     # Run code via kitty +runpy and wait for it to print ready. stderr is
     # captured, as in test workers it is /dev/null, so that the reason the
-    # child failed is reported.
-    p = subprocess.Popen([kitty_exe(), '+runpy', code], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    line = p.stdout.readline().strip()
-    p.stdout.close()
-    if line != b'ready':
-        if line:  # it is alive and printing something else
-            p.kill()
-        how = await_exit(p)
-        err = p.stderr.read().decode('utf-8', 'replace')
-        p.stderr.close()
-        raise AssertionError(f'Unexpected output from {what}: {line!r}, it {how}, stderr:\n{err}')
-    p.stderr.close()
+    # child failed is reported. It goes to a file, not a pipe, so a child
+    # writing a long traceback never blocks on a full pipe and looks wedged.
+    with tempfile.TemporaryFile() as stderr:
+        p = subprocess.Popen([kitty_exe(), '+runpy', code], stdout=subprocess.PIPE, stderr=stderr)
+        line = p.stdout.readline().strip()
+        p.stdout.close()
+        if line != b'ready':
+            # A child still printing something else is killed. os.kill(), not
+            # p.kill(), which reaps through Popen first (see await_exit).
+            killed = ', so the test sent it SIGKILL and it then' if line else ', it'
+            if line:
+                os.kill(p.pid, signal.SIGKILL)
+            end = await_exit(p)
+            stderr.seek(0)
+            err = stderr.read().decode('utf-8', 'replace')
+            raise AssertionError(f'Unexpected output from {what}: {line!r}{killed} {end}, stderr:\n{err}')
     return p
 
 
@@ -264,16 +269,22 @@ class AwaitExitTest(BaseTest):
 
     def test_a_child_that_exits_without_printing_reports_its_status(self):
         p = self._spawn('raise SystemExit(0)')
-        self.ae(await_exit(p), 'exited with status 0')
+        self.ae(await_exit(p), Exited(0))
         self.ae(p.wait(), 0)
 
     def test_a_child_reaped_elsewhere_is_not_reported_as_exit_0(self):
         p = self._spawn('raise SystemExit(3)')
         status = os.waitpid(p.pid, 0)[1]
-        self.ae(await_exit(p), 'already reaped by another waiter in this process')
+        self.ae(await_exit(p), ReapedElsewhere())
         p.returncode = os.waitstatus_to_exitcode(status)  # the waiter that reaped it owns the status
 
     def test_a_child_that_lives_on_after_its_output_ends_is_killed_at_the_deadline(self):
         p = self._spawn('import os, time; os.close(1); time.sleep(300)')
-        self.ae(await_exit(p, patience=0.2), 'still running 0.2s after its output ended, killed')
-        self.ae(p.returncode, -9)
+        self.ae(await_exit(p, patience=0.2), KilledAtDeadline(0.2, -signal.SIGKILL))
+        self.ae(p.returncode, -signal.SIGKILL)
+
+    def test_a_child_already_dead_when_signalled_reports_its_own_status(self):
+        p = self._spawn('raise SystemExit(5)')
+        os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOWAIT)  # WNOWAIT leaves it a zombie, unreaped
+        os.kill(p.pid, signal.SIGKILL)
+        self.ae(await_exit(p), Exited(5))
