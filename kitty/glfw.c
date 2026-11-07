@@ -64,12 +64,12 @@ static void
 on_system_color_scheme_change(GLFWColorScheme appearance, bool is_initial_value) {
     const char *which = appearance_name(appearance);
     debug("system color-scheme changed to: %s is_initial_value: %d\n", which, is_initial_value);
-    call_boss(on_system_color_scheme_change, "sO", which, is_initial_value ? Py_True : Py_False);
+    call_boss_outside_tick(on_system_color_scheme_change, "sO", which, is_initial_value ? Py_True : Py_False);
 }
 
 static void
 on_clipboard_lost(GLFWClipboardType which) {
-    call_boss(on_clipboard_lost, "s", which == GLFW_CLIPBOARD ? "clipboard" : "primary");
+    call_boss_outside_tick(on_clipboard_lost, "s", which == GLFW_CLIPBOARD ? "clipboard" : "primary");
 }
 
 static bool
@@ -278,7 +278,7 @@ is_window_ready_for_callbacks(void) {
     return true;
 }
 
-#define WINDOW_CALLBACK(name, fmt, ...) call_boss(name, "K" fmt, global_state.callback_os_window->id, __VA_ARGS__)
+#define WINDOW_CALLBACK(name, fmt, ...) call_boss_outside_tick(name, "K" fmt, global_state.callback_os_window->id, __VA_ARGS__)
 
 static void
 show_mouse_cursor(GLFWwindow *w) {
@@ -1138,7 +1138,7 @@ read_drop_data(GLFWwindow *window, GLFWDropEvent *ev) {
             // in the window, keep them alive for a while, see Boss.dropped_file_promises_dir()
             if (glfwCocoaPreserveDroppedFilePromises) {
                 const char *promises_dir = glfwCocoaPreserveDroppedFilePromises(window);
-                if (promises_dir && promises_dir[0]) call_boss(dropped_file_promises_dir, "s", promises_dir);
+                if (promises_dir && promises_dir[0]) call_boss_outside_tick(dropped_file_promises_dir, "s", promises_dir);
             }
 #endif
             WINDOW_CALLBACK(
@@ -1221,9 +1221,9 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
                 ev->num_mimes = drop_update_mimes(w, ev->mimes, ev->num_mimes);
                 ev->operation.allowed = w->drop.accepted_operation;
                 ev->operation.preferred = w->drop.accepted_operation;
-                return;
+                break;
             }
-            call_boss(
+            call_boss_outside_tick(
                 on_drop_move, "KiiOO", os_window->id, os_window->last_drag_event.x, os_window->last_drag_event.y, ev->from_self ? Py_True : Py_False, Py_False);
             /* fallthrough */
         case GLFW_DROP_STATUS_UPDATE:
@@ -1252,11 +1252,11 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
                     if (w->drop.hovered) drop_left_child(w);
                 }
             }
-            call_boss(
+            call_boss_outside_tick(
                 on_drop_move, "KiiOO", os_window->id, os_window->last_drag_event.x, os_window->last_drag_event.y, ev->from_self ? Py_True : Py_False, Py_True);
             break;
         case GLFW_DROP_DROP:
-            if (w && OPT(focus_follows_mouse).on_drop) { call_boss(set_active_window, "KO", w->id, Py_True); }
+            if (w && OPT(focus_follows_mouse).on_drop) { call_boss_outside_tick(set_active_window, "KO", w->id, Py_True); }
             Py_CLEAR(global_state.drop_dest.data);
             global_state.drop_dest.drop_has_happened = true;
             global_state.drop_dest.client_window_data_request = 0;
@@ -1303,6 +1303,7 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
             }
             break;
     }
+    global_state.callback_os_window = NULL;
 }
 
 void
@@ -1353,7 +1354,7 @@ static void
 drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
 #define finish                                                                           \
     {                                                                                    \
-        call_boss(                                                                       \
+        call_boss_outside_tick(                                                          \
             on_drag_source_finished,                                                     \
             "OOsiOOO",                                                                   \
             ds.was_dropped && !global_state.drop_dest.os_window_id ? Py_True : Py_False, \
@@ -2771,6 +2772,7 @@ dbus_set_notification_callback(PyObject *self UNUSED, PyObject *callback) {
                 's', _Generic((a), unsigned long: 'k', unsigned long long: 'K'), _Generic((b), unsigned long: 'k', const char *: 's'), '\0'}; \
             RAII_PyObject(ret, PyObject_CallFunction(dbus_notification_callback, call_args_fmt, event_type, a, b));                           \
             if (!ret) PyErr_Print();                                                                                                          \
+            request_tick_callback();                                                                                                          \
         }                                                                                                                                     \
     }
 
@@ -2794,6 +2796,7 @@ dbus_session_state_changed(uint32_t state) {
     if (dbus_session_state_callback) {
         RAII_PyObject(ret, PyObject_CallFunction(dbus_session_state_callback, "k", (unsigned long)state));
         if (!ret) PyErr_Print();
+        request_tick_callback();
     }
 }
 
@@ -3202,6 +3205,7 @@ activation_token_callback(GLFWwindow *window UNUSED, const char *token, void *da
     if (ret == NULL) PyErr_Print();
     else Py_DECREF(ret);
     Py_CLEAR(data);
+    request_tick_callback();
 }
 
 void
