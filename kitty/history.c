@@ -187,14 +187,9 @@ index_of(HistoryBuf *self, index_type lnum) {
 
 static bool
 hb_line_is_continued(HistoryBuf *self, index_type num) {
-    if (num == self->start_of_data) {
-        size_t sz;
-        if (self->pagerhist && self->pagerhist->ringbuf && (sz = ringbuf_bytes_used(self->pagerhist->ringbuf)) > 0) {
-            size_t pos = ringbuf_findchr(self->pagerhist->ringbuf, '\n', sz - 1);
-            if (pos >= sz) return true; // ringbuf does not end with a newline
-        }
-        return false;
-    }
+    // [LAW:one-source-of-truth] the line above the oldest one has left the ring; its wrap flag
+    // went with it into oldest_line_continues_evicted, pager history or not
+    if (num == self->start_of_data) return self->oldest_line_continues_evicted;
     return cpu_lineptr(self, (num + self->ynum - 1) % self->ynum)[self->xnum - 1].next_char_was_wrapped;
 }
 
@@ -218,7 +213,8 @@ historybuf_is_line_continued(HistoryBuf *self, index_type lnum) {
 
 bool
 history_buf_endswith_wrap(HistoryBuf *self) {
-    return cpu_lineptr(self, index_of(self, 0))[self->xnum - 1].next_char_was_wrapped;
+    // an empty ring's line above screen row 0 is the one that left it last
+    return self->count ? cpu_lineptr(self, index_of(self, 0))[self->xnum - 1].next_char_was_wrapped : self->oldest_line_continues_evicted;
 }
 
 CPUCell *
@@ -245,6 +241,7 @@ void
 historybuf_clear(HistoryBuf *self) {
     pagerhist_clear(self);
     self->abs_oldest_line += self->count;
+    self->oldest_line_continues_evicted = false;
     self->count = 0;
     self->start_of_data = 0;
     for (size_t i = 0; i < self->num_segments; i++) free_segment(self->segments + i);
@@ -321,6 +318,7 @@ historybuf_push(HistoryBuf *self, ANSIBuf *as_ansi_buf, bool *needs_clear) {
     index_type idx = (self->start_of_data + self->count) % self->ynum;
     if (self->count == self->ynum) {
         pagerhist_push(self, as_ansi_buf);
+        self->oldest_line_continues_evicted = cpu_lineptr(self, self->start_of_data)[self->xnum - 1].next_char_was_wrapped;
         self->start_of_data = (self->start_of_data + 1) % self->ynum;
         self->abs_oldest_line++;
         *needs_clear = true;
@@ -734,6 +732,7 @@ historybuf_alloc_for_rewrap(unsigned int columns, HistoryBuf *self) {
         ans->count = 0;
         ans->start_of_data = 0;
         ans->abs_oldest_line = self->abs_oldest_line;
+        ans->oldest_line_continues_evicted = self->oldest_line_continues_evicted;
         // a rewrap re-cuts, and so renumbers, every line it keeps
         ans->abs_lowest_rewritten_line = self->abs_oldest_line;
     }

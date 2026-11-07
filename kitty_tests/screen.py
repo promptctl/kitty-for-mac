@@ -2293,10 +2293,10 @@ class TestScreen(BaseTest):
         # the oracle: the live matches, after whatever happened since the query was set with
         # no read in between, are the matches a fresh search of the buffer finds now
         # the same query again changes nothing, so the fresh search starts from no query
-        def live_is_fresh(s, query):
+        def live_is_fresh(s, query, mode=MATCH_CASE):
             live = s.find_matches()
             s.find_clear()
-            s.find_set_query(query, *MATCH_CASE)
+            s.find_set_query(query, *mode)
             self.ae(live, s.find_matches())
             return live
 
@@ -2374,6 +2374,31 @@ class TestScreen(BaseTest):
         self.ae(s.find_count(), 1)
         s.clear_scrollback()
         self.ae(live_is_fresh(s, 'aa'), ((2, 0, 2, 1),))
+
+        # the rest of a wrapped line whose head was evicted starts mid-line, so ^ does not match
+        # there, live or afresh, and still matches at every line that starts a line
+        def head_evicted():
+            s = self.create_screen(cols=5, lines=2, scrollback=2)
+            s.draw('abcdefgh'), s.carriage_return(), s.linefeed()
+            return s
+        s = head_evicted()
+        s.find_set_query('^[a-f]', *REGEX)
+        self.ae(s.find_count(), 1)
+        lines_of(s, 'c', 'd')
+        self.assertTrue(s.historybuf.is_continued(0), 'the oldest line continues the evicted one')
+        self.ae(live_is_fresh(s, '^[a-f]', REGEX), ((2, 0, 2, 0), (3, 0, 3, 0)))
+        # a clear or a reset leaves the oldest line starting a line
+        s = head_evicted()
+        lines_of(s, 'c', 'd')
+        s.find_set_query('^[a-f]', *REGEX)
+        s.clear_scrollback()
+        self.ae(live_is_fresh(s, '^[a-f]', REGEX), ((3, 0, 3, 0),))
+        s = head_evicted()
+        lines_of(s, 'c', 'd')
+        s.find_set_query('^a', *REGEX)
+        s.reset()
+        s.draw('ab')
+        self.ae(live_is_fresh(s, '^a', REGEX), ((3, 0, 3, 0),))
 
         # the buffer gets shorter, with a match on what is dropped and nothing output after
         s = self.create_screen(cols=5, lines=3, scrollback=10)

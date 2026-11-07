@@ -7,15 +7,16 @@ mod find;
 use std::ffi::c_void;
 
 use find::{
-    Direction, FindBufferBounds, FindCellSpan, FindEngine, FindFill, FindMatch, FindMode,
-    FindOrigin, FindPos, FindQueryChange, FindRefeed, FindRefeedRange, FindStatus, FindWant,
-    StepOutcome,
+    Direction, FindBufferBounds, FindCellSpan, FindEngine, FindFill, FindLineStart, FindMatch,
+    FindMode, FindOrigin, FindPos, FindQueryChange, FindRefeed, FindRefeedRange, FindStatus,
+    FindWant, StepOutcome,
 };
 
 /// `kitty/find.h`'s `FindLogicalLine`: the walker's view of one logical line.
 #[repr(C)]
 pub struct FindLogicalLine {
     abs_first_line: u64,
+    start: FindLineStart,
     rows: u32,
     text: *const u8,
     text_len: usize,
@@ -126,7 +127,7 @@ pub unsafe extern "C" fn kitty_rs_find_refeed_line(
             std::slice::from_raw_parts(l.cells, l.text_len),
         )
     };
-    refeed.feed_line(l.abs_first_line, l.rows, text, cells);
+    refeed.feed_line(l.abs_first_line, l.start, l.rows, text, cells);
 }
 
 /// Replaces the matches starting in the refeed's lines, all of them searched, with its own,
@@ -385,6 +386,7 @@ mod tests {
         let cells = [span(0), span(1), span(1)];
         let line = FindLogicalLine {
             abs_first_line: 5,
+            start: FindLineStart::StartsLine,
             rows: 1,
             text: text.as_ptr(),
             text_len: text.len(),
