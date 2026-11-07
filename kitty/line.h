@@ -202,8 +202,9 @@ text_in_cell_without_alloc(const CPUCell *c, const TextCache *tc, ListOfChars *a
 // each wrapped row evicted from scrollback.
 static inline index_type
 line_text_cell(const Line *line, index_type x, index_type limit, ListOfChars *lc) {
-    // [LAW:one-source-of-truth] the text rules of unicode_in_range (as line_as_unicode applies
-    // them) and apply_mark, the one statement find's walker and line_last_text_char share
+    // [LAW:one-source-of-truth] find's one statement of a line's text, shared by its walker and
+    // line_last_text_char; it follows the rules unicode_in_range (as line_as_unicode applies
+    // them) and apply_mark each still state on their own
     const CPUCell *c = line->cpu_cells + x;
     // wide-char continuation cells and the lower rows of scaled text carry no text of their own
     if (c->is_multicell && (c->x || c->y)) { lc->count = 0; return x; }
