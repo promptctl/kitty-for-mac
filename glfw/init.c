@@ -312,7 +312,7 @@ glfwStopMainLoop(void) {
 
 GLFWAPI unsigned long long
 glfwAddTimer(monotonic_t interval, bool repeats, GLFWuserdatafun callback, void *callback_data, GLFWuserdatafun free_callback) {
-    return _glfwPlatformAddClientTimer(interval, repeats, callback, callback_data, free_callback);
+    return _glfwPlatformAddClientTimer(interval, repeats, (ClientTimerFire){.fn = callback}, callback_data, free_callback);
 }
 
 GLFWAPI void

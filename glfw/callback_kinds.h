@@ -27,12 +27,13 @@ typedef void (*GLFWuserdatafreefun)(id_type, void *);
 // A timer the client added with glfwAddTimer is an event; GLFW's own timers (key repeat, cursor
 // animation, D-Bus timeouts, ...) are not, since the ones that change client state do it through
 // an event of their own. The timer's free hook only releases data and never ticks.
+typedef _GLFW_EVENT(timer_callback_func) ClientTimerFire;  // made only by glfwAddTimer
 typedef enum { INTERNAL_TIMER, CLIENT_TIMER } TimerKind;
 typedef struct {
     TimerKind kind;
     union {
         timer_callback_func internal;
-        _GLFW_EVENT(timer_callback_func) client;
+        ClientTimerFire client;
     };
 } TimerFire;
 

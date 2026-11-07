@@ -45,7 +45,7 @@ _glfwPlatformAddTimer(monotonic_t interval, bool repeats, GLFWuserdatafreefun ca
 }
 
 unsigned long long
-_glfwPlatformAddClientTimer(monotonic_t interval, bool repeats, GLFWuserdatafreefun callback, void *callback_data, GLFWuserdatafreefun free_callback) {
+_glfwPlatformAddClientTimer(monotonic_t interval, bool repeats, ClientTimerFire callback, void *callback_data, GLFWuserdatafreefun free_callback) {
     return addClientTimer(&_glfw.GLFW_LOOP_BACKEND.eventLoopData, "user timer", interval, 1, repeats, callback, callback_data, free_callback);
 }
 

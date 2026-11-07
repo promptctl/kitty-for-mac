@@ -1240,8 +1240,8 @@ _glfwPlatformAddTimer(monotonic_t interval, bool repeats, GLFWuserdatafun callba
 }
 
 unsigned long long
-_glfwPlatformAddClientTimer(monotonic_t interval, bool repeats, GLFWuserdatafun callback, void *callback_data, GLFWuserdatafun free_callback) {
-    return add_timer(interval, repeats, (TimerFire){.kind = CLIENT_TIMER, .client.fn = callback}, callback_data, free_callback);
+_glfwPlatformAddClientTimer(monotonic_t interval, bool repeats, ClientTimerFire callback, void *callback_data, GLFWuserdatafun free_callback) {
+    return add_timer(interval, repeats, (TimerFire){.kind = CLIENT_TIMER, .client = callback}, callback_data, free_callback);
 }
 
 void

@@ -128,8 +128,8 @@ addTimer(
 
 id_type
 addClientTimer(
-    EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, timer_callback_func cb, void *cb_data, GLFWuserdatafreefun free) {
-    return add_timer(eld, name, interval, enabled, repeats, (TimerFire){.kind = CLIENT_TIMER, .client.fn = cb}, cb_data, free);
+    EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, ClientTimerFire cb, void *cb_data, GLFWuserdatafreefun free) {
+    return add_timer(eld, name, interval, enabled, repeats, (TimerFire){.kind = CLIENT_TIMER, .client = cb}, cb_data, free);
 }
 
 void

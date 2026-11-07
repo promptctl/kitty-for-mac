@@ -156,18 +156,19 @@ def unclassified_glfw_callbacks(glfw_dir: str = GLFW_DIR) -> list[str]:
             problems.append(f'{name}: callback {t} is neither _GLFW_EVENT nor _GLFW_NO_TICK: {" ".join(stmt.split())}')
         if name != 'callback_kinds.h':
             for line in src.splitlines():
-                if re.search(r'\.fn\s*\(', line):
+                if re.search(r'(?:\.|->)\s*fn\s*\)*\s*\(', line):
                     problems.append(f'{name}: event invoked outside _glfwDeliver: {line.strip()}')
-    # A client callback GLFW is handed as an argument is not storage, so its kind comes from its
-    # type: a type some declaration makes an event is an event wherever its value travels.
+    # A client callback GLFW holds as an argument or a local is not storage, so its kind comes from
+    # its type: a type some declaration makes an event is an event wherever its value travels.
     event_types = set()
     for src in sources.values():
         event_types.update(re.findall(r'_GLFW_EVENT\(\s*(\w+)\s*\)', src))
     for name, src in sources.items():
         for fn_name, params, body in _function_definitions(src):
-            for p in re.finditer(r'\b(\w+)\s+\**\s*(\w+)\s*(?:,|$)', params):
-                if p.group(1) in event_types and re.search(rf'(?<![\w.>]){p.group(2)}\s*\(', body):
-                    problems.append(f'{name}: {fn_name} calls its {p.group(1)} argument {p.group(2)} outside _glfwDeliver')
+            held = [*re.finditer(r'\b(\w+)\s+\**\s*(\w+)\s*(?:,|$)', params), *re.finditer(r'\b(\w+)\s+\**\s*(\w+)\s*[=;]', body)]
+            for v in held:
+                if v.group(1) in event_types and re.search(rf'(?<![\w.>]){v.group(2)}\s*\(', body):
+                    problems.append(f'{name}: {fn_name} calls its {v.group(1)} {v.group(2)} outside _glfwDeliver')
     return problems
 
 

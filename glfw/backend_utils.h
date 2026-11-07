@@ -96,7 +96,7 @@ void toggleWatch(EventLoopData *eld, id_type watch_id, int enabled);
 id_type addTimer(
     EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, timer_callback_func cb, void *cb_data, GLFWuserdatafreefun free);
 id_type addClientTimer(
-    EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, timer_callback_func cb, void *cb_data, GLFWuserdatafreefun free);
+    EventLoopData *eld, const char *name, monotonic_t interval, int enabled, bool repeats, ClientTimerFire cb, void *cb_data, GLFWuserdatafreefun free);
 void removeTimer(EventLoopData *eld, id_type timer_id);
 void removeAllTimers(EventLoopData *eld);
 void toggleTimer(EventLoopData *eld, id_type timer_id, int enabled);

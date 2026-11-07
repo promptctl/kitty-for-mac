@@ -26,14 +26,35 @@
 #include "KittySwift-Swift.h"
 
 // [LAW:single-enforcer] This file is kitty's AppKit boundary: AppKit calls it directly, not through a
-// GLFW delivery, so a call into the Boss from here requests the tick itself (see request_tick_callback).
-// Plain call_boss does not exist in this file, so a new bridge cannot pick the one that skips the tick.
-#undef call_boss
-#define call_boss_from_appkit(name, ...)           \
-    do {                                           \
-        call_boss_method(name, __VA_ARGS__);       \
-        request_tick_callback();                   \
+// GLFW delivery, so a call into Python from here is one of two kinds, as GLFW's callbacks are. An
+// event changes state and requests the tick itself (see request_tick_callback); a query answers
+// AppKit from Boss on AppKit's schedule and requests nothing. Every other way into Python is
+// poisoned below, so a new bridge cannot compile without picking one.
+#define call_boss_from_appkit(name, ...)                                                              \
+    do {                                                                                              \
+        if (global_state.boss) {                                                                      \
+            RAII_PyObject(_appkit_ret, PyObject_CallMethod(global_state.boss, #name, __VA_ARGS__));   \
+            if (!_appkit_ret) PyErr_Print();                                                          \
+        }                                                                                             \
+        request_tick_callback();                                                                      \
     } while (0)
+#define call_python_from_appkit(callable, fmt, ...)                                  \
+    do {                                                                             \
+        RAII_PyObject(_appkit_ret, PyObject_CallFunction(callable, fmt, __VA_ARGS__)); \
+        if (!_appkit_ret) PyErr_Print();                                             \
+        request_tick_callback();                                                     \
+    } while (0)
+
+static bool
+boss_answers(const char *method, id_type os_window_id) {
+    if (!global_state.boss) return false;
+    RAII_PyObject(ret, PyObject_CallMethod(global_state.boss, method, "K", (unsigned long long)os_window_id));
+    if (!ret) { PyErr_Print(); return false; }
+    return ret == Py_True;
+}
+#undef call_boss
+#undef call_boss_method
+#pragma GCC poison PyObject_CallMethod PyObject_CallFunction PyObject_CallObject PyObject_Call PyObject_CallNoArgs PyObject_CallOneArg PyObject_CallMethodObjArgs PyObject_CallFunctionObjArgs PyObject_Vectorcall
 
 static inline void
 cleanup_cfrelease(void *__p) {
@@ -287,10 +308,8 @@ key_window_screen(void) {
 static bool
 boss_find_answer(const char *method) {
     OSWindow *osw = current_os_window();
-    if (!osw || ![NSApp keyWindow] || !global_state.boss) return false;
-    RAII_PyObject(ret, PyObject_CallMethod(global_state.boss, method, "K", (unsigned long long)osw->id));
-    if (!ret) { PyErr_Print(); return false; }
-    return ret == Py_True;
+    if (!osw || ![NSApp keyWindow]) return false;
+    return boss_answers(method, osw->id);
 }
 
 // The find bar's events, run on the main thread as plain calls into Boss: they must not
@@ -312,10 +331,7 @@ boss_find_answer(const char *method) {
     call_boss_from_appkit(find_mode_changed, "ll", (long)caseRule, (long)syntax);
 }
 - (BOOL)findBarHonorsMode:(NSWindow *)window {
-    if (!global_state.boss) return NO;
-    RAII_PyObject(ret, PyObject_CallMethod(global_state.boss, "find_honors_mode", "K", (unsigned long long)cocoa_os_window_id_for_window(window)));
-    if (!ret) { PyErr_Print(); return NO; }
-    return ret == Py_True;
+    return boss_answers("find_honors_mode", cocoa_os_window_id_for_window(window));
 }
 @end
 
@@ -506,12 +522,7 @@ set_notification_activated_callback(PyObject *self UNUSED, PyObject *callback) {
 static void
 do_notification_callback(const char *identifier, const char *event, const char *action_identifer) {
     if (notification_activated_callback) {
-        PyObject *ret =
-            PyObject_CallFunction(notification_activated_callback, "sss", event, identifier ? identifier : "", action_identifer ? action_identifer : "");
-        if (ret) Py_DECREF(ret);
-        else PyErr_Print();
-        // Notification events arrive on the main queue, from AppKit: see call_boss_from_appkit
-        request_tick_callback();
+        call_python_from_appkit(notification_activated_callback, "sss", event, identifier ? identifier : "", action_identifer ? action_identifer : "");
     }
 }
 
