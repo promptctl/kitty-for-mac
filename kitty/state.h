@@ -848,6 +848,7 @@ void request_frame_render(OSWindow *w);
 // notification events, Python timers) requests one after it runs, unconditionally: a tick is
 // cheap. Code inside the tick must not, or the loop never sleeps.
 void request_tick_callback(void);
+#define call_boss_outside_tick(name, ...) do { call_boss(name, __VA_ARGS__); request_tick_callback(); } while (0)
 typedef void (*timer_callback_fun)(id_type, void *);
 typedef void (*tick_callback_fun)(void *);
 id_type add_main_loop_timer(monotonic_t interval, bool repeats, timer_callback_fun callback, void *callback_data, timer_callback_fun free_callback);

@@ -283,9 +283,6 @@ boss_find_answer(const char *method) {
     return ret == Py_True;
 }
 
-// A call into Boss made from AppKit runs outside the tick: see request_tick_callback.
-#define call_boss_from_appkit(name, ...) do { call_boss(name, __VA_ARGS__); request_tick_callback(); } while (0)
-
 // The find bar's events, run on the main thread as plain calls into Boss: they must not
 // reorder behind keystrokes typed after them, which a pending action would.
 @interface FindBarBridge : NSObject <KittyFindBarDelegate>
@@ -293,16 +290,16 @@ boss_find_answer(const char *method) {
 
 @implementation FindBarBridge
 - (void)findBar:(NSWindow *)window queryChanged:(NSString *)text {
-    call_boss_from_appkit(find_bar_query_changed, "Ks", cocoa_os_window_id_for_window(window), [text UTF8String]);
+    call_boss_outside_tick(find_bar_query_changed, "Ks", cocoa_os_window_id_for_window(window), [text UTF8String]);
 }
 - (void)findBar:(NSWindow *)window step:(BOOL)forward {
-    call_boss_from_appkit(find_bar_step, "KO", cocoa_os_window_id_for_window(window), forward ? Py_True : Py_False);
+    call_boss_outside_tick(find_bar_step, "KO", cocoa_os_window_id_for_window(window), forward ? Py_True : Py_False);
 }
 - (void)findBarClosed:(NSWindow *)window {
-    call_boss_from_appkit(find_bar_closed, "K", cocoa_os_window_id_for_window(window));
+    call_boss_outside_tick(find_bar_closed, "K", cocoa_os_window_id_for_window(window));
 }
 - (void)findBarModeChangedWithCaseRule:(KittyFindCaseRule)caseRule syntax:(KittyFindSyntax)syntax {
-    call_boss_from_appkit(find_mode_changed, "ll", (long)caseRule, (long)syntax);
+    call_boss_outside_tick(find_mode_changed, "ll", (long)caseRule, (long)syntax);
 }
 - (BOOL)findBarHonorsMode:(NSWindow *)window {
     if (!global_state.boss) return NO;
@@ -860,7 +857,7 @@ cocoa_send_notification(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
 - (void)quickAccessTerminal:(NSPasteboard *)pboard userData:(NSString *)userData error:(NSString **)error {
     // we ignore event during application launch as it will cause the window to be shown and hidden
     static bool is_first_event = true;
-    if (!is_first_event || monotonic() >= s_double_to_monotonic_t(2.0)) { call_boss_from_appkit(quick_access_terminal_invoked, NULL); }
+    if (!is_first_event || monotonic() >= s_double_to_monotonic_t(2.0)) { call_boss_outside_tick(quick_access_terminal_invoked, NULL); }
     is_first_event = false;
 }
 @end
