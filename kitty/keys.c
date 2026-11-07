@@ -375,12 +375,16 @@ on_key_input(const GLFWkeyevent *ev) {
 #undef dispatch_key_event
 }
 
-// A key press bound for a focused native view: one it had no use for, or, while
-// a keyboard mode is active, one offered before it. It may trigger a shortcut,
-// and is never sent to the child. Returns true if a shortcut took it.
+// A key bound for a focused native view: a press or repeat it had no use for, or,
+// while a keyboard mode is active, one offered before it, which may trigger a
+// shortcut; or the release of a press a shortcut took, which ends that shortcut
+// as on_key_input does for the terminal. Never sent to the child. Returns true
+// if a shortcut took it.
 bool
 on_native_view_key(const GLFWkeyevent *ev) {
-    if (OPT(debug_keyboard)) debug("\x1b[33mon_native_view_key\x1b[m: glfw key: 0x%x native_code: 0x%x %s", ev->key, ev->native_key, format_mods(ev->mods));
+    const bool release = ev->action == GLFW_RELEASE;
+    if (OPT(debug_keyboard)) debug("\x1b[33mon_native_view_key\x1b[m: glfw key: 0x%x native_code: 0x%x action: %s %s", ev->key, ev->native_key,
+            release ? "RELEASE" : (ev->action == GLFW_PRESS ? "PRESS" : "REPEAT"), format_mods(ev->mods));
     if (!active_window()) {
         debug("no active window, ignoring\n");
         return false;
@@ -390,7 +394,7 @@ on_native_view_key(const GLFWkeyevent *ev) {
         PyErr_Print();
         return false;
     }
-    PyObject *ret = PyObject_CallMethod(global_state.boss, "dispatch_native_view_key", "O", ke);
+    PyObject *ret = PyObject_CallMethod(global_state.boss, release ? "on_shortcut_key_release" : "dispatch_native_view_key", "O", ke);
     Py_DECREF(ke);
     if (!ret) {
         PyErr_Print();
@@ -398,7 +402,7 @@ on_native_view_key(const GLFWkeyevent *ev) {
     }
     const bool consumed = ret == Py_True;
     Py_DECREF(ret);
-    debug(consumed ? "handled as shortcut\n" : "not a shortcut, left to the native view\n");
+    debug(release ? "dispatched release event for shortcut key\n" : (consumed ? "handled as shortcut\n" : "not a shortcut, left to the native view\n"));
     return consumed;
 }
 
@@ -515,12 +519,15 @@ pyis_modifier_key(PyObject *self UNUSED, PyObject *a) {
 
 // Replays (event, vk, extra, current_kind, current_id) steps through a fresh
 // table and returns the (kind, id) each one is delivered to. event is 'down',
-// 'up', 'flags' or 'consume' (a shortcut took the keyDown); extra is
-// is_repeat for 'down' and 'consume' and the event's modifierFlags
-// for 'flags'.
+// 'up', 'flags', 'consume' (a menu or macOS shortcut took the keyDown) or
+// 'shortcut' (the shortcut of the terminal window current_id names took it);
+// those two return the key's hold after them, a key outside the table being
+// never held. extra is is_repeat for 'down', 'consume' and 'shortcut' and the
+// event's modifierFlags for 'flags'.
 static PyObject *
 test_key_destination(PyObject *self UNUSED, PyObject *steps) {
     KeyDestinationTable t = {0};
+#define held(vk) (key_destination_in_table(vk) ? t.held[vk] : KEY_DEST_NOT_HELD)
     RAII_PyObject(ans, PyList_New(0));
     RAII_PyObject(it, PyObject_GetIter(steps));
     if (!ans || !it) return NULL;
@@ -534,12 +541,14 @@ test_key_destination(PyObject *self UNUSED, PyObject *steps) {
         if (strcmp(event, "down") == 0) dest = key_destination_for_key_down(&t, vk, extra != 0, current);
         else if (strcmp(event, "up") == 0) dest = key_destination_for_key_up(&t, vk, current);
         else if (strcmp(event, "flags") == 0) dest = key_destination_for_flags_changed(&t, vk, extra, current);
-        else if (strcmp(event, "consume") == 0) { key_destination_consume(&t, vk, extra != 0); dest = (KeyDestination){KEY_DEST_CONSUMED, 0}; }
+        else if (strcmp(event, "consume") == 0) { key_destination_consume(&t, vk, extra != 0); dest = held(vk); }
+        else if (strcmp(event, "shortcut") == 0) { key_destination_take_for_shortcut(&t, vk, extra != 0, current.id); dest = held(vk); }
         else { PyErr_Format(PyExc_ValueError, "unknown key event: %s", event); Py_DECREF(step); return NULL; }
         Py_DECREF(step);
         RAII_PyObject(r, Py_BuildValue("iK", (int)dest.kind, (unsigned long long)dest.id));
         if (!r || PyList_Append(ans, r) != 0) return NULL;
     }
+#undef held
     if (PyErr_Occurred()) return NULL;
     return Py_NewRef(ans);
 }
