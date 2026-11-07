@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import pty
+import re
 import shutil
 import signal
 import struct
@@ -27,7 +28,9 @@ from kitty.claude_find import ClaudeFind, ClaudeFindState, ClaudeHost
 from kitty.constants import is_macos
 from kitty.find_backends import EngineFind, FindCount, FindMode, FindQuery, FindStatus
 from kitty.tmux_find import (
+    COPY_MODE_OPTIONS,
     FIND_DEADLINE,
+    ClientPane,
     Counted,
     PaneRef,
     TmuxClient,
@@ -39,11 +42,11 @@ from kitty.tmux_find import (
     batch,
     cancel_batch,
     find_command,
+    find_version,
     parse_count,
     parse_displayed_pane,
     parse_pane,
     parse_selection,
-    parse_version,
     query_argument,
     search_batch,
     server_args_of,
@@ -122,29 +125,32 @@ class TmuxFindPureTest(BaseTest):
         self.ae(tmux_client_of([proc(5, 'tmux')], boom), TmuxClient(5, 'tmux', (), None, None))
 
     def test_parsing(self):
-        v35 = TmuxVersion(3, 5)
-        out = '12 %3 0 0 400 3.5a w:@1.%3\n99 %7 1 1 500 3.5a a session:@4.%7\n'
-        self.ae(parse_pane(out, 99), PaneRef('%7', True, True, 500, v35, 'a session:@4.%7'))
-        self.ae(parse_pane(out, 12), PaneRef('%3', False, False, 400, v35, 'w:@1.%3'))
-        self.ae(parse_displayed_pane('%3 0 1 400 3.8 w:@1.%3\n'), PaneRef('%3', False, True, 400, TmuxVersion(3, 8), 'w:@1.%3'))
-        for bad in (
-            '', '12 %3 0 0 400 3.5', '12 %3 2 0 400 3.5 w:@1.%3', '12 %3 0 0 x 3.5 w:@1.%3', '12 %3 0 0 400 w:@1.%3',
-            '12 %3 0 0 400 openbsd-7.6 w:@1.%3',
-        ):
+        # the version is passed on as the server wrote it: a pane on a server find cannot use is still a pane
+        out = '12 3.5a %3 0 0 400 w:@1.%3\n99 openbsd-7.6 %7 1 1 500 a session:@4.%7\n'
+        self.ae(parse_pane(out, 99), ClientPane(PaneRef('%7', True, True, 500, 'a session:@4.%7'), 'openbsd-7.6'))
+        self.ae(parse_pane(out, 12), ClientPane(PaneRef('%3', False, False, 400, 'w:@1.%3'), '3.5a'))
+        self.ae(parse_pane('12  %3 0 0 400 w:@1.%3', 12).version, '', 'a server too old to expand #{version}')
+        self.ae(parse_displayed_pane('%3 0 1 400 w:@1.%3\n'), PaneRef('%3', False, True, 400, 'w:@1.%3'))
+        for bad in ('', '12 3.5 %3 0 0 400', '12 3.5 %3 2 0 400 w:@1.%3', '12 3.5 %3 0 0 x w:@1.%3'):
             with self.assertRaises(TmuxError, msg=bad):
                 parse_pane(bad, 12)
-        for bad in ('', '%3 0 1 400 3.5', '%3 0 1 x 3.5 w:@1.%3', '%3 2 1 400 3.5 w:@1.%3', '%3 0 1 400 w:@1.%3'):
+        for bad in ('', '%3 0 1 400', '%3 0 1 x w:@1.%3', '%3 2 1 400 w:@1.%3'):
             with self.assertRaises(TmuxError, msg=bad):
                 parse_displayed_pane(bad)
         with self.assertRaises(TmuxError):
             parse_pane(out, 5)
         with self.assertRaises(TmuxError):
             parse_pane('', 5)
-        for text, version in (('3.5a', (3, 5)), ('3.6', (3, 6)), ('next-3.7', (3, 7)), ('3.6-rc2', (3, 6)), ('3.10', (3, 10))):
-            self.ae(parse_version(text), TmuxVersion(*version), text)
-        for bad in ('', '3', 'master', 'openbsd-7.6', '3.5 ', 'tmux 3.5'):
-            with self.assertRaises(TmuxError, msg=bad):
-                parse_version(bad)
+        for text, version in (
+            ('3.5a', (3, 5, True)), ('3.6', (3, 6, True)), ('3.6-rc2', (3, 6, True)), ('3.10', (3, 10, True)), ('next-3.7', (3, 7, False)),
+        ):
+            self.ae(find_version(text), TmuxVersion(*version), text)
+        # next-3.6 is code on the way to 3.6, which may not parse copy-mode options yet
+        self.assertLess(find_version('next-3.6'), COPY_MODE_OPTIONS)
+        # unknown, and known but older, are one answer that names what find needs and what the server said
+        for bad in ('', '3', 'master', 'openbsd-7.6', '3.5 ', 'tmux 3.5', '3.4', 'next-3.5'):
+            with self.assertRaisesRegex(TmuxError, f'needs tmux 3.5 or later.*{re.escape(repr(bad))}', msg=bad):
+                find_version(bad)
         self.ae(parse_count('1|111|0\n'), Counted(True, 111, False))
         self.ae(parse_count('1|42|1'), Counted(True, 42, True))
         self.ae(parse_count('0||\n'), Counted(False, None, False))
@@ -161,10 +167,14 @@ class TmuxFindPureTest(BaseTest):
         fake = FakeTmux()
         fake.version = '3.4'
         state = TmuxFindState()
-        TmuxFind(TmuxClient(fake.client_pid, '/bin/sh', (), None, None), state, TmuxOperation(fake)).find('needle')
+        f = TmuxFind(TmuxClient(fake.client_pid, '/bin/sh', (), None, None), state, TmuxOperation(fake))
+        f.find(default_query('needle'))
         self.ae(state.status, FindStatus(0, 0, FindCount.unavailable))
         self.assertIsNone(state.held)
+        self.assertIsNone(f.program_selection_text())
         self.ae([c for c in fake.calls if 'list-clients' not in c], [])
+        # the pane is still known, so routing to Claude's transcript search does not depend on the version
+        self.ae(f.lookup(), PaneRef('%1', True, False, 4242, 's:@1.%1'))
 
     def test_commands(self):
         # a semicolon ends a tmux command unless it is escaped, and an option cannot be told from a query
@@ -172,9 +182,10 @@ class TmuxFindPureTest(BaseTest):
             self.ae(query_argument(text), arg, text)
         self.ae(find_command('%1', 'foo;'), ['send', '-t', '%1', '-X', 'search-backward-incremental', '=foo\\;'])
         # from 3.6 tmux parses a copy-mode command's options, and before it takes every argument as text
-        self.ae(step_command('%1', '-n', False, TmuxVersion(3, 6)), ['send', '-t', '%1', '-X', 'search-forward-text', '--', '-n'])
-        self.ae(step_command('%1', '-n', True, TmuxVersion(3, 8))[4:], ['search-backward-text', '--', '-n'])
-        self.ae(step_command('%1', '-n', True, TmuxVersion(3, 5))[4:], ['search-backward-text', '-n'])
+        self.ae(step_command('%1', '-n', False, TmuxVersion(3, 6, True)), ['send', '-t', '%1', '-X', 'search-forward-text', '--', '-n'])
+        self.ae(step_command('%1', '-n', True, TmuxVersion(3, 8, True))[4:], ['search-backward-text', '--', '-n'])
+        self.ae(step_command('%1', '-n', True, TmuxVersion(3, 5, True))[4:], ['search-backward-text', '-n'])
+        self.ae(step_command('%1', '-n', True, TmuxVersion(3, 6, False))[4:], ['search-backward-text', '-n'])
         self.ae(batch(['a', 'b'], ['c']), ['a', 'b', ';', 'c'])
         self.ae(batch(['a']), ['a'])
         b = search_batch('%1', ['SEARCH'])
@@ -467,14 +478,19 @@ class TmuxFindIntegrationTest(BaseTest):
             for _ in range(30):
                 time.sleep(0.05)
                 self.ae(t.finder(state).program_selection_text(), expected)
-            # in tmux 3.5 scrolling drags the cursor and stretches the selection over more rows: what is read is
-            # what tmux itself copies, whichever it does
+            # from 3.6 scrolling leaves the selection where it is; in 3.5 it drags the cursor and stretches the
+            # selection over more rows, which is no single-line query. Either way what is read is what tmux copies.
+            stays = find_version(t.tmux('display', '-p', '#{version}').strip()) >= COPY_MODE_OPTIONS
             for _ in range(5):
                 t.tmux('send', '-t', t.pane, '-X', 'scroll-up')
                 t.tmux('send', '-t', t.pane, '-X', 'copy-selection-no-clear')
-                copied = parse_selection(t.tmux('show-buffer') + '\n')
+                copied = t.tmux('show-buffer')
                 t.tmux('delete-buffer')
-                self.ae(t.finder(state).program_selection_text(), copied)
+                if stays:
+                    self.ae(copied, expected)
+                else:
+                    self.assertIn('\n', copied, 'the one way tmux 3.5 may leave no single-line selection')
+                self.ae(t.finder(state).program_selection_text(), parse_selection(copied + '\n'))
 
     def test_a_pipe_that_cannot_run_ends_in_the_deadline_with_a_typed_error(self):
         with private_tmux(NEEDLES) as t:
@@ -548,7 +564,7 @@ class FakeTmux:
         if self.unreachable:
             raise TmuxError('no server running')
         if 'list-clients' in argv:
-            return f'{self.client_pid} {self.pane} {self.in_mode} {self.alternate} {self.pane_pid} {self.version} s:@1.{self.pane}\n'
+            return f'{self.client_pid} {self.version} {self.pane} {self.in_mode} {self.alternate} {self.pane_pid} s:@1.{self.pane}\n'
         if 'list-buffers' in argv:
             return ''.join(f'{created} {name}\n' for created, name, _ in self.buffers)
         if 'show-buffer' in argv:
