@@ -648,26 +648,32 @@ class PTY:
     def wait_till_child_exits(self, timeout=30 if BaseTest.is_ci else 10, require_exit_code=None) -> int:
         end = await_pid_exit(self.child_pid, timeout, wait_a_moment=self._read_once)
         self.child_waited_for = True  # whatever the end, it is named here, so teardown has nothing left to report
-        self._drain(timeout=0)
+        self._drain()
         match end:
             case Exited(status) if status >= 0 and require_exit_code in (None, status):
                 return status
-        required = '' if require_exit_code is None else f', but exit status {require_exit_code} was required'
-        raise AssertionError(f'PTY child {self.child_pid} {end}{required}. {self.screen_contents_for_error()}')
+            case Exited() if require_exit_code is not None:
+                detail = f', but exit status {require_exit_code} was required'
+            case _:
+                detail = ''
+        raise AssertionError(f'PTY child {self.child_pid} {end}{detail}. {self.screen_contents_for_error()}')
 
     def _read_once(self) -> None:
         # one read per poll, so a child that never stops writing still meets the deadline;
-        # a slave that hung up reads as nothing at once, so nothing read means wait instead
+        # a poll that reads nothing lasts its full period, as a hung-up slave returns at once
+        period_end = time.monotonic() + 0.02
         with suppress(OSError):
             if self.process_input_from_child(timeout=0.02):
                 return
-        time.sleep(0.01)
+        time.sleep(max(0, period_end - time.monotonic()))
 
-    def _drain(self, timeout: float) -> None:
-        # reads until the child has nothing more to say within timeout; EIO once the child is gone ends it
+    def _drain(self) -> None:
+        # reads what the child left in the PTY; EIO once the slave is closed ends it, and the
+        # budget ends it when a grandchild still holds the slave and keeps writing
+        budget_end = time.monotonic() + 1
         with suppress(OSError):
-            while self.process_input_from_child(timeout=timeout):
-                timeout = 0
+            while self.process_input_from_child(timeout=0) and time.monotonic() < budget_end:
+                pass
 
     def set_window_size(self, rows=25, columns=80, send_signal=True):
         if hasattr(self, 'screen'):

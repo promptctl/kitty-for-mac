@@ -13,7 +13,7 @@ from unittest.mock import patch
 from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
 from kitty.constants import is_macos, kitty_exe
 
-from .base import PTY, BaseTest, ChildEnd, Exited, KilledAtDeadline, ReapedElsewhere, await_exit, await_pid_exit
+from .base import PTY, BaseTest, Exited, KilledAtDeadline, ReapedElsewhere, await_exit, await_pid_exit
 
 
 def spawn_and_wait_for_ready(code: str, what: str) -> subprocess.Popen:
@@ -356,17 +356,17 @@ class PTYTeardownTest(BaseTest):
 
 
 class WaitTillChildExitsTest(BaseTest):
-    def _fails_naming(self, pty: PTY, end: ChildEnd, **kw: float) -> None:
+    def _fails_naming(self, pty: PTY, *names: object, **kw: float) -> str:
         # the failure is named once, by the wait: neither the with block nor GC names it again
         with redirect_stderr(err := StringIO()):
             with pty, self.assertRaises(AssertionError) as cm:
                 pty.wait_till_child_exits(**kw)
             pty.__del__()
         self.ae(err.getvalue(), '')
-        msg = str(cm.exception)
-        self.assertIn(f'PTY child {pty.child_pid} {end}', msg)
-        if (required := kw.get('require_exit_code')) is not None:
-            self.assertIn(f'exit status {required}', msg.removeprefix(f'PTY child {pty.child_pid} {end}'))
+        head = str(cm.exception).partition('. ')[0]  # the screen contents follow
+        for name in (f'PTY child {pty.child_pid}', *names):
+            self.assertIn(str(name), head)
+        return head
 
     def test_a_child_that_exits_with_the_required_status_returns_it(self) -> None:
         with PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
@@ -378,7 +378,7 @@ class WaitTillChildExitsTest(BaseTest):
             self.ae(pty.wait_till_child_exits(require_exit_code=0), 0)
 
     def test_a_child_with_the_wrong_status_fails_naming_both(self) -> None:
-        self._fails_naming(PTY([kitty_exe(), '+runpy', 'raise SystemExit(3)']), Exited(3), require_exit_code=0)
+        self._fails_naming(PTY([kitty_exe(), '+runpy', 'raise SystemExit(3)']), Exited(3), 'exit status 0 was required', require_exit_code=0)
 
     def test_a_child_killed_by_a_signal_fails_naming_it(self) -> None:
         pty = PTY([kitty_exe(), '+runpy', 'import os, signal; os.kill(os.getpid(), signal.SIGKILL)'])
@@ -387,7 +387,8 @@ class WaitTillChildExitsTest(BaseTest):
     def test_a_child_reaped_elsewhere_fails_naming_it_once(self) -> None:
         pty = PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)'])
         self.ae(await_pid_exit(pty.child_pid, patience=30 if self.is_ci else 10), Exited(0))
-        self._fails_naming(pty, ReapedElsewhere(), require_exit_code=0)
+        # no status was seen, so none is said to be wrong
+        self.assertNotIn('required', self._fails_naming(pty, ReapedElsewhere(), require_exit_code=0))
 
     def test_a_child_still_running_at_the_timeout_is_killed_and_named(self) -> None:
         self._fails_naming(PTY([kitty_exe(), '+runpy', 'import time; time.sleep(300)']), KilledAtDeadline(0.2, -signal.SIGKILL), timeout=0.2)
