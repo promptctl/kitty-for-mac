@@ -532,12 +532,12 @@ class TestFileTransmission(BaseTest):
         env = {'PWD': cwd}
         env['HOME'] = home_dir or self.kitten_home or self.tdir
         with set_paths(home=self.kitty_home, cwd=self.kitty_cwd):
-            pty = TransferPTY(cmd, cwd=cwd, allow=allow, env=env)
-            i = 10
-            while i > 0 and not pty.screen_contents().strip():
-                pty.process_input_from_child()
-                i -= 1
-            yield pty
+            with TransferPTY(cmd, cwd=cwd, allow=allow, env=env) as pty:
+                i = 10
+                while i > 0 and not pty.screen_contents().strip():
+                    pty.process_input_from_child()
+                    i -= 1
+                yield pty
 
     def basic_transfer_tests(self):
         src = os.path.join(self.tdir, 'src')

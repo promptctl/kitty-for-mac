@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 from contextlib import redirect_stderr
 from io import StringIO
+from unittest import TestResult
 from unittest.mock import patch
 
 from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
@@ -314,9 +315,23 @@ class PTYTeardownTest(BaseTest):
         self.ae(await_pid_exit(pty.child_pid, patience=30 if self.is_ci else 10), Exited(0))
 
     def test_a_with_block_whose_child_was_reaped_elsewhere_fails_naming_it(self):
-        with self.assertRaises(AssertionError) as cm, PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
-            self._reaped_here(pty)
+        pty = PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)'])
+        self._reaped_here(pty)
+        with self.assertRaises(AssertionError) as cm, pty:
+            pass
         self.ae(str(cm.exception), f'PTY child {pty.child_pid} {ReapedElsewhere()}')
+
+    def test_a_created_pty_whose_child_was_reaped_elsewhere_fails_its_test_naming_it(self):
+        pids = []
+
+        class ReapsItsPTYChild(BaseTest):
+            def runTest(inner) -> None:
+                pty = inner.create_pty([kitty_exe(), '+runpy', 'raise SystemExit(0)'])
+                pids.append(pty.child_pid)
+                self._reaped_here(pty)
+
+        ReapsItsPTYChild().run(result := TestResult())
+        self.ae([msg.splitlines()[-1] for _, msg in result.failures + result.errors], [f'AssertionError: PTY child {pids[0]} {ReapedElsewhere()}'])
 
     def test_a_failing_with_block_keeps_its_failure_and_notes_the_reap(self):
         with self.assertRaises(ValueError) as cm, PTY([kitty_exe(), '+runpy', 'raise SystemExit(0)']) as pty:
