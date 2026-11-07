@@ -19,6 +19,7 @@ from kitty.claude_find import (
     ClaudeFindState,
     ClaudeHost,
     ClaudePane,
+    Hold,
     Key,
     NotClaude,
     NotYetWritten,
@@ -244,10 +245,17 @@ class FakeClaudeSession:
     def finder(self, state: ClaudeFindState, op: TmuxOperation | None = None) -> ClaudeFind:
         return ClaudeFind(self.t.client(), state, op or patient(), self.host(), self.pane())
 
-    def holding(self, state: ClaudeFindState, op: TmuxOperation | None = None) -> ClaudeFind:
-        f = ClaudeFind.holding(state, op or patient(), self.host())
-        assert f is not None, 'the window holds no Claude search'
+    def holding(self, state: ClaudeFindState, op: TmuxOperation | None = None, host: ClaudeHost | None = None) -> ClaudeFind:
+        f = ClaudeFind.holding(state, op or patient(), host or self.host())
+        if f is None:
+            raise AssertionError('the window holds no Claude search')
         return f
+
+
+def held(state: ClaudeFindState) -> Hold:
+    if state.held is None:
+        raise AssertionError('the window holds no Claude search')
+    return state.held
 
 
 # the view each mode of the fake draws when it starts
@@ -256,7 +264,8 @@ FIRST_VIEW = {'': Prompt(), 'sticky': Prompt(), 'dialog': Unrecognised(FAKE_DIAL
 
 @contextmanager
 def fake_claude(*initial: str, mode: str = '', then: str = 'sleep 600') -> Any:
-    assert PYTHON
+    if PYTHON is None:
+        raise AssertionError('python3 is not on PATH')
     with tempfile.TemporaryDirectory(prefix='kitty-claude-find-') as d:
         conversation, keylog = os.path.join(d, 'conversation.txt'), os.path.join(d, 'keys.log')
         with open(conversation, 'w') as f:
@@ -269,7 +278,7 @@ def fake_claude(*initial: str, mode: str = '', then: str = 'sleep 600') -> Any:
             # the fake draws a whole view after it puts the tty in raw mode, and tmux can be read part way through one
             deadline = time.monotonic() + 10
             while (view := session.view()) != FIRST_VIEW[mode]:
-                if time.monotonic() > deadline:  # the launcher runs python -O, which drops assert statements
+                if time.monotonic() > deadline:
                     raise AssertionError(f'the fake never drew {FIRST_VIEW[mode]}: the pane shows {view}')
                 time.sleep(0.02)
             yield session
@@ -332,10 +341,10 @@ class ClaudeFindIntegrationTest(BaseTest):
             self.person_opens_transcript(c)
             state = ClaudeFindState()
             c.finder(state).find(default_query('zebra'))  # leaves the pane in Claude's accepted search
-            self.assertIs(state.held.return_to, Transcript)
+            self.assertIs(held(state).return_to, Transcript)
             c.finder(state).find(default_query('filler'))  # the pane shows our search now, which reads as the transcript either way
             c.finder(state).step(default_query('filler'), False)
-            self.assertIs(state.held.return_to, Transcript)
+            self.assertIs(held(state).return_to, Transcript)
             c.holding(state).clear()
             self.ae(c.view(), Transcript())
 
@@ -344,11 +353,11 @@ class ClaudeFindIntegrationTest(BaseTest):
             state = ClaudeFindState()
             c.finder(state).find(default_query('zebra'))
             c.finder(state).find(default_query('filler'))
-            self.assertIs(state.held.return_to, Prompt)
+            self.assertIs(held(state).return_to, Prompt)
             c.holding(state).clear()
             self.ae(c.view(), Prompt())
             c.finder(state).find(default_query('zebra'))  # a new hold reads the view again
-            self.assertIs(state.held.return_to, Prompt)
+            self.assertIs(held(state).return_to, Prompt)
 
     def test_a_pane_that_began_in_the_persons_own_search_ends_in_the_transcript(self):
         with fake_claude(*CONVERSATION) as c:
@@ -534,8 +543,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             while c.t.fmt('#{alternate_on}') != '0' and time.monotonic() < deadline:
                 time.sleep(0.02)
             keys = len(c.keys())
-            f = ClaudeFind.holding(state, patient(), ClaudeHost(ps=lambda timeout: f'{pane_pid} 1 /bin/sh\n', environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': c.dir}))
-            assert f is not None
+            f = c.holding(state, host=ClaudeHost(ps=lambda timeout: f'{pane_pid} 1 /bin/sh\n', environ_of=lambda pid: {'CLAUDE_CONFIG_DIR': c.dir}))
             f.clear()
             self.assertIsNone(state.held)
             self.ae(len(c.keys()), keys)
@@ -571,7 +579,7 @@ class ClaudeFindIntegrationTest(BaseTest):
             f = ClaudeFind(c.t.client(), state, patient(), c.host(), ClaudePane(other, 'sid-2', 1, c.dir))
             f.guarded(lambda pane: f.hold(pane.pane_id))
             self.ae(c.view(), Prompt(), 'the first pane was brought back')
-            self.ae(state.held.at.pane, other)  # type: ignore[union-attr]
+            self.ae(held(state).at.pane, other)
 
     def test_every_cause_is_logged_once_and_sets_unavailable(self):
         with fake_claude(*CONVERSATION) as c:

@@ -116,12 +116,14 @@ def proc(pid: int, *cmdline: str) -> ProcessDesc:
 
 def holding(state: TmuxFindState, op: TmuxOperation | None = None) -> TmuxFind:
     f = TmuxFind.holding(state, op or patient())
-    assert f is not None, 'the window holds no tmux search'
+    if f is None:
+        raise AssertionError('the window holds no tmux search')
     return f
 
 
 def held_pane(state: TmuxFindState) -> str:
-    assert state.held is not None, 'the window holds no tmux search'
+    if state.held is None:
+        raise AssertionError('the window holds no tmux search')
     return state.held.pane
 
 
@@ -236,7 +238,8 @@ class TmuxFindPureTest(BaseTest):
 # A tmux server of our own with a real client attached on a pty, so that pane lookup runs through list-clients
 class PrivateTmux:
     def __init__(self, directory: str) -> None:
-        assert TMUX
+        if TMUX is None:
+            raise AssertionError('tmux is not on PATH')
         self.exe: str = TMUX
         self.socket = os.path.join(directory, 'sock')
         self.master, slave = pty.openpty()
@@ -275,7 +278,7 @@ class PrivateTmux:
     def drawn(self, script: 'Script', pane: str | None = None) -> None:
         deadline = time.monotonic() + 10
         while script.last not in self.tmux('capture-pane', '-p', '-S', '-', '-t', pane or self.pane):
-            if time.monotonic() > deadline:  # the launcher runs python -O, which drops assert statements
+            if time.monotonic() > deadline:
                 raise AssertionError(f'the pane never printed {script.last!r}')
             time.sleep(0.02)
 
@@ -295,7 +298,8 @@ class PrivateTmux:
             os.close(self.master)
 
     def client(self) -> TmuxClient:
-        assert self.client_proc is not None
+        if self.client_proc is None:
+            raise AssertionError('the tmux client has not been started')
         return TmuxClient(self.client_proc.pid, self.exe, ('-S', self.socket), None, os.environ.get('PATH'))
 
     def finder(self, state: TmuxFindState, op: TmuxOperation | None = None) -> TmuxFind:
@@ -915,7 +919,7 @@ class TmuxFindWindowTest(BaseTest):
         fake.pane = '%2'
         backend.find(default_query('x'))
         self.ae(len([c for c in fake.calls if 'list-clients' in c]), 1)
-        self.ae(w.tmux_find_state.held.pane, '%1')
+        self.ae(held_pane(w.tmux_find_state), '%1')
         self.assertTrue(all('%2' not in arg for call in fake.calls for arg in call), 'nothing was sent to the pane tmux switched to')
 
     def test_a_lookup_that_failed_is_what_the_search_reports(self):
