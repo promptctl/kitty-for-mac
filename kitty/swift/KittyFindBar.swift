@@ -17,6 +17,9 @@ import AppKit
     func findBarModeChanged(caseRule: KittyFindCaseRule, syntax: KittyFindSyntax)
     // whether the window's search is kitty's own, the one the mode applies to
     func findBarHonorsMode(_ window: NSWindow) -> Bool
+    // how far down from the top of the terminal, in pixels, the bar starts: below the rows of the
+    // active kitty window that a program keeps its own marks in. kitty owns the number; the bar asks.
+    func findBarClearance(_ window: NSWindow) -> Int
 }
 
 // How far a search's total can be trusted. Python's FindCount has the same values.
@@ -46,8 +49,11 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
     // Set once at launch, before any bar exists; unset, the first edit crashes instead of going nowhere
     @objc public static var delegate: KittyFindBarDelegate!
 
+    private static let margin: CGFloat = 8
+
     private let field = NSSearchField()
     private let status = NSTextField(labelWithString: "")
+    private var topConstraint: NSLayoutConstraint!
 
     // [LAW:dataflow-not-control-flow] The same steps whether the bar is new, hidden or already open:
     // a repeated Cmd+F lands in the field with all of its text selected. Showing a hidden bar also
@@ -56,9 +62,16 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         let bar = bar(in: window)
         let wasHidden = bar.isHidden
         bar.isHidden = false
+        bar.needsUpdateConstraints = true
         window.makeFirstResponder(bar.field)
         bar.field.selectText(nil)
         if wasHidden { bar.queryChanged() }
+    }
+
+    // Where the bar sits depends on kitty's geometry, which changes with no find event (a layout, a tab
+    // bar, a font size, the active kitty window), so kitty says when to ask again.
+    @objc public static func seat(in window: NSWindow) {
+        existingBar(in: window)?.needsUpdateConstraints = true
     }
 
     // Python owns the query and reports it with where the search stands: the current match's place
@@ -132,9 +145,10 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         let terminal = window.contentView!
         let bar = KittyFindBar()
         terminal.addSubview(bar)
+        bar.topConstraint = bar.topAnchor.constraint(equalTo: terminal.topAnchor, constant: margin)
         NSLayoutConstraint.activate([
-            bar.topAnchor.constraint(equalTo: terminal.topAnchor, constant: 8),
-            bar.trailingAnchor.constraint(equalTo: terminal.trailingAnchor, constant: -8),
+            bar.topConstraint,
+            bar.trailingAnchor.constraint(equalTo: terminal.trailingAnchor, constant: -margin),
         ])
         return bar
     }
@@ -181,6 +195,22 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
     }
 
     required init?(coder: NSCoder) { fatalError("KittyFindBar is created in code") }
+
+    // [LAW:one-source-of-truth] kitty knows where the top of its screen is; the bar asks when its
+    // layout is next worked out; the constraint's constant is redone from the answer every time,
+    // never a value of the bar's own.
+    public override func updateConstraints() {
+        if let window {
+            topConstraint.constant = CGFloat(Self.delegate.findBarClearance(window)) / window.backingScaleFactor + Self.margin
+        }
+        super.updateConstraints()
+    }
+
+    // The pixels kitty answers in become points by the window's scale, which a move to another display changes
+    public override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        needsUpdateConstraints = true
+    }
 
     // AppKit calls this with the window's effective appearance current, which GLFW derives from
     // the terminal's background colour, and again whenever that appearance changes.

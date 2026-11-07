@@ -2210,6 +2210,40 @@ class TestScreen(BaseTest):
         for bad in ('regexp', 'regex literal', 'smart_case match_case'):
             self.assertRaises(ValueError, show_find_bar, 'show_find_bar', bad)
 
+    def test_find_bar_sits_below_the_top_rows_of_the_screen(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from kitty import window as window_module
+        from kitty.boss import Boss
+        from kitty.window import FIND_BAR_CLEARANCE_ROWS, Window
+
+        top, cell_height, bar_height = 30, 20, 36
+        w = SimpleNamespace(os_window_id=1, screen_top=top)
+        w.find_bar_clearance = Window.find_bar_clearance.__get__(w)
+        clearance = top + FIND_BAR_CLEARANCE_ROWS * cell_height
+        with mock.patch.object(window_module, 'is_macos', True), mock.patch.object(window_module, 'cell_size_for_window', lambda osw: (10, cell_height)), \
+                mock.patch.object(window_module, 'cocoa_find_bar_covered_pixels', lambda osw: clearance + bar_height):
+            self.ae(Window.find_bar_clearance(w), clearance)
+            # a match is revealed below the cleared rows and the bar: rows are counted from the screen's top
+            self.ae(Window.find_bar_top_inset(w), -(-(FIND_BAR_CLEARANCE_ROWS * cell_height + bar_height) // cell_height))
+            # the bar sits by the OS window's active window
+            active = [w]
+            self.ae(Boss.find_bar_clearance(SimpleNamespace(find_bar_window=lambda osw: active[0]), 1), clearance)
+            active[0] = None
+            self.ae(Boss.find_bar_clearance(SimpleNamespace(find_bar_window=lambda osw: active[0]), 1), 0)
+
+        # a geometry change reaches the bar only from the active window: a layout of any other window moves nothing
+        other = SimpleNamespace(os_window_id=1)
+        boss = SimpleNamespace(os_window_map={1: SimpleNamespace(active_window=w)})
+        seated = []
+        with mock.patch.object(window_module, 'is_macos', True), mock.patch.object(window_module, 'get_boss', lambda: boss), \
+                mock.patch.object(window_module, 'cocoa_seat_find_bar_for_os_window', seated.append):
+            Window.seat_find_bar(other)
+            self.ae(seated, [])
+            Window.seat_find_bar(w)
+            self.ae(seated, [1])
+
     def test_find_bar_follows_the_active_window(self):
         from types import SimpleNamespace
         from unittest import mock
@@ -2225,7 +2259,7 @@ class TestScreen(BaseTest):
             for i in range(10):
                 s.draw(f'{text}{i}')
                 s.carriage_return(), s.linefeed()
-            return self.find_window(s, ('follow_find_bar',), push_find_bar=lambda: None)
+            return self.find_window(s, ('follow_find_bar', 'seat_find_bar'), push_find_bar=lambda: None)
 
         a, b, other_tab = make_window('ab'), make_window('xb'), make_window('ab')
         pushes = []
@@ -2234,14 +2268,17 @@ class TestScreen(BaseTest):
         tab_manager = type('TM', (), {'active_window': a, '__iter__': lambda self: iter([[a, b], [other_tab]])})()
         boss = SimpleNamespace(os_window_map={1: tab_manager})
         bar = [(True, 'b')]
+        seated = []
 
         def follow(window):
             active[0] = tab_manager.active_window = window
             window.follow_find_bar()
 
         with mock.patch.object(window_module, 'is_macos', True), mock.patch.object(window_module, 'get_boss', lambda: boss), \
-                mock.patch.object(window_module, 'cocoa_find_bar_state', lambda os_window_id: bar[0]):
+                mock.patch.object(window_module, 'cocoa_find_bar_state', lambda os_window_id: bar[0]), \
+                mock.patch.object(window_module, 'cocoa_seat_find_bar_for_os_window', seated.append):
             follow(a)
+            self.ae(seated, [1], 'the bar sits by the screen of the window it follows')
             self.ae(a.find_query, 'b')
             self.ae(a.screen.find_status()[1], 10, 'the shown bar searches the window it follows')
             self.ae(pushes[-1][1][1], 10, 'and reports it')
@@ -2271,8 +2308,10 @@ class TestScreen(BaseTest):
             self.ae((a.screen.find_status()[1], b.find_query), (0, 'zz'))
             # a window that is not the active one is not followed
             a.set_find_query('b', TmuxOperation())
+            seats = len(seated)
             a.follow_find_bar()
             self.ae(a.screen.find_status()[1], 10)
+            self.ae(len(seated), seats, 'and the bar does not move for it')
             # a full-screen program takes no search, and the bar still reports it for the bar's query
             bar[0] = (True, 'b')
             b.screen.toggle_alt_screen()

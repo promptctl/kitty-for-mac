@@ -4338,6 +4338,10 @@ class Boss:
         "Whether the bar's search is kitty's own, the one the mode applies to: tmux and Claude Code search by their own rules"
         return bool((w := self.find_bar_window(os_window_id)) and isinstance(w.find_backend(), EngineFind))
 
+    def find_bar_clearance(self, os_window_id: int) -> int:
+        "Where the bar starts below the top of the OS window, in pixels: by the screen of its active window"
+        return w.find_bar_clearance() if (w := self.find_bar_window(os_window_id)) else 0
+
     def find_has_selection(self, os_window_id: int) -> bool:
         return bool((w := self.find_bar_window(os_window_id)) and w.find_selection_text() is not None)
 
