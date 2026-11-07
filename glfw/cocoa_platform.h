@@ -295,3 +295,5 @@ void _glfwCocoaPostEmptyEvent(void);
 uint32_t vk_to_unicode_key_with_current_layout(uint16_t keycode);
 GLFWAPI bool glfwCocoaNativeViewHasFocus(void);
 bool _glfwCocoaOfferKeyToShortcuts(id event);
+void _glfwCocoaShortcutTookNativeViewKey(id event, id window);
+void _glfwCocoaReleaseNativeViewShortcutKey(id event, uintptr_t window_number);

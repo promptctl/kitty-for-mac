@@ -821,6 +821,16 @@ _Static_assert(NX_DEVICELSHIFTKEYMASK == 0x2 && NX_DEVICERSHIFTKEYMASK == 0x4 &&
                NX_SHIFTMASK == 0x20000 && NX_CONTROLMASK == 0x40000 && NX_ALTERNATEMASK == 0x80000 && NX_COMMANDMASK == 0x100000,
                "key_destination.h modifier masks");
 
+// [LAW:no-shared-mutable-globals] Where each held key's press went. The key
+// monitors below own it; a native view's shortcuts record what they take
+// through _glfwCocoaShortcutTookNativeViewKey.
+static KeyDestinationTable key_destinations;
+
+void
+_glfwCocoaShortcutTookNativeViewKey(id event, id window) {
+    key_destination_consume(&key_destinations, [(NSEvent *)event keyCode], [(NSEvent *)event isARepeat], (KeyDestination){KEY_DEST_SHORTCUT, (uintptr_t)[(NSWindow *)window windowNumber]});
+}
+
 GLFWAPI GLFWcocoanativeviewshortcutfun
 glfwSetCocoaNativeViewShortcutCallback(GLFWcocoanativeviewshortcutfun callback) {
     GLFWcocoanativeviewshortcutfun previous = _glfw.ns.native_view_shortcut_callback.fn;
@@ -881,9 +891,8 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
         }];
         // the modifiers of a pending switch to the next input source
         static NSEventModifierFlags input_source_switch_modifiers = 0;
-        static KeyDestinationTable key_destinations;
         void (^record_shortcut_keydown)(NSEvent *, NSEventModifierFlags) = ^(NSEvent *event, NSEventModifierFlags switch_modifiers) {
-            key_destination_consume(&key_destinations, [event keyCode], [event isARepeat]);
+            key_destination_consume(&key_destinations, [event keyCode], [event isARepeat], (KeyDestination){KEY_DEST_CONSUMED, 0});
             input_source_switch_modifiers = switch_modifiers;
         };
         // The terminal a window number names, or nil for a window that is not a
@@ -917,6 +926,9 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                 }
                 case KEY_DEST_CONSUMED:
                     debug_input("key event ignored as a shortcut took its press\n");
+                    return nil;
+                case KEY_DEST_SHORTCUT:
+                    _glfwCocoaReleaseNativeViewShortcutKey(event, dest.id);
                     return nil;
                 case KEY_DEST_NONE:
                     debug_input("key event ignored as no keyWindow present\n");
@@ -962,7 +974,7 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
           // a keyboard mode sees every key first, as it does in the terminal; what it leaves goes to the view
           if (_glfw.ignoreOSKeyboardProcessing && native_focus && _glfwCocoaOfferKeyToShortcuts(event)) {
               debug_input("keyDown taken by a shortcut in a keyboard mode before the focused native view\n");
-              record_shortcut_keydown(event, 0);
+              input_source_switch_modifiers = 0;
               return nil;
           }
           const KeyDestination current = current_key_destination();

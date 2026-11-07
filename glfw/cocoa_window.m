@@ -1219,6 +1219,20 @@ add_alternate_keys(GLFWkeyevent *ev, NSEvent *event) {
     }
 }
 
+// A key event of a native view's, as the app's shortcuts see it. Returns true if a shortcut took it.
+static bool
+send_native_view_shortcut_key(_GLFWwindow *window, NSEvent *event, int action) {
+    const NSUInteger flags = remap_cocoa_flags([event modifierFlags]);
+    const unsigned int keycode = [event keyCode];
+    GLFWkeyevent ev = {
+        .key = translateKey(keycode, true), .native_key = keycode, .native_key_id = keycode,
+        .action = action, .mods = translateFlags(flags)};
+    add_alternate_keys(&ev, event_with_remapped_flags(event, flags));
+    debug_input("Sending key of the focused native view to shortcuts: %s 0x%x %s\n",
+                action == GLFW_RELEASE ? "release" : (action == GLFW_PRESS ? "press" : "repeat"), keycode, format_mods(ev.mods));
+    return _glfwDeliverResult(_glfw.ns.native_view_shortcut_callback, false, (GLFWwindow *)window, &ev);
+}
+
 // [LAW:single-enforcer] The one place a key press bound for a focused native
 // view reaches the app's shortcuts, and it does so once per press: before the
 // view while a keyboard mode is active (the keydown monitor), otherwise after
@@ -1241,14 +1255,24 @@ _glfwCocoaOfferKeyToShortcuts(id event_) {
     if (!window) return false;
     [offered release];
     offered = [event retain];
-    const NSUInteger flags = remap_cocoa_flags([event modifierFlags]);
-    const unsigned int keycode = [event keyCode];
-    GLFWkeyevent ev = {
-        .key = translateKey(keycode, true), .native_key = keycode, .native_key_id = keycode,
-        .action = [event isARepeat] ? GLFW_REPEAT : GLFW_PRESS, .mods = translateFlags(flags)};
-    add_alternate_keys(&ev, event_with_remapped_flags(event, flags));
-    debug_input("Offering key bound for the focused native view to shortcuts: 0x%x %s\n", keycode, format_mods(ev.mods));
-    return _glfwDeliverResult(_glfw.ns.native_view_shortcut_callback, false, (GLFWwindow *)window, &ev);
+    const bool consumed = send_native_view_shortcut_key(window, event, [event isARepeat] ? GLFW_REPEAT : GLFW_PRESS);
+    if (consumed) _glfwCocoaShortcutTookNativeViewKey(event, window->ns.object);
+    return consumed;
+}
+
+// The release of a press a shortcut took from a native view in the window
+// window_number names: it ends the shortcut, as a shortcut key's release does in
+// the terminal, and the view never sees it.
+void
+_glfwCocoaReleaseNativeViewShortcutKey(id event_, uintptr_t window_number) {
+    NSEvent *event = event_;
+    _GLFWwindow *window = _glfw.windowListHead;
+    while (window && (uintptr_t)[window->ns.object windowNumber] != window_number) window = window->next;
+    if (!window) {
+        debug_input("Shortcut key release ignored as the window its press went to is gone\n");
+        return;
+    }
+    send_native_view_shortcut_key(window, event, GLFW_RELEASE);
 }
 
 static bool

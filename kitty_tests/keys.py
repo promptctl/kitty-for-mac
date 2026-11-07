@@ -1003,8 +1003,9 @@ class TestKeys(BaseTest):
 
     def test_key_destination(self):
         from kitty.fast_data_types import test_key_destination
-        # destinations as (kind, id): kind 1 is a terminal window, 2 AppKit, 3 consumed by a shortcut
-        term, other, field, gone = (1, 7), (1, 9), (2, 0), (3, 0)
+        # destinations as (kind, id): kind 1 is a terminal window, 2 AppKit, 3 consumed by a menu or
+        # macOS shortcut, 4 held by a shortcut of the window's native view
+        term, other, field, gone, taken, taken_other = (1, 7), (1, 9), (2, 0), (3, 0), (4, 7), (4, 9)
         a, ret, lshift, rshift, cmd, caps = 0x00, 0x24, 0x38, 0x3C, 0x37, 0x39
         LSHIFT, RSHIFT, SHIFT, CMD, LCMD, CAPS = 0x2, 0x4, 0x20000, 0x100000, 0x8, 0x10000
 
@@ -1030,6 +1031,13 @@ class TestKeys(BaseTest):
         # flags with no device-dependent bits, as remapping tools post them: the device-independent flag decides
         t([('flags', lshift, SHIFT, term), ('flags', lshift, 0, field)], [term, term])
         # a shortcut took the press: its repeats and release are dropped, whatever focus does
-        t([('consume', a, 0, term), ('down', a, 1, field), ('flags', cmd, 0, field), ('up', a, 0, term)], [gone, gone, field, gone])
+        t([('consume', a, 0, gone), ('down', a, 1, field), ('flags', cmd, 0, field), ('up', a, 0, term)], [gone, gone, field, gone])
         # a shortcut took only a repeat: the release still goes where the press went
-        t([('down', a, 0, term), ('consume', a, 1, term), ('up', a, 0, field)], [term, gone, term])
+        t([('down', a, 0, term), ('consume', a, 1, gone), ('up', a, 0, field)], [term, gone, term])
+        # a native view's shortcut took a press AppKit was given: its repeats go to AppKit wherever focus
+        # is, its release once to the shortcut of the window that took it, and the next release follows focus
+        t([('down', a, 0, field), ('consume', a, 0, taken), ('down', a, 1, term), ('down', a, 1, field), ('up', a, 0, term),
+           ('up', a, 0, field)], [field, taken, field, field, taken, field])
+        # a shortcut taking a repeat leaves the hold, and a new press replaces it
+        t([('consume', a, 0, taken), ('consume', a, 1, taken_other), ('up', a, 0, field)], [taken, taken_other, taken])
+        t([('consume', a, 0, taken), ('down', a, 0, term), ('up', a, 0, field)], [taken, term, term])
