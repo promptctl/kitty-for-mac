@@ -2,28 +2,31 @@
 # License: GPL v3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
+import signal
 import subprocess
 import tempfile
+from unittest.mock import patch
 
 from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
 from kitty.constants import is_macos, kitty_exe
 
-from .base import BaseTest
+from .base import BaseTest, Exited, KilledAtDeadline, ReapedElsewhere, await_exit
 
 
 def spawn_and_wait_for_ready(code: str, what: str) -> subprocess.Popen:
     # Run code via kitty +runpy and wait for it to print ready. stderr is
     # captured, as in test workers it is /dev/null, so that the reason the
-    # child failed is reported.
-    p = subprocess.Popen([kitty_exe(), '+runpy', code], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    line = p.stdout.readline().strip()
-    p.stdout.close()
-    if line != b'ready':
-        p.kill()
-        err = p.stderr.read().decode('utf-8', 'replace')
-        p.stderr.close()
-        raise AssertionError(f'Unexpected output from {what}: {line!r} exit code: {p.wait()} stderr:\n{err}')
-    p.stderr.close()
+    # child failed is reported. It goes to a file, not a pipe, so a child
+    # writing a long traceback never blocks on a full pipe and looks wedged.
+    with tempfile.TemporaryFile() as stderr:
+        p = subprocess.Popen([kitty_exe(), '+runpy', code], stdout=subprocess.PIPE, stderr=stderr)
+        line = p.stdout.readline().strip()
+        p.stdout.close()
+        if line != b'ready':
+            end = await_exit(p)
+            stderr.seek(0)
+            err = stderr.read().decode('utf-8', 'replace')
+            raise AssertionError(f'Unexpected output from {what}: {line!r}, it {end}, stderr:\n{err}')
     return p
 
 
@@ -251,3 +254,54 @@ time.sleep(300)
             self.ae(c.root_pid, p.pid)
         finally:
             self._terminate_tree(p)
+
+
+class AwaitExitTest(BaseTest):
+    def _spawn(self, code: str) -> subprocess.Popen:
+        p = subprocess.Popen([kitty_exe(), '+runpy', code], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.ae(p.stdout.read(), b'')
+        p.stdout.close()
+        return p
+
+    def test_a_child_that_exits_without_printing_reports_its_status(self):
+        p = self._spawn('raise SystemExit(0)')
+        self.ae(await_exit(p), Exited(0))
+        self.ae(p.wait(), 0)
+
+    def test_a_child_reaped_elsewhere_is_not_reported_as_exit_0(self):
+        p = self._spawn('raise SystemExit(3)')
+        status = os.waitpid(p.pid, 0)[1]
+        self.ae(await_exit(p), ReapedElsewhere())
+        p.returncode = os.waitstatus_to_exitcode(status)  # the waiter that reaped it owns the status
+
+    def test_a_child_that_lives_on_after_its_output_ends_is_killed_at_the_deadline(self):
+        p = self._spawn('import os, time; os.close(1); time.sleep(300)')
+        self.ae(await_exit(p, patience=0.2), KilledAtDeadline(0.2, -signal.SIGKILL))
+        self.ae(p.returncode, -signal.SIGKILL)
+
+    def _first_poll_misses_the_exit(self):
+        # Stages the race where the child ends between await_exit's last poll and its kill
+        real_waitpid, polls = os.waitpid, []
+        def waitpid(pid, options):
+            polls.append(options)
+            return (0, 0) if len(polls) == 1 else real_waitpid(pid, options)
+        return patch('kitty_tests.base.os.waitpid', waitpid)
+
+    def test_a_child_that_exits_just_before_the_kill_reports_its_own_status(self):
+        p = self._spawn('raise SystemExit(5)')
+        os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOWAIT)  # WNOWAIT leaves it a zombie, unreaped
+        with self._first_poll_misses_the_exit():
+            self.ae(await_exit(p, patience=0), Exited(5))
+
+    def test_a_child_reaped_elsewhere_just_before_the_kill_is_not_reported_as_killed(self):
+        p = self._spawn('raise SystemExit(3)')
+        status = os.waitpid(p.pid, 0)[1]
+        with self._first_poll_misses_the_exit():
+            self.ae(await_exit(p, patience=0), ReapedElsewhere())
+        p.returncode = os.waitstatus_to_exitcode(status)
+
+    def test_a_signal_with_no_name_is_reported_by_number(self):
+        self.ae(str(Exited(-200)), 'was killed by signal 200')
+
+    def test_a_signal_death_names_the_signal(self):
+        self.ae(str(Exited(-signal.SIGSEGV)), 'was killed by signal SIGSEGV')

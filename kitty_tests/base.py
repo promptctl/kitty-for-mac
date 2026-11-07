@@ -9,10 +9,12 @@ import shlex
 import shutil
 import signal
 import struct
+import subprocess
 import sys
 import termios
 import time
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from functools import wraps
 from unittest import TestCase
 
@@ -285,6 +287,70 @@ def retry_on_failure(max_attempts=max_attempts, sleep_duration=sleep_duration):
         return wrapper
 
     return decorator
+
+
+def describe_exit(status: int) -> str:
+    # status as os.waitstatus_to_exitcode() gives it: negative is the signal that ended the child
+    if status < 0:
+        try:
+            return f'was killed by signal {signal.Signals(-status).name}'
+        except ValueError:  # a signal with no name, such as a Linux real-time one
+            return f'was killed by signal {-status}'
+    return f'exited with status {status}'
+
+
+@dataclass(frozen=True)
+class Exited:
+    status: int
+
+    def __str__(self) -> str:
+        return describe_exit(self.status)
+
+
+@dataclass(frozen=True)
+class ReapedElsewhere:
+    def __str__(self) -> str:
+        return 'was already reaped by another waiter in this process'
+
+
+@dataclass(frozen=True)
+class KilledAtDeadline:
+    patience: float
+    status: int
+
+    def __str__(self) -> str:
+        return f'was still running {self.patience}s after the test stopped reading it, so the test sent SIGKILL and it {describe_exit(self.status)}'
+
+
+ChildEnd = Exited | ReapedElsewhere | KilledAtDeadline
+
+
+def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 30 if is_ci else 10) -> ChildEnd:
+    # Awaits the exit of a child the test has stopped reading and says how it
+    # ended. Popen's poll(), wait() and kill() report a child that another
+    # waiter in this process reaped as exit 0, so nothing may touch p through
+    # Popen before this runs. A status this reaps goes on p, where a later
+    # p.wait() finds it.
+    deadline = time.monotonic() + patience
+    while True:
+        try:
+            pid, status = os.waitpid(p.pid, os.WNOHANG)
+        except ChildProcessError:
+            return ReapedElsewhere()
+        if pid:
+            p.returncode = os.waitstatus_to_exitcode(status)
+            return Exited(p.returncode)
+        # [LAW:no-ambient-temporal-coupling] only a wedged child reaches the deadline
+        if time.monotonic() >= deadline:
+            try:
+                os.kill(p.pid, signal.SIGKILL)  # a zombie ignores it, so the status reaped next is still the true one
+                status = os.waitpid(p.pid, 0)[1]
+            except (ProcessLookupError, ChildProcessError):
+                return ReapedElsewhere()
+            p.returncode = os.waitstatus_to_exitcode(status)
+            # a child that exited between the poll and the kill was not killed by it
+            return KilledAtDeadline(patience, p.returncode) if p.returncode == -signal.SIGKILL else Exited(p.returncode)
+        time.sleep(0.01)
 
 
 class BaseTest(TestCase):

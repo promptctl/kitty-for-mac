@@ -13,7 +13,7 @@ import textwrap
 import unittest
 from functools import partial
 
-from .base import BaseTest
+from .base import BaseTest, Exited, await_exit
 
 
 class TestBuild(BaseTest):
@@ -27,7 +27,12 @@ class TestBuild(BaseTest):
         exe = kitten_exe()
         self.assertTrue(os.access(exe, os.X_OK))
         self.assertTrue(os.path.isfile(exe))
-        self.assertIn(str_version, subprocess.check_output([exe, '--version']).decode())
+        p = subprocess.Popen([exe, '--version'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out = p.stdout.read().decode()
+        p.stdout.close()
+        end = await_exit(p)
+        self.ae(end, Exited(0), f'kitten --version {end}, printed: {out!r}')
+        self.assertIn(str_version, out)
         self.assertTrue(shutil.which(slangc()[0]), f'slang compiler: {slangc()[0]} not found on PATH: {os.environ["PATH"]}')
 
     def test_loading_extensions(self) -> None:
