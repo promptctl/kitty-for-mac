@@ -314,8 +314,8 @@ pub struct FindMode {
 }
 
 impl FindMode {
-    /// The regex that finds `query` in this mode, or why there is none.
-    fn compile(self, query: &str) -> Result<Regex, regex::Error> {
+    /// What `query` searches for in this mode.
+    fn search(self, query: &str) -> Search {
         let pattern = match self.syntax {
             FindSyntax::Literal => regex::escape(query),
             FindSyntax::Regex => query.to_owned(),
@@ -325,8 +325,26 @@ impl FindMode {
             FindCaseRule::Match => false,
             FindCaseRule::Smart => !has_uppercase_literal(&pattern),
         };
-        RegexBuilder::new(&pattern)
-            .case_insensitive(case_insensitive)
+        Search {
+            pattern,
+            case_insensitive,
+        }
+    }
+}
+
+/// The regex a query builds. Modes are compared by it, so a change between two modes that
+/// build the same regex, such as smart and ignore case for a lowercase query, is no change.
+#[derive(PartialEq, Eq)]
+struct Search {
+    pattern: String,
+    case_insensitive: bool,
+}
+
+impl Search {
+    /// The regex that finds this, or why there is none.
+    fn compile(&self) -> Result<Regex, regex::Error> {
+        RegexBuilder::new(&self.pattern)
+            .case_insensitive(self.case_insensitive)
             .build()
     }
 }
@@ -349,9 +367,14 @@ fn has_uppercase_literal(pattern: &str) -> bool {
             Ok(())
         }
         fn visit_class_set_item_pre(&mut self, item: &ClassSetItem) -> Result<(), ()> {
-            if let ClassSetItem::Literal(lit) = item {
-                self.0 |= lit.c.is_uppercase();
-            }
+            // the visitor does not go into a range's ends, so [A-Z] is read here
+            self.0 |= match item {
+                ClassSetItem::Literal(lit) => lit.c.is_uppercase(),
+                ClassSetItem::Range(range) => {
+                    range.start.c.is_uppercase() || range.end.c.is_uppercase()
+                }
+                _ => false,
+            };
             Ok(())
         }
     }
@@ -370,12 +393,12 @@ enum Query {
     Empty,
     Searching {
         text: String,
-        mode: FindMode,
+        search: Search,
         /// Shared with each refeed: a cloned Regex would build its search caches anew.
         regex: Arc<Regex>,
     },
     /// Kept so that setting it again changes nothing.
-    Rejected { text: String, mode: FindMode },
+    Rejected { text: String, search: Search },
 }
 
 impl Query {
@@ -383,8 +406,8 @@ impl Query {
         match self {
             // the empty query finds nothing in every mode
             Self::Empty => query.is_empty(),
-            Self::Searching { text, mode: m, .. } | Self::Rejected { text, mode: m } => {
-                text == query && *m == mode
+            Self::Searching { text, search, .. } | Self::Rejected { text, search } => {
+                text == query && *search == mode.search(query)
             }
         }
     }
@@ -458,8 +481,8 @@ pub struct FindEngine {
 }
 
 impl FindEngine {
-    /// Starts a new search, dropping every match of the previous one, unless the query and
-    /// mode are the ones already set: then nothing changes. A literal query is escaped, which
+    /// Starts a new search, dropping every match of the previous one, unless the query is the
+    /// one already set and the mode builds the same regex: then nothing changes. A literal query is escaped, which
     /// puts it through the regex crate's literal fast path.
     pub fn set_query(&mut self, query: &str, mode: FindMode) -> FindQueryChange {
         if self.query.is(query, mode) {
@@ -473,16 +496,17 @@ impl FindEngine {
         let (query, change) = if text.is_empty() {
             (Query::Empty, FindQueryChange::Changed)
         } else {
-            match mode.compile(&text) {
+            let search = mode.search(&text);
+            match search.compile() {
                 Ok(regex) => (
                     Query::Searching {
                         text,
-                        mode,
+                        search,
                         regex: Arc::new(regex),
                     },
                     FindQueryChange::Changed,
                 ),
-                Err(_) => (Query::Rejected { text, mode }, FindQueryChange::Rejected),
+                Err(_) => (Query::Rejected { text, search }, FindQueryChange::Rejected),
             }
         };
         self.query = query;
@@ -1029,6 +1053,10 @@ mod tests {
             search(r"a[B]c", SMART_REGEX, &[(0, &["abc aBc"])]),
             [m(0, 4, 0, 6)]
         );
+        assert_eq!(
+            search("[A-Z]", SMART_REGEX, &[(0, &["aB"])]),
+            [m(0, 1, 0, 1)]
+        );
         // a literal query's backslash is a character: its letters are the query's
         assert_eq!(search(r"\W", SMART, &[(0, &[r"\w \W"])]), [m(0, 3, 0, 4)]);
     }
@@ -1085,6 +1113,25 @@ mod tests {
         append(&mut e, 0, rows, &text, &cells);
         assert_eq!(e.matches(), [m(0, 0, 0, 2)]);
         assert_eq!(e.set_mode(REGEX), FindQueryChange::Unchanged);
+    }
+
+    #[test]
+    fn a_mode_change_that_builds_the_same_regex_keeps_the_search() {
+        let mut e = FindEngine::default();
+        e.set_query("abc", SMART);
+        let (text, cells, rows) = line(&["abc ABC"], narrow);
+        append(&mut e, 0, rows, &text, &cells);
+        assert_eq!(
+            press(&mut e, Direction::Next, bounds(0, 1)),
+            StepOutcome::Landed(m(0, 0, 0, 2))
+        );
+        let at = e.status(bounds(0, 1));
+        // a lowercase query ignores case under smart case, and has no regex syntax to read
+        for mode in [IGNORE, SMART_REGEX] {
+            assert_eq!(e.set_mode(mode), FindQueryChange::Unchanged);
+        }
+        assert_eq!(e.status(bounds(0, 1)), at, "the match the user is on stays");
+        assert_eq!(e.set_mode(MATCH), FindQueryChange::Changed);
     }
 
     #[test]
@@ -1451,7 +1498,7 @@ mod tests {
         let mut e = FindEngine::default();
         e.set_query("x", MATCH);
         buf.fill(&mut e, 0, 6, None); // lines 14..20
-        // Previous from the view finds line 15 with every line between searched
+                                      // Previous from the view finds line 15 with every line between searched
         assert_eq!(
             e.step(Direction::Previous, &view, b),
             StepOutcome::Landed(m(15, 0, 15, 0))

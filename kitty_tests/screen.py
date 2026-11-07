@@ -7,7 +7,7 @@ import tempfile
 
 from kitty.fast_data_types import DECAWM, DECCOLM, DECOM, IRM, VT_PARSER_BUFFER_SIZE, Color, ColorProfile, Cursor
 from kitty.marks import marker_from_function, marker_from_regex, marker_from_text
-from kitty.find_backends import FindCaseRule, FindCount, FindMode, FindStatus, FindSyntax
+from kitty.find_backends import FindCaseRule, FindCount, FindMode, FindQueryChange, FindStatus, FindSyntax
 from kitty.tmux_find import TmuxOperation
 from kitty.window import pagerhist
 
@@ -1677,7 +1677,7 @@ class TestScreen(BaseTest):
             self.skipTest('The Rust find engine is linked on macOS only')
 
         def find(s, query, mode=MATCH_CASE):
-            self.assertTrue(s.find_set_query(query, *mode))
+            self.ae(s.find_set_query(query, *mode), FindQueryChange.changed)
             return list(s.find_matches())
 
         # every match inside one physical line, both cells included

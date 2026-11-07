@@ -263,14 +263,17 @@ extension KittyFindBar: NSMenuItemValidation {
     // tmux and Claude Code search by their own rules, so the menu offers no mode while one of them
     // holds the bar's search: it never shows a mode that is not the one searching
     public func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let chosen: Bool
         switch item.action {
         case #selector(chooseCaseRule):
-            item.state = item.tag == Self.caseRule.rawValue ? .on : .off
+            chosen = item.tag == Self.caseRule.rawValue
         case #selector(toggleRegex):
-            item.state = Self.syntax == .regex ? .on : .off
+            chosen = Self.syntax == .regex
         default:
             return true
         }
-        return window.map { Self.delegate.findBarHonorsMode($0) } ?? false
+        let honored = window.map { Self.delegate.findBarHonorsMode($0) } ?? false
+        item.state = honored && chosen ? .on : .off
+        return honored
     }
 }
