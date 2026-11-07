@@ -481,6 +481,14 @@ class TestKeys(BaseTest):
         # text far longer than one key's escape, as an input method commits it
         for text in ('あ' * 200, 'a\xe9あ\U0001F600\U0010FFFF~' * 40):
             ae(eq(0, text=text), csi(num=0, text=text))
+        # escapes whose length steps across the inline buffer's 128 bytes, one byte at a time
+        for n in range(30, 50):
+            ae(eq(0, text='a' * n), csi(num=0, text='a' * n))
+        # every text byte encodes to the widest field, ":127", beside every other field at its widest
+        all_mods = shift | alt | ctrl | super | hyper | meta
+        text = ''.join(map(chr, range(100, 128))) * 40
+        ae(enc(ord('a'), key_encoding_flags=0b11111, mods=all_mods, action=repeat, shifted_key=ord('A'), alternate_key=ord('b'), text=text),
+           csi(all_mods, 'a', action=2, shifted_key='A', alternate_key='b', text=text))
 
         # test roundtripping via KeyEvent
         for mods in range(64):

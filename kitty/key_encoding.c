@@ -68,11 +68,11 @@ init_encoding_data(EncodingData *ans, const KeyEvent *ev) {
 
 static int
 serialize(const EncodingData *data, char *output, const size_t capacity, const char csi_trailer) {
-    const int limit = (int)capacity - 2;  // room for the trailer and the NUL
-    int pos = 0;
+    // snprintf's contract: write as much as fits in capacity, return the length of the whole escape
+    size_t pos = 0;
     bool second_field_not_empty = data->has_mods || data->add_actions;
     bool third_field_not_empty = data->add_text;
-#define P(fmt, ...) pos += snprintf(output + pos, limit <= pos ? 0 : limit - pos, fmt, __VA_ARGS__)
+#define P(fmt, ...) pos += snprintf(pos < capacity ? output + pos : NULL, pos < capacity ? capacity - pos : 0, fmt, __VA_ARGS__)
     P("\x1b%s", "[");
     if (data->key != 1 || data->add_alternates || second_field_not_empty || third_field_not_empty) P("%u", data->key);
     if (data->add_alternates) {
@@ -86,36 +86,18 @@ serialize(const EncodingData *data, char *output, const size_t capacity, const c
         if (data->add_actions) P(":%u", data->action + 1);
     }
     if (third_field_not_empty) {
-        const char *p = data->text;
-        uint32_t codep;
-        UTF8State state = UTF8_ACCEPT;
-        bool first = true;
-        while (*p) {
-            if (decode_utf8(&state, &codep, *p) == UTF8_ACCEPT) {
-                if (first) {
-                    P(";%u", codep);
-                    first = false;
-                } else P(":%u", codep);
-            }
-            p++;
-        }
+        const size_t sz = strlen(data->text);
+        RAII_ALLOC(uint32_t, codepoints, calloc(sz, sizeof(uint32_t)));
+        if (!codepoints) fatal("Out of memory");
+        const size_t count = decode_utf8_string(data->text, sz, codepoints);
+        for (size_t i = 0; i < count; i++) P("%c%u", i ? ':' : ';', codepoints[i]);
     }
 #undef P
-    if (pos > limit) {
-        // [LAW:no-silent-failure] callers size output with key_encoding_buffer_size(), so this is a sizing bug, not a long text
-        log_error("Encoding key %u needs %d bytes but its buffer holds %zu, the escape is cut short", data->key, pos + 2, capacity);
-        pos = limit;
+    if (pos + 1 < capacity) {
+        output[pos] = csi_trailer;
+        output[pos + 1] = 0;
     }
-    output[pos++] = csi_trailer;
-    output[pos] = 0;
-    return pos;
-}
-
-size_t
-key_encoding_buffer_size(const GLFWkeyevent *e) {
-    // serialize() writes each codepoint of the text as a separator and its decimal value: at most 4 bytes
-    // per UTF-8 byte (":127" for one byte; longer sequences write fewer per byte). The rest of the escape fits KEY_BUFFER_SIZE.
-    return KEY_BUFFER_SIZE + 4 * (e->text ? strlen(e->text) : 0);
+    return (int)(pos + 1);
 }
 
 static uint32_t
@@ -453,8 +435,8 @@ startswith_ascii_control_char(const char *p) {
     return false;
 }
 
-int
-encode_glfw_key_event(const GLFWkeyevent *e, const bool cursor_key_mode, const unsigned key_encoding_flags, char *output, const size_t capacity) {
+static int
+encode_key_event(const GLFWkeyevent *e, const bool cursor_key_mode, const unsigned key_encoding_flags, char *output, const size_t capacity) {
     KeyEvent ev = {
         .key = e->key,
         .shifted_key = e->shifted_key,
@@ -479,4 +461,15 @@ encode_glfw_key_event(const GLFWkeyevent *e, const bool cursor_key_mode, const u
     if (send_text_standalone && ev.has_text && (ev.action == PRESS || ev.action == REPEAT)) return SEND_TEXT_TO_CHILD;
     convert_glfw_mods(e->mods, &ev, key_encoding_flags);
     return encode_key(&ev, output, capacity);
+}
+
+int
+encode_glfw_key_event(const GLFWkeyevent *e, const bool cursor_key_mode, const unsigned key_encoding_flags, EncodedKey *output) {
+    encoded_key_release(output);
+    const int size = encode_key_event(e, cursor_key_mode, key_encoding_flags, output->inline_bytes, sizeof(output->inline_bytes));
+    if (size < (int)sizeof(output->inline_bytes)) return size;
+    // only embedded text outgrows the inline buffer: the first pass measured the escape, the second writes it whole
+    output->heap = malloc(size + 1);
+    if (!output->heap) fatal("Out of memory");
+    return encode_key_event(e, cursor_key_mode, key_encoding_flags, output->heap, size + 1);
 }
