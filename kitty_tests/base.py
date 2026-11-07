@@ -16,7 +16,6 @@ import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from functools import wraps
-from typing import Union
 from unittest import TestCase
 
 from kitty.config import finalize_keys, finalize_mouse_mappings
@@ -290,12 +289,19 @@ def retry_on_failure(max_attempts=max_attempts, sleep_duration=sleep_duration):
     return decorator
 
 
+def describe_exit(status: int) -> str:
+    # status as os.waitstatus_to_exitcode() gives it: negative is the signal that ended the child
+    if status < 0:
+        return f'was killed by signal {signal.Signals(-status).name}'
+    return f'exited with status {status}'
+
+
 @dataclass(frozen=True)
 class Exited:
-    status: int  # os.waitstatus_to_exitcode(): a negative status is the signal that ended it
+    status: int
 
     def __str__(self) -> str:
-        return f'exited with status {self.status}'
+        return describe_exit(self.status)
 
 
 @dataclass(frozen=True)
@@ -310,19 +316,19 @@ class KilledAtDeadline:
     status: int
 
     def __str__(self) -> str:
-        return f'was still running {self.patience}s after its output ended, killed, status {self.status}'
+        return f'was still running {self.patience}s after the test stopped reading it, so the test sent SIGKILL and it {describe_exit(self.status)}'
 
 
-ChildEnd = Union[Exited, ReapedElsewhere, KilledAtDeadline]
+ChildEnd = Exited | ReapedElsewhere | KilledAtDeadline
 
 
-def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 10) -> ChildEnd:
-    # Awaits the exit of a child whose output has ended and says how it ended.
-    # Popen's poll(), wait() and kill() report a child that another waiter in
-    # this process reaped as exit 0, so nothing may reap p through Popen before
-    # this runs: signal it with os.kill(). This reads waitpid() itself and puts
-    # the status it reaps on p, where a later p.wait() finds it.
-    # [LAW:one-source-of-truth] p.returncode holds the one status reaped here
+def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 30 if is_ci else 10) -> ChildEnd:
+    # Awaits the exit of a child the test has stopped reading and says how it
+    # ended. Popen's poll(), wait() and kill() report a child that another
+    # waiter in this process reaped as exit 0, so nothing may touch p through
+    # Popen before this runs; patience=0 kills a child at once. A status this
+    # reaps goes on p, where a later p.wait() finds it.
+    # [LAW:single-enforcer] the one place a test's helper child is signalled and reaped
     deadline = time.monotonic() + patience
     while True:
         try:
@@ -333,9 +339,13 @@ def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 10) -> ChildEnd:
             p.returncode = os.waitstatus_to_exitcode(status)
             return Exited(p.returncode)
         # [LAW:no-ambient-temporal-coupling] only a wedged child reaches the deadline
-        if time.monotonic() > deadline:
-            os.kill(p.pid, signal.SIGKILL)  # a zombie ignores it, so the status reaped next is still the true one
-            p.returncode = os.waitstatus_to_exitcode(os.waitpid(p.pid, 0)[1])
+        if time.monotonic() >= deadline:
+            try:
+                os.kill(p.pid, signal.SIGKILL)  # a zombie ignores it, so the status reaped next is still the true one
+                status = os.waitpid(p.pid, 0)[1]
+            except (ProcessLookupError, ChildProcessError):
+                return ReapedElsewhere()
+            p.returncode = os.waitstatus_to_exitcode(status)
             return KilledAtDeadline(patience, p.returncode)
         time.sleep(0.01)
 

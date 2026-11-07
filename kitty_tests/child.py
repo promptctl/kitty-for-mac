@@ -22,15 +22,11 @@ def spawn_and_wait_for_ready(code: str, what: str) -> subprocess.Popen:
         line = p.stdout.readline().strip()
         p.stdout.close()
         if line != b'ready':
-            # A child still printing something else is killed. os.kill(), not
-            # p.kill(), which reaps through Popen first (see await_exit).
-            killed = ', so the test sent it SIGKILL and it then' if line else ', it'
-            if line:
-                os.kill(p.pid, signal.SIGKILL)
-            end = await_exit(p)
+            # A child still printing something else gets no patience.
+            end = await_exit(p, patience=0) if line else await_exit(p)
             stderr.seek(0)
             err = stderr.read().decode('utf-8', 'replace')
-            raise AssertionError(f'Unexpected output from {what}: {line!r}{killed} {end}, stderr:\n{err}')
+            raise AssertionError(f'Unexpected output from {what}: {line!r}, it {end}, stderr:\n{err}')
     return p
 
 
@@ -283,8 +279,10 @@ class AwaitExitTest(BaseTest):
         self.ae(await_exit(p, patience=0.2), KilledAtDeadline(0.2, -signal.SIGKILL))
         self.ae(p.returncode, -signal.SIGKILL)
 
-    def test_a_child_already_dead_when_signalled_reports_its_own_status(self):
+    def test_a_child_already_dead_when_its_patience_runs_out_reports_its_own_status(self):
         p = self._spawn('raise SystemExit(5)')
         os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOWAIT)  # WNOWAIT leaves it a zombie, unreaped
-        os.kill(p.pid, signal.SIGKILL)
-        self.ae(await_exit(p), Exited(5))
+        self.ae(await_exit(p, patience=0), Exited(5))
+
+    def test_a_signal_death_names_the_signal(self):
+        self.ae(str(Exited(-signal.SIGSEGV)), 'was killed by signal SIGSEGV')
