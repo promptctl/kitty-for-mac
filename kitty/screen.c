@@ -2880,16 +2880,17 @@ screen_fake_move_cursor_to_position(Screen *self, index_type start_x, index_type
         x = 0;
     }
     if (count) {
-        char output[KEY_BUFFER_SIZE + 1] = {0};
         if (self->prompt_settings.uses_special_keys_for_cursor_movement) {
+            char output[KEY_BUFFER_SIZE + 1] = {0};
             const char *k = key == GLFW_FKEY_RIGHT ? "1" : "1;1";
             int num = snprintf(output, KEY_BUFFER_SIZE, "\x1b[%su", k);
             for (unsigned i = 0; i < count; i++) write_to_child(self, output, num);
         } else {
             GLFWkeyevent ev = {.key = key, .action = GLFW_PRESS};
-            int num = encode_glfw_key_event(&ev, false, 0, output);
+            RAII_ENCODED_KEY(encoded);
+            int num = encode_glfw_key_event(&ev, false, 0, &encoded);
             if (num != SEND_TEXT_TO_CHILD) {
-                for (unsigned i = 0; i < count; i++) write_to_child(self, output, num);
+                for (unsigned i = 0; i < count; i++) write_to_child(self, encoded_key_bytes(&encoded), num);
             }
         }
     }
