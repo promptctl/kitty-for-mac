@@ -1427,8 +1427,8 @@ python_timer_callback(id_type timer_id, void *data) {
     PyObject *ret = PyObject_CallFunction(callback, "K", id);
     if (ret == NULL) PyErr_Print();
     else Py_DECREF(ret);
-    // A timer fires outside the tick, and its Python can change what a window shows, such as a
-    // find search typing left pending: the tick is what paints it.
+    // Python run from a timer runs outside the tick, so whatever it changed is only drawn and
+    // advanced once a tick runs: every timer asks for one rather than each caller remembering to.
     request_tick_callback();
 }
 
