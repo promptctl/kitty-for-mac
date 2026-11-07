@@ -86,8 +86,8 @@ from .fast_data_types import (
     cocoa_hide_app,
     cocoa_hide_other_apps,
     cocoa_minimize_os_window,
-    cocoa_set_menubar_title,
     cocoa_set_find_mode,
+    cocoa_set_menubar_title,
     cocoa_show_find_bar_for_os_window,
     create_os_window,
     current_application_quit_request,
@@ -139,6 +139,7 @@ from .fast_data_types import (
     viewport_for_window,
     wrapped_kitten_names,
 )
+from .find_backends import EngineFind, FindCaseRule, FindMode, FindSyntax
 from .key_encoding import get_name_to_functional_number_map
 from .keys import Mappings
 from .layout.base import set_layout_options
@@ -184,7 +185,6 @@ from .utils import (
     timed_debug_print,
     which,
 )
-from .find_backends import EngineFind, FindCaseRule, FindMode, FindSyntax
 from .window import CommandOutput, CwdRequest, Window, current_find_mode, global_watchers
 
 if TYPE_CHECKING:
