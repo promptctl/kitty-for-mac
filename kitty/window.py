@@ -73,6 +73,7 @@ from .fast_data_types import (
     cocoa_find_bar_covered_pixels,
     cocoa_find_bar_state,
     cocoa_find_mode,
+    cocoa_seat_find_bar_for_os_window,
     cocoa_update_find_bar,
     current_focused_os_window_id,
     draw_single_line_of_text,
@@ -354,6 +355,10 @@ DYNAMIC_COLOR_CODES = {
 DYNAMIC_COLOR_CODES.update({k + 100: v for k, v in DYNAMIC_COLOR_CODES.items()})
 # Maximum number of characters of dragged text shown in the drag thumbnail
 MAX_DRAG_PREVIEW_LENGTH = 256
+# The rows at the top of a window's screen the find bar stays below: tmux leaves a far match on its
+# pane's top row and draws its position indicator at that row's right end, and with its status line
+# at the top the pane's top row is the second one.
+FIND_BAR_CLEARANCE_ROWS = 2
 
 
 class Watcher:
@@ -863,6 +868,7 @@ class Window:
         self.tabref: Callable[[], TabType | None] = weakref.ref(tab)
         self.destroyed = False
         self.geometry: WindowGeometry = WindowGeometry(0, 0, 0, 0, 0, 0)
+        self.screen_top = 0  # the pixel row the screen's first line starts at: geometry.top, below a title bar drawn at the top
         self._title_bar_screen: Any = None
         self.needs_layout = True
         self.is_visible_in_layout: bool = True
@@ -1180,6 +1186,7 @@ class Window:
 
         # Store original geometry for borders/padding calculations
         self.geometry = g = new_geometry
+        self.screen_top = render_top
         # Set C-side render data with adjusted top/bottom for content area
         set_window_render_data(
             self.os_window_id,
@@ -1242,6 +1249,7 @@ class Window:
 
         if update_ime_position:
             update_ime_position_for_window(self.id, True)
+        self.seat_find_bar()
 
     def update_title_bar(self, is_active: bool = False) -> None:
         if (pts := self._title_bar_screen) is None:
@@ -3174,8 +3182,17 @@ class Window:
         "The rows at the top of this window the find bar covers: a match is revealed below them"
         if not is_macos:
             return 0
-        covered = cocoa_find_bar_covered_pixels(self.os_window_id) - self.geometry.top
+        covered = cocoa_find_bar_covered_pixels(self.os_window_id) - self.screen_top
         return max(0, -(-covered // cell_size_for_window(self.os_window_id)[1]))
+
+    def find_bar_clearance(self) -> int:
+        "The pixels from the top of the OS window where the find bar starts: below the first rows of this window's screen"
+        return self.screen_top + FIND_BAR_CLEARANCE_ROWS * cell_size_for_window(self.os_window_id)[1]
+
+    def seat_find_bar(self) -> None:
+        "The geometry the bar sits by may have changed: it asks again where to sit. Only the OS window's active window is the one it sits by."
+        if is_macos and (tm := get_boss().os_window_map.get(self.os_window_id)) and tm.active_window is self:
+            cocoa_seat_find_bar_for_os_window(self.os_window_id)
 
     # [LAW:single-enforcer] the one place the find bar is told what the search is. The bar belongs
     # to its OS window and shows the search of that window's active kitty window.
@@ -3230,6 +3247,8 @@ class Window:
             for w in tab:
                 if w is not self:
                     w.end_finds(op)
+        # the bar sits by the active window's screen, which this window now is
+        self.seat_find_bar()
         if (bar := cocoa_find_bar_state(self.os_window_id)) is None:
             return
         shown, query = bar

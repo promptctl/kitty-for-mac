@@ -60,6 +60,7 @@ void cocoa_set_edit_menu_focus(bool native_view_has_focus);
 void cocoa_hide_others(void);
 void cocoa_minimize(void *w);
 void cocoa_show_find_bar(void *w);
+void cocoa_seat_find_bar(void *w);
 void cocoa_update_find_bar(void *w, const char *query, long current, long total, long count);
 long cocoa_find_bar_covered_pixels(void *w);
 const char* cocoa_find_bar_query(void *w, bool *shown);

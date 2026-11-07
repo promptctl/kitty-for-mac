@@ -3271,6 +3271,7 @@ name(PyObject UNUSED *self, PyObject *args UNUSED) { \
 #endif
 COCOA_OS_WINDOW_FUNC(cocoa_minimize_os_window, cocoa_minimize)
 COCOA_OS_WINDOW_FUNC(cocoa_show_find_bar_for_os_window, cocoa_show_find_bar)
+COCOA_OS_WINDOW_FUNC(cocoa_seat_find_bar_for_os_window, cocoa_seat_find_bar)
 #undef COCOA_OS_WINDOW_FUNC
 
 #ifdef __APPLE__
@@ -4283,6 +4284,7 @@ static PyMethodDef module_methods[] = {
     METHODB(cocoa_hide_other_apps, METH_NOARGS),
     METHODB(cocoa_minimize_os_window, METH_VARARGS),
     METHODB(cocoa_show_find_bar_for_os_window, METH_VARARGS),
+    METHODB(cocoa_seat_find_bar_for_os_window, METH_VARARGS),
     {"cocoa_update_find_bar", cocoa_update_find_bar_py, METH_VARARGS, ""},
     {"cocoa_find_bar_covered_pixels", cocoa_find_bar_covered_pixels_py, METH_VARARGS, ""},
     {"cocoa_find_mode", cocoa_find_mode_py, METH_NOARGS, ""},

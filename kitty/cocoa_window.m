@@ -45,12 +45,20 @@
         request_tick_callback();                                                     \
     } while (0)
 
+// A Boss method's answer as a number (True is 1); 0 when there is no Boss or the method raised, which is printed
+static long
+boss_number(const char *method, id_type os_window_id) {
+    if (!global_state.boss) return 0;
+    RAII_PyObject(ret, PyObject_CallMethod(global_state.boss, method, "K", (unsigned long long)os_window_id));
+    if (!ret) { PyErr_Print(); return 0; }
+    long ans = PyLong_AsLong(ret);
+    if (ans == -1 && PyErr_Occurred()) { PyErr_Print(); return 0; }
+    return ans;
+}
+
 static bool
 boss_answers(const char *method, id_type os_window_id) {
-    if (!global_state.boss) return false;
-    RAII_PyObject(ret, PyObject_CallMethod(global_state.boss, method, "K", (unsigned long long)os_window_id));
-    if (!ret) { PyErr_Print(); return false; }
-    return ret == Py_True;
+    return boss_number(method, os_window_id) == 1;
 }
 #undef call_boss
 #pragma GCC poison PyObject_Call PyObject_CallObject PyObject_CallNoArgs PyObject_CallOneArg PyObject_CallFunction PyObject_CallFunctionObjArgs PyObject_CallMethod PyObject_CallMethodNoArgs PyObject_CallMethodOneArg PyObject_CallMethodObjArgs PyObject_Vectorcall PyObject_VectorcallDict PyObject_VectorcallMethod PyVectorcall_Call
@@ -331,6 +339,9 @@ boss_find_answer(const char *method) {
 }
 - (BOOL)findBarHonorsMode:(NSWindow *)window {
     return boss_answers("find_honors_mode", cocoa_os_window_id_for_window(window));
+}
+- (NSInteger)findBarClearance:(NSWindow *)window {
+    return boss_number("find_bar_clearance", cocoa_os_window_id_for_window(window));
 }
 @end
 
@@ -1949,6 +1960,11 @@ cocoa_keychain_list_accounts(PyObject *self UNUSED, PyObject *args) {
 void
 cocoa_show_find_bar(void *w) {
     [KittyFindBar showIn:(NSWindow *)w];
+}
+
+void
+cocoa_seat_find_bar(void *w) {
+    [KittyFindBar seatIn:(NSWindow *)w];
 }
 
 void
