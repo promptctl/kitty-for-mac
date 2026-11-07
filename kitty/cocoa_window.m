@@ -45,20 +45,29 @@
         request_tick_callback();                                                     \
     } while (0)
 
-// A Boss method's answer as a number (True is 1); 0 when there is no Boss or the method raised, which is printed
-static long
-boss_number(const char *method, id_type os_window_id) {
-    if (!global_state.boss) return 0;
-    RAII_PyObject(ret, PyObject_CallMethod(global_state.boss, method, "K", (unsigned long long)os_window_id));
-    if (!ret) { PyErr_Print(); return 0; }
-    long ans = PyLong_AsLong(ret);
-    if (ans == -1 && PyErr_Occurred()) { PyErr_Print(); return 0; }
-    return ans;
+// A Boss method's answer, a new reference; NULL when there is no Boss or the method raised, which is printed
+static PyObject*
+boss_call(const char *method, id_type os_window_id) {
+    if (!global_state.boss) return NULL;
+    PyObject *ret = PyObject_CallMethod(global_state.boss, method, "K", (unsigned long long)os_window_id);
+    if (!ret) PyErr_Print();
+    return ret;
 }
 
 static bool
 boss_answers(const char *method, id_type os_window_id) {
-    return boss_number(method, os_window_id) == 1;
+    RAII_PyObject(ret, boss_call(method, os_window_id));
+    return ret == Py_True;
+}
+
+// A Boss method's answer as a number; 0 when it gave none
+static long
+boss_number(const char *method, id_type os_window_id) {
+    RAII_PyObject(ret, boss_call(method, os_window_id));
+    if (!ret) return 0;
+    long ans = PyLong_AsLong(ret);
+    if (ans == -1 && PyErr_Occurred()) { PyErr_Print(); return 0; }
+    return ans;
 }
 #undef call_boss
 #pragma GCC poison PyObject_Call PyObject_CallObject PyObject_CallNoArgs PyObject_CallOneArg PyObject_CallFunction PyObject_CallFunctionObjArgs PyObject_CallMethod PyObject_CallMethodNoArgs PyObject_CallMethodOneArg PyObject_CallMethodObjArgs PyObject_Vectorcall PyObject_VectorcallDict PyObject_VectorcallMethod PyVectorcall_Call

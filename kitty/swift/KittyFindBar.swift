@@ -206,6 +206,12 @@ public final class KittyFindBar: NSView, NSSearchFieldDelegate {
         super.updateConstraints()
     }
 
+    // The pixels kitty answers in become points by the window's scale, which a move to another display changes
+    public override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        needsUpdateConstraints = true
+    }
+
     // AppKit calls this with the window's effective appearance current, which GLFW derives from
     // the terminal's background colour, and again whenever that appearance changes.
     public override var wantsUpdateLayer: Bool { true }
