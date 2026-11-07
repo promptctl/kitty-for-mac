@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
+import errno
 import fcntl
 import io
 import os
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import termios
 import time
+from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from functools import wraps
@@ -319,15 +321,18 @@ class KilledAtDeadline:
     status: int
 
     def __str__(self) -> str:
-        return f'was still running {self.patience}s after the test stopped reading it, so the test sent SIGKILL and it {describe_exit(self.status)}'
+        return f'was still running {self.patience}s after the test began waiting for it to exit, so the test sent SIGKILL and it {describe_exit(self.status)}'
 
 
 ChildEnd = Exited | ReapedElsewhere | KilledAtDeadline
 
 
-def await_pid_exit(child_pid: int, patience: float) -> ChildEnd:
-    # Reaps a child the test has stopped reading and says how it ended,
-    # killing it once patience runs out.
+def await_pid_exit(child_pid: int, patience: float, wait_a_moment: Callable[[], object] = lambda: time.sleep(0.01)) -> ChildEnd:
+    # The one reaper: waits for a child to end and says how, killing it once
+    # patience runs out. wait_a_moment runs between polls; a PTY drains its
+    # child there, since a child blocked writing to a full PTY never exits.
+    if child_pid <= 0:  # waitpid and kill read 0 and below as a process group, the test runner's own included
+        raise ValueError(f'await_pid_exit needs the pid of one child, not {child_pid}')
     deadline = time.monotonic() + patience
     while True:
         try:
@@ -345,7 +350,7 @@ def await_pid_exit(child_pid: int, patience: float) -> ChildEnd:
                 return ReapedElsewhere()
             # a child that exited between the poll and the kill was not killed by it
             return KilledAtDeadline(patience, status) if status == -signal.SIGKILL else Exited(status)
-        time.sleep(0.01)
+        wait_a_moment()
 
 
 def await_exit(p: 'subprocess.Popen[bytes]', patience: float = 30 if is_ci else 10) -> ChildEnd:
@@ -474,7 +479,7 @@ class PTY:
             argv = shlex.split(argv)
         self.write_buf = b''
         self.child_pid = 0
-        self.child_waited_for = False
+        self.child_end: ChildEnd | None = None  # set by whichever reap ran, so no pid is reaped twice
         self.cell_width = cell_width
         self.cell_height = cell_height
         if argv is None:
@@ -583,13 +588,12 @@ class PTY:
             os.close(self.slave_fd)
             del self.slave_fd
         # [LAW:no-ambient-temporal-coupling] a PTY in a with block is torn down twice, by
-        # __exit__ and then by GC; the flag is set once the reap returns, so the second run
+        # __exit__ and then by GC; child_end is set once the reap returns, so the second run
         # reaps nothing, while one after an interrupted reap still kills the child
-        if getattr(self, 'child_pid', 0) <= 0 or self.child_waited_for:
+        if getattr(self, 'child_pid', 0) <= 0 or self.child_end is not None:
             return None
-        end = await_pid_exit(self.child_pid, patience=2)
-        self.child_waited_for = True
-        return end
+        self.child_end = await_pid_exit(self.child_pid, patience=2)
+        return self.child_end
 
     def write_to_child(self, data, flush=False):
         if isinstance(data, str):
@@ -641,32 +645,41 @@ class PTY:
                 msg += '. '
             raise TimeoutError(f'Timed out after {timeout} seconds: {msg}{self.screen_contents_for_error()}')
 
-    def wait_till_child_exits(self, timeout=30 if BaseTest.is_ci else 10, require_exit_code=None):
-        end_time = time.monotonic() + timeout
-        while time.monotonic() <= end_time:
-            si_pid, status = os.waitpid(self.child_pid, os.WNOHANG)
-            if si_pid == self.child_pid:
-                # The child has been reaped, calling waitpid() on it again
-                # would fail with ECHILD, so handle every kind of termination
-                # here, not just a normal exit.
-                self.child_waited_for = True
-                with suppress(OSError):
-                    while self.process_input_from_child(timeout=0):
-                        pass
-                if os.WIFSIGNALED(status):
-                    sig = os.WTERMSIG(status)
-                    try:
-                        signame = signal.Signals(sig).name
-                    except ValueError:
-                        signame = str(sig)
-                    raise AssertionError(f'Child was killed by signal: {signame}. {self.screen_contents_for_error()}')
-                ec = os.waitstatus_to_exitcode(status)
-                if require_exit_code is not None and ec != require_exit_code:
-                    raise AssertionError(f'Child exited with exit status: {status} code: {ec} != {require_exit_code}. {self.screen_contents_for_error()}')
+    def wait_till_child_exits(self, timeout=30 if BaseTest.is_ci else 10, require_exit_code=None) -> int:
+        # a second wait reports the first one's end: the pid may since belong to another process
+        end = self.child_end = self.child_end or await_pid_exit(self.child_pid, timeout, wait_a_moment=self._read_once)
+        self._drain()
+        match end:
+            case Exited(status) if status >= 0 and require_exit_code in (None, status):
                 return status
-            with suppress(OSError):
-                self.process_input_from_child(timeout=0.02)
-        raise AssertionError(f'Child did not exit in {timeout} seconds. {self.screen_contents_for_error()}')
+            case Exited() if require_exit_code is not None:
+                detail = f', but exit status {require_exit_code} was required'
+            case _:
+                detail = ''
+        raise AssertionError(f'PTY child {self.child_pid} {end}{detail}. {self.screen_contents_for_error()}')
+
+    def _read_once(self) -> None:
+        # one read per poll, so a child that never stops writing still meets the deadline;
+        # a poll that reads nothing lasts its full period, as a hung-up slave returns at once
+        period_end = time.monotonic() + 0.02
+        if not self._read_until_hangup(timeout=0.02):
+            time.sleep(max(0, period_end - time.monotonic()))
+
+    def _drain(self) -> None:
+        # reads what the child left in the PTY until the slave hangs up, within a budget that
+        # ends it when a grandchild still holds the slave
+        budget_end = time.monotonic() + 1
+        while self._read_until_hangup(timeout=budget_end - time.monotonic()):
+            pass
+
+    def _read_until_hangup(self, timeout: float) -> int:
+        # bytes read, 0 once the slave has hung up: Linux reports that as EIO, macOS as EOF
+        try:
+            return self.process_input_from_child(timeout=timeout)
+        except OSError as e:
+            if e.errno != errno.EIO:
+                raise
+            return 0
 
     def set_window_size(self, rows=25, columns=80, send_signal=True):
         if hasattr(self, 'screen'):
