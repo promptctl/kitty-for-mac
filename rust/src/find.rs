@@ -115,9 +115,9 @@ impl FindRefeed {
             "a logical line's cells lie in its rows"
         );
         self.next_line = abs_first_line + u64::from(rows);
-        // a line that continues one gone from the buffer is searched after a byte no pattern can
-        // match (never valid UTF-8): ^ and \A match only at the haystack's start, so not at the
-        // line's first byte, and every match starts in the line's own text
+        // a line that continues one gone from the buffer is searched from just past one byte of
+        // context, never valid UTF-8: ^ and \A match only at the haystack's start, so not at the
+        // line's first byte, and starting past it keeps every match in the line's own text
         let (haystack, offset) = match start {
             FindLineStart::StartsLine => (Cow::Borrowed(text), 0),
             FindLineStart::ContinuesEvicted => (Cow::Owned([&[0xFF], text].concat()), 1),
